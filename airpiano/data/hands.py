@@ -1,4 +1,4 @@
-"""Canonical hand-cache loading and baseline coordinate transforms."""
+"""Canonical hand-cache loading and configurable coordinate transforms."""
 
 from __future__ import annotations
 
@@ -29,12 +29,16 @@ class CanonicalNpzReader:
         )
 
 
-class CenteredXYZ10Transform:
-    """Center full-image XY, scale wrist-relative Z, and zero absent hands."""
+class OffsetScaleTransform:
+    """Apply per-axis offset and scale while keeping absent hands at zero."""
+
+    def __init__(self, offset: list[float], scale: list[float]) -> None:
+        self.offset = tuple(offset)
+        self.scale = tuple(scale)
 
     def __call__(self, pose: torch.Tensor, presence: torch.Tensor) -> torch.Tensor:
-        offset = pose.new_tensor((0.5, 0.5, 0.0))
-        scale = pose.new_tensor((1.0, 1.0, 10.0))
+        offset = pose.new_tensor(self.offset)
+        scale = pose.new_tensor(self.scale)
         transformed = (pose - offset) * scale
         return torch.where(
             presence[..., None, None], transformed, torch.zeros_like(transformed)
@@ -44,7 +48,7 @@ class CenteredXYZ10Transform:
 class HandLoader:
     """Load canonical coordinates and apply one replaceable postprocessor."""
 
-    def __init__(self, reader: CanonicalNpzReader, transform: CenteredXYZ10Transform):
+    def __init__(self, reader: CanonicalNpzReader, transform: OffsetScaleTransform):
         self.reader = reader
         self.transform = transform
 

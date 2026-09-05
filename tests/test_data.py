@@ -16,7 +16,6 @@ from airpiano.data import (
     CANONICAL_HAND_SCHEMA,
     AlignmentDataset,
     CanonicalNpzReader,
-    CenteredXYZ10Transform,
     Chord,
     ChordOnsetEvents,
     EagerSongReader,
@@ -29,6 +28,7 @@ from airpiano.data import (
     MidiSequence,
     MidoNoteReader,
     Note,
+    OffsetScaleTransform,
     Song,
     RelativeStemPairer,
     TargetGenerator,
@@ -228,7 +228,7 @@ class MidiTest(unittest.TestCase):
 
 
 class HandCacheTest(unittest.TestCase):
-    def test_canonical_reader_and_centered_xyz10_transform(self) -> None:
+    def test_canonical_reader_and_configurable_transform(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "hands.npz"
             pose = np.empty((2, 2, 21, 3), dtype=np.float32)
@@ -247,7 +247,10 @@ class HandCacheTest(unittest.TestCase):
 
             raw = CanonicalNpzReader().read(path)
             transformed = HandLoader(
-                CanonicalNpzReader(), CenteredXYZ10Transform()
+                CanonicalNpzReader(),
+                OffsetScaleTransform(
+                    offset=[0.5, 0.5, 0.0], scale=[1.0, 1.0, 10.0]
+                ),
             ).load(path)
 
         self.assertEqual(raw.pose.dtype, torch.float32)
@@ -262,6 +265,21 @@ class HandCacheTest(unittest.TestCase):
         self.assertEqual(torch.count_nonzero(transformed.pose[0, 1]).item(), 0)
         self.assertEqual(torch.count_nonzero(transformed.pose[1, 0]).item(), 0)
         torch.testing.assert_close(transformed.presence, raw.presence)
+
+    def test_wrist_relative_xyz_transform_scales_every_axis(self) -> None:
+        pose = torch.zeros(1, 2, 21, 3)
+        pose[0, 0, 1] = torch.tensor([0.01, -0.02, 0.03])
+        pose[0, 1] = 9.0
+        presence = torch.tensor([[True, False]])
+
+        transformed = OffsetScaleTransform(
+            offset=[0.0, 0.0, 0.0], scale=[10.0, 10.0, 10.0]
+        )(pose, presence)
+
+        torch.testing.assert_close(
+            transformed[0, 0, 1], torch.tensor([0.1, -0.2, 0.3])
+        )
+        self.assertEqual(torch.count_nonzero(transformed[0, 1]).item(), 0)
 
 class SlicingAndTargetTest(unittest.TestCase):
     def test_starts_include_exact_right_aligned_tail(self) -> None:

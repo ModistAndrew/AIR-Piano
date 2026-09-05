@@ -32,11 +32,61 @@ def raw_cache_has_markers(path: str | Path) -> bool:
     )
 
 
+class WiLoRCoordinateConverter:
+    """Build one canonical hand from WiLoR 2D and local 3D joints.
+
+    ``xy_source`` selects either full-image normalized coordinates or local
+    joints relative to that hand's wrist. Depth remains local and
+    wrist-relative in both currently supported representations.
+    """
+
+    def __init__(
+        self,
+        xy_source: str = "normalized_2d",
+        z_source: str = "wrist_relative_3d",
+    ) -> None:
+        self.xy_source = xy_source
+        self.z_source = z_source
+
+    def __call__(
+        self, arrays: Mapping[str, np.ndarray], detection: int
+    ) -> np.ndarray:
+        joints_3d = arrays["pred_keypoints_3d"][detection].astype(
+            np.float64, copy=False
+        )
+        wrist_relative = joints_3d - joints_3d[:1]
+
+        if self.xy_source == "normalized_2d":
+            image_size = arrays["image_size_wh"][detection].astype(
+                np.float64, copy=False
+            )
+            xy = arrays["pred_keypoints_2d_full"][detection].astype(
+                np.float64, copy=False
+            ) / image_size
+        elif self.xy_source == "wrist_relative_3d":
+            xy = wrist_relative[:, :2]
+        else:
+            raise ValueError(f"unknown WiLoR XY source: {self.xy_source}")
+
+        if self.z_source != "wrist_relative_3d":
+            raise ValueError(f"unknown WiLoR Z source: {self.z_source}")
+
+        converted = np.empty((21, 3), dtype=np.float32)
+        converted[:, :2] = xy
+        converted[:, 2] = wrist_relative[:, 2]
+        return converted
+
+
 class WiLoRToCanonical:
     """Select two hands from ragged detections and resample them to fixed FPS."""
 
-    def __init__(self, target_fps: float = TARGET_FPS) -> None:
+    def __init__(
+        self,
+        target_fps: float = TARGET_FPS,
+        coordinates: WiLoRCoordinateConverter | None = None,
+    ) -> None:
         self.target_fps = float(target_fps)
+        self.coordinates = coordinates or WiLoRCoordinateConverter()
 
     def run(
         self,
@@ -99,8 +149,8 @@ class WiLoRToCanonical:
             )
         return pose, presence, source_fps
 
-    @staticmethod
     def _select_chunk(
+        self,
         arrays: Mapping[str, np.ndarray],
         destination_pose: np.ndarray,
         destination_presence: np.ndarray,
@@ -120,19 +170,7 @@ class WiLoRToCanonical:
                 # np.argmax returns the first maximum, preserving detector order
                 # as the deterministic tie breaker used by the baseline.
                 winner = int(candidates[np.argmax(confidence[candidates])])
-                image_size = arrays["image_size_wh"][winner].astype(
-                    np.float64, copy=False
-                )
-                xy = arrays["pred_keypoints_2d_full"][winner].astype(
-                    np.float64, copy=False
-                ) / image_size
-                z = arrays["pred_keypoints_3d"][winner, :, 2].astype(
-                    np.float64, copy=False
-                )
-                converted = np.empty((21, 3), dtype=np.float64)
-                converted[:, :2] = xy
-                converted[:, 2] = z - z[0]
-                destination_pose[frame, slot] = converted.astype(np.float32)
+                destination_pose[frame, slot] = self.coordinates(arrays, winner)
                 destination_presence[frame, slot] = True
 
     def _resample(

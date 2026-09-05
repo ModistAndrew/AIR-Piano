@@ -9,6 +9,7 @@ from unittest.mock import call, patch
 
 import torch
 import wandb
+from hydra import compose, initialize_config_dir
 from hydra.utils import instantiate
 from omegaconf import OmegaConf
 from torch import nn
@@ -84,6 +85,30 @@ class TrainTest(unittest.TestCase):
         self.assertEqual(str(config.wandb.project), "air_piano")
         self.assertEqual(str(config.test.checkpoint), "checkpoints/last.pt")
         self.assertEqual(str(config.realtime.checkpoint), "checkpoints/last.pt")
+
+    def test_wrist_xyz10_config_constructs_ablation_components(self) -> None:
+        config_directory = Path(__file__).parents[1] / "configs"
+        with initialize_config_dir(
+            version_base=None, config_dir=str(config_directory.resolve())
+        ):
+            config = compose(config_name="wrist_xyz10")
+
+        components = data.build_data_components(config)
+        canonicalizer = instantiate(config.preprocess.ragged_to_canonical)
+
+        self.assertEqual(str(config.output.dir), "outputs/wrist_xyz10")
+        self.assertEqual(str(config.wandb.name), "wrist_xyz10")
+        self.assertTrue(
+            str(config.data.hand_root).endswith("/airpiano_wilor_wrist_xyz_30fps")
+        )
+        self.assertEqual(canonicalizer.coordinates.xy_source, "wrist_relative_3d")
+        self.assertEqual(canonicalizer.coordinates.z_source, "wrist_relative_3d")
+        self.assertEqual(
+            components["hand_loader"].transform.offset, (0.0, 0.0, 0.0)
+        )
+        self.assertEqual(
+            components["hand_loader"].transform.scale, (10.0, 10.0, 10.0)
+        )
 
     @staticmethod
     def _config(output: Path):

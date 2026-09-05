@@ -15,6 +15,7 @@ from airpiano.preprocessing import pipeline
 from airpiano.preprocessing.canonical import (
     CANONICAL_SCHEMA_VERSION,
     RAW_SCHEMA_VERSION,
+    WiLoRCoordinateConverter,
     WiLoRToCanonical,
     raw_cache_has_markers,
 )
@@ -32,9 +33,12 @@ def _chunk_arrays(frame_start: int, frame_end: int, detections: list[list[tuple]
     keypoints_2d = np.zeros((count, 21, 2), dtype=np.float32)
     image_size = np.tile(np.asarray([100.0, 200.0], dtype=np.float32), (count, 1))
     for index, (_, _, x, y, z_base) in enumerate(flat):
+        joint = np.arange(21, dtype=np.float32)
         keypoints_2d[index, :, 0] = x
         keypoints_2d[index, :, 1] = y
-        keypoints_3d[index, :, 2] = z_base + np.arange(21, dtype=np.float32) * 0.01
+        keypoints_3d[index, :, 0] = x * 0.01 + joint * 0.01
+        keypoints_3d[index, :, 1] = y * 0.01 + joint * 0.02
+        keypoints_3d[index, :, 2] = z_base + joint * 0.01
     return {
         "frame_indices": np.arange(frame_start, frame_end, dtype=np.int64),
         "frame_timestamps_seconds": np.arange(
@@ -238,6 +242,33 @@ class PreprocessingTest(unittest.TestCase):
             original = output.read_bytes()
             (raw / "manifest.json").write_text("not json", encoding="utf-8")
             self.assertEqual(WiLoRToCanonical().run(raw, output).read_bytes(), original)
+
+    def test_wilor_to_canonical_supports_wrist_relative_xyz(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            raw = root / "raw"
+            output = root / "wrist_xyz.npz"
+            _write_raw_cache(raw)
+
+            converter = WiLoRCoordinateConverter(
+                xy_source="wrist_relative_3d",
+                z_source="wrist_relative_3d",
+            )
+            WiLoRToCanonical(coordinates=converter).run(raw, output)
+
+            with np.load(output, allow_pickle=False) as payload:
+                pose = payload["pose"]
+                presence = payload["presence"]
+
+            np.testing.assert_array_equal(presence, [[True, True], [True, False]])
+            np.testing.assert_allclose(pose[:, :, 0], 0.0, atol=1e-7)
+            np.testing.assert_allclose(
+                pose[0, 0, 1], [0.01, 0.02, 0.01], atol=1e-6
+            )
+            np.testing.assert_allclose(
+                pose[0, 1, 1], [0.01, 0.02, 0.01], atol=1e-6
+            )
+            self.assertTrue(np.all(pose[1, 1] == 0.0))
 
     def test_raw_cache_marker_check_and_native_manifest_error(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

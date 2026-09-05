@@ -1,9 +1,10 @@
 # AirPiano operational handoff
 
-AirPiano is a compact, single-baseline implementation of hand-to-MIDI chord
-alignment. It converts videos to resumable WiLoR hand detections, converts those
-detections to canonical 30 Hz two-hand poses, eagerly pairs complete songs with
-MIDI, and trains one fixed direct transformer with masked binary cross entropy.
+AirPiano is a compact implementation of hand-to-MIDI chord alignment with one
+baseline and a wrist-relative-coordinate ablation. It converts videos to
+resumable WiLoR hand detections, converts those detections to canonical 30 Hz
+two-hand poses, eagerly pairs complete songs with MIDI, and trains one fixed
+direct transformer with masked binary cross entropy.
 This README is the operational source of truth for an agent with no prior
 conversation history. Read [`AGENTS.md`](AGENTS.md) before changing or running
 the project.
@@ -47,7 +48,8 @@ compatibility with V2N checkpoints. The model and loss expose no YAML options.
 | Path | Responsibility |
 | --- | --- |
 | `run.py` | Hydra bootstrap and six-entry stage dispatch only. |
-| `configs/baseline.yaml` | The single runtime configuration. |
+| `configs/baseline.yaml` | Baseline runtime configuration. |
+| `configs/wrist_xyz10.yaml` | Wrist-relative local-XYZ ×10 ablation inheriting the baseline. |
 | `scripts/convert_legacy_splits.py` | One-time conversion of the original PianoMotion split lists to generalized record stems. |
 | `scripts/migrate_pianomotion_data.py` | Resumable, verified migration of PianoMotion postprocessed data to `/storage2`. |
 | `assets/splits/pianomotion10m/` | Ignored, locally generated train, validation, and test record stems used by the baseline. |
@@ -77,7 +79,7 @@ Useful explicit imports are:
 ```python
 from airpiano.preprocessing.pipeline import preprocess
 from airpiano.preprocessing.video import VideoToWiLoR
-from airpiano.preprocessing.canonical import WiLoRToCanonical
+from airpiano.preprocessing.canonical import WiLoRCoordinateConverter, WiLoRToCanonical
 from airpiano.data import build_data_components, build_dataset, make_loader
 from airpiano.train import train
 from airpiano.inference import test
@@ -554,11 +556,16 @@ The canonical output remains:
 | `presence` | `bool[T,2]`. |
 | `fps` | `float64` scalar, baseline `30.0`. |
 
-XY is full-image pixels divided by image width/height. Z is local joint depth
-minus that hand's wrist depth. Absent slots are exact zero. Mixed input rates
-are sampled at target-frame centers using linear pose interpolation; a hand is
-present only if present at both endpoints, otherwise the full target slot is
-zero. Output length is:
+The configured `WiLoRCoordinateConverter` owns spatial coordinates. The
+baseline uses full-image pixels divided by image width/height for XY and local
+joint depth minus wrist depth for Z. The `wrist_xyz10` ablation subtracts the
+selected hand's local 3D wrist joint from all XYZ joints. Coordinate conversion
+happens before temporal resampling; scaling is deliberately deferred to the
+configured `HandLoader` transform.
+
+Absent slots are exact zero. Mixed input rates are sampled at target-frame
+centers using linear pose interpolation; a hand is present only if present at
+both endpoints, otherwise the full target slot is zero. Output length is:
 
 ```text
 floor(source_frames * target_fps / source_fps)
@@ -582,12 +589,14 @@ and keeps positive-duration pairs. `InitializerChordMerger` groups later notes
 within 0.05 seconds of the initializer note; grouping is inclusive and
 initializer-anchored rather than transitive.
 
-`CenteredXYZ10Transform` applies `x -= 0.5`, `y -= 0.5`, and `z *= 10` to
-present slots while preserving exact zero absent slots. `FileLoader` eagerly
-loads every paired song. `AlignmentDataset` precomputes frame starts and chord
-selection indices, omits windows whose chord selection is entirely padding,
-then slices/pads and generates targets in `__getitem__`. Such post-score
-windows have no valid cell on which masked BCE could be defined.
+`OffsetScaleTransform` applies configured per-axis `(pose - offset) * scale` to
+present slots while preserving exact zero absent slots. The baseline uses
+offset `[0.5,0.5,0]` and scale `[1,1,10]`; `wrist_xyz10` uses zero offset and
+scale `[10,10,10]`. `FileLoader` eagerly loads every paired song.
+`AlignmentDataset` precomputes frame starts and chord selection indices, omits
+windows whose chord selection is entirely padding, then slices/pads and
+generates targets in `__getitem__`. Such post-score windows have no valid cell
+on which masked BCE could be defined.
 
 One baseline item is:
 
@@ -809,6 +818,26 @@ Stages run once each in the listed order and receive the same resolved root
 configuration. Execution is fail-fast: if one stage raises, subsequent stages
 are not run.
 
+### Wrist-relative XYZ ×10 ablation
+
+The ablation reuses the baseline raw WiLoR caches but writes unscaled
+wrist-relative local XYZ to its own canonical root. Generate that cache before
+training:
+
+```bash
+conda run -n v2n python run.py --config-name wrist_xyz10 \
+  stage=preprocess preprocess.task=ragged_to_canonical
+
+conda run -n v2n python run.py --config-name wrist_xyz10 stage=train
+conda run -n v2n python run.py --config-name wrist_xyz10 stage=test
+```
+
+Its canonical files live under
+`${data.processed_root}/airpiano_wilor_wrist_xyz_30fps`, while checkpoints,
+logs, inference, and rendering use `outputs/wrist_xyz10/`. The ×10 factor is an
+online hand transform, so later scale ablations can reuse the same canonical
+cache.
+
 ### Train and validate
 
 ```bash
@@ -990,6 +1019,9 @@ Hydra `key=value` syntax.
 | `fast` | `false` | Enable upstream half/skip-block fast path. |
 | `compile` | `false` | Compile the backbone when fast mode is used. |
 | `ragged_to_canonical._target_` | `airpiano.preprocessing.canonical.WiLoRToCanonical` | Current raw schema to canonical NPZ. |
+| `coordinates._target_` | `airpiano.preprocessing.canonical.WiLoRCoordinateConverter` | Convert each selected raw detection into one canonical hand. |
+| `coordinates.xy_source` | `normalized_2d` | Use normalized full-image XY; `wrist_relative_3d` selects local XYZ relative to the wrist. |
+| `coordinates.z_source` | `wrist_relative_3d` | Local WiLoR depth relative to the selected hand's wrist. |
 | `target_fps` | `30.0` | Canonical output rate. |
 
 Relative code/asset paths rely on Hydra's `job.chdir: false`; launch from the
@@ -1003,7 +1035,7 @@ repository root or override them with absolute paths.
 | `MidoNoteReader` | Tempo-aware physical note parsing. |
 | `InitializerChordMerger.tolerance_seconds` | Initializer-relative grouping at `0.05`. |
 | `CanonicalNpzReader` | Direct trusted canonical array loading. |
-| `CenteredXYZ10Transform` | Center XY and multiply local Z by ten. |
+| `OffsetScaleTransform` | Apply configured per-axis offset and scale, then restore absent slots to zero. |
 | `FutureChordSlicer` | 30 Hz, 210 frames, stride 105, fixed 200 future-extending candidates. |
 | `ChordOnsetEvents` | One event at each chord initializer onset. |
 | `TriangularSoftener.radius_seconds` | Continuous target radius `0.2`. |
@@ -1060,6 +1092,7 @@ The narrow replaceable interfaces are:
 | `MidoNoteReader` | `read(path) -> tuple[Note,...]`. |
 | `InitializerChordMerger` | `merge(notes) -> tuple[Chord,...]`. |
 | `CanonicalNpzReader` | `read(path) -> HandSequence`. |
+| `WiLoRCoordinateConverter` | `(raw_arrays, detection_index) -> float32[21,3]` canonical hand. |
 | Hand transform | `(pose, presence) -> pose` with unchanged shape and absent slots zero. |
 | Slicer | Expose fixed dimensions and implement starts, candidate selection, and slicing. |
 | Event generator | `times(chords) -> float64[event_count]`. |
@@ -1072,6 +1105,9 @@ Common changes stay localized:
 - New MIDI parser or grouping rule: replace the reader or chord merger.
 - New pose format or normalization: replace the canonical reader or hand
   transform; preserve `[T,2,21,3]`, left/right order, presence, and zero absence.
+- New WiLoR coordinate representation: change the converter's XY/Z sources or
+  replace its `_target_`; use a distinct canonical root when the stored
+  coordinate meaning changes.
 - Earlier rather than later chord extension: replace the slicer while retaining
   all overlapping chords and the fixed-width overflow safeguard.
 - Note alignment: use singleton chords plus a compatible slicer/event generator;

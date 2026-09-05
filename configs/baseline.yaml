@@ -51,6 +51,10 @@ preprocess:
   ragged_to_canonical:
     _target_: airpiano.preprocessing.canonical.WiLoRToCanonical
     target_fps: 30.0
+    coordinates:
+      _target_: airpiano.preprocessing.canonical.WiLoRCoordinateConverter
+      xy_source: normalized_2d
+      z_source: wrist_relative_3d
 
 dataset:
   file_loader:
@@ -71,7 +75,9 @@ dataset:
     reader:
       _target_: airpiano.data.hands.CanonicalNpzReader
     transform:
-      _target_: airpiano.data.hands.CenteredXYZ10Transform
+      _target_: airpiano.data.hands.OffsetScaleTransform
+      offset: [0.5, 0.5, 0.0]
+      scale: [1.0, 1.0, 10.0]
   slicer:
     _target_: airpiano.data.slicing.FutureChordSlicer
     fps: 30.0
@@ -107,7 +113,7 @@ wandb:
   dir: logs
 
 realtime:
-  root: realtime
+  root: null # Set to a directory containing video files to run inference on them in real time.
   checkpoint: checkpoints/last.pt
   output_dir: inference/realtime
   overwrite: false

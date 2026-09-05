@@ -11,8 +11,8 @@ from .files import EagerSongReader, FileLoader, RelativeStemPairer
 from .hands import (
     CANONICAL_HAND_SCHEMA,
     CanonicalNpzReader,
-    CenteredXYZ10Transform,
     HandLoader,
+    OffsetScaleTransform,
 )
 from .midi import InitializerChordMerger, MidiLoader, MidoNoteReader
 from .slicing import FutureChordSlicer
@@ -23,7 +23,6 @@ __all__ = [
     "AlignmentDataset",
     "CANONICAL_HAND_SCHEMA",
     "CanonicalNpzReader",
-    "CenteredXYZ10Transform",
     "Chord",
     "ChordOnsetEvents",
     "EagerSongReader",
@@ -37,6 +36,7 @@ __all__ = [
     "MidiSequence",
     "MidoNoteReader",
     "Note",
+    "OffsetScaleTransform",
     "Song",
     "RelativeStemPairer",
     "TargetGenerator",

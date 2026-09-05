@@ -1,0 +1,24 @@
+defaults:
+  - baseline
+  - _self_
+
+output:
+  project_name: wrist_xyz10
+
+data:
+  hand_root: ${data.processed_root}/airpiano_wilor_wrist_xyz_30fps
+
+preprocess:
+  ragged_to_canonical:
+    coordinates:
+      xy_source: wrist_relative_3d
+      z_source: wrist_relative_3d
+
+dataset:
+  hand_loader:
+    transform:
+      offset: [0.0, 0.0, 0.0]
+      scale: [10.0, 10.0, 10.0]
+
+wandb:
+  name: wrist_xyz10
