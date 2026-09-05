@@ -7,8 +7,8 @@ from pathlib import Path
 from hydra.utils import instantiate
 from omegaconf import DictConfig
 
-from .data import AlignmentDataset, FilePair
-from .train import build_data_components, infer_dataset
+from . import data
+from .inference import infer_dataset
 from .utils import resolve_output_path, write_json
 
 
@@ -37,8 +37,8 @@ def realtime(cfg: DictConfig) -> None:
         overwrite=overwrite,
     )
 
-    components = build_data_components(cfg)
-    pair = FilePair(
+    components = data.build_data_components(cfg)
+    pair = data.FilePair(
         record_id=record_id,
         midi_path=midi_path,
         hand_path=canonical_path,
@@ -48,7 +48,7 @@ def realtime(cfg: DictConfig) -> None:
         components["midi_loader"],
         components["hand_loader"],
     )
-    dataset = AlignmentDataset(
+    dataset = data.AlignmentDataset(
         songs=[song],
         slicer=components["slicer"],
         target_generator=components["target_generator"],

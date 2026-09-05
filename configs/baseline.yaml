@@ -1,7 +1,7 @@
 defaults:
   - _self_
 
-# Run one stage or an ordered list drawn from preprocess, train, realtime,
+# Run one stage or an ordered list drawn from preprocess, train, test, realtime,
 # visualize, and sonify. Every path can be replaced with a Hydra override.
 stage: train
 device: cuda:1
@@ -95,6 +95,10 @@ train:
   max_grad_norm: 1.0
   warmup_fraction: 0.05
   bf16: true
+
+test:
+  checkpoint: checkpoints/last.pt
+  output_dir: inference/test
 
 wandb:
   project: air_piano

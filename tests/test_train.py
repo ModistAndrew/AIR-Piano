@@ -1,14 +1,12 @@
-"""Integration tests for training and test-set inference artifacts."""
+"""Integration tests for training and checkpoint creation."""
 
 from __future__ import annotations
 
-import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import call, patch
 
-import numpy as np
 import torch
 import wandb
 from hydra.utils import instantiate
@@ -16,7 +14,7 @@ from omegaconf import OmegaConf
 from torch import nn
 from torch.utils.data import Dataset
 
-from airpiano import train
+from airpiano import data, train
 
 
 class _TinyDataset(Dataset):
@@ -63,7 +61,7 @@ class _FakeRun:
 class TrainTest(unittest.TestCase):
     def test_baseline_constructs_every_configured_component(self) -> None:
         config = OmegaConf.load(Path(__file__).parents[1] / "configs" / "baseline.yaml")
-        components = train.build_data_components(config)
+        components = data.build_data_components(config)
         self.assertEqual(
             {name: type(value).__name__ for name, value in components.items()},
             {
@@ -84,6 +82,7 @@ class TrainTest(unittest.TestCase):
         )
         self.assertEqual(str(config.output.dir), "outputs/baseline")
         self.assertEqual(str(config.wandb.project), "air_piano")
+        self.assertEqual(str(config.test.checkpoint), "checkpoints/last.pt")
         self.assertEqual(str(config.realtime.checkpoint), "checkpoints/last.pt")
 
     @staticmethod
@@ -118,27 +117,31 @@ class TrainTest(unittest.TestCase):
             }
         )
 
-    def test_train_logs_three_loss_series_and_dumps_predictions(self) -> None:
+    def test_train_logs_losses_and_writes_checkpoints(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory)
             fake_run = _FakeRun()
             dataset = _TinyDataset()
             with (
                 patch.object(wandb, "init", return_value=fake_run) as wandb_init,
-                patch.object(train, "build_data_components", return_value={}),
-                patch.object(train, "build_dataset", return_value=dataset),
-                patch.object(train, "AirPianoTransformer", _TinyModel),
+                patch.object(data, "build_data_components", return_value={}),
                 patch.object(
-                    train,
-                    "load_model_checkpoint",
-                    wraps=train.load_model_checkpoint,
-                ) as load_checkpoint,
+                    data, "build_dataset", return_value=dataset
+                ) as build_dataset,
+                patch.object(train, "AirPianoTransformer", _TinyModel),
             ):
                 train.train(self._config(output))
 
             self.assertEqual(
                 [next(iter(item)) for item in fake_run.logs],
-                ["train/loss", "valid/loss", "test/loss"],
+                ["train/loss", "valid/loss"],
+            )
+            self.assertEqual(
+                build_dataset.call_args_list,
+                [
+                    call(self._config(output), "train", components={}),
+                    call(self._config(output), "valid", components={}),
+                ],
             )
             self.assertTrue(fake_run.finished)
             wandb_init.assert_called_once()
@@ -151,9 +154,6 @@ class TrainTest(unittest.TestCase):
             checkpoint_dir = output / "checkpoints"
             self.assertTrue((checkpoint_dir / "best.pt").is_file())
             self.assertTrue((checkpoint_dir / "last.pt").is_file())
-            load_checkpoint.assert_called_once_with(
-                (checkpoint_dir / "last.pt").resolve(), torch.device("cpu")
-            )
             checkpoint = torch.load(
                 checkpoint_dir / "last.pt", map_location="cpu", weights_only=False
             )
@@ -170,18 +170,7 @@ class TrainTest(unittest.TestCase):
             )
             self.assertEqual(checkpoint["epoch"], 1)
             self.assertEqual(checkpoint["global_step"], 1)
-            inference_dir = output / "inference" / "test"
-            metrics = json.loads((inference_dir / "test_loss.json").read_text())
-            self.assertGreater(metrics["test_loss"], 0.0)
-            artifacts = sorted(inference_dir.glob("*.npz"))
-            self.assertEqual(len(artifacts), 2)
-            with np.load(artifacts[0], allow_pickle=False) as artifact:
-                self.assertEqual(
-                    str(artifact["schema_version"]), "airpiano-inference-v1"
-                )
-                self.assertEqual(artifact["probability"].shape, (2, 2))
-                self.assertEqual(artifact["chord_pitches"].shape, (2, 128))
-                self.assertEqual(artifact["chord_pitches"].dtype, np.bool_)
+            self.assertFalse((output / "inference" / "test").exists())
 
 
 if __name__ == "__main__":

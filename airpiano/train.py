@@ -1,24 +1,21 @@
-"""Training, evaluation, checkpointing, and dataset inference."""
+"""Training, validation, and checkpoint creation."""
 
 from __future__ import annotations
 
 import contextlib
 import math
 import random
-from pathlib import Path
 from typing import Any
 
 import numpy as np
 import torch
-import torch.nn.functional as F
-from hydra.utils import instantiate
 from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import DataLoader
 
-from .data import AlignmentDataset, collate_alignment_batch
+from . import data
 from .model.loss import masked_bce_loss
 from .model.transformer import AirPianoTransformer
-from .utils import resolve_output_path, safe_record_name, write_json, write_npz
+from .utils import resolve_output_path
 
 
 TENSOR_INPUTS = ("hands", "hand_presence", "chords", "frame_mask", "chord_mask")
@@ -32,64 +29,6 @@ def seed_everything(seed: int) -> None:
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
-
-
-def build_data_components(cfg: DictConfig) -> dict[str, Any]:
-    """Instantiate the replaceable data components declared in YAML."""
-
-    return {
-        "file_loader": instantiate(cfg.dataset.file_loader),
-        "midi_loader": instantiate(cfg.dataset.midi_loader),
-        "hand_loader": instantiate(cfg.dataset.hand_loader),
-        "slicer": instantiate(cfg.dataset.slicer),
-        "target_generator": instantiate(cfg.dataset.target_generator),
-    }
-
-
-def build_dataset(
-    cfg: DictConfig,
-    split: str,
-    *,
-    components: dict[str, Any] | None = None,
-) -> AlignmentDataset:
-    """Eagerly load one split and precompute all slice/chord indices."""
-
-    components = components or build_data_components(cfg)
-    songs = components["file_loader"].load(
-        split_file=Path(str(cfg.data.splits[split])).expanduser().resolve(),
-        midi_root=Path(str(cfg.data.midi_root)).expanduser().resolve(),
-        hand_root=Path(str(cfg.data.hand_root)).expanduser().resolve(),
-        midi_loader=components["midi_loader"],
-        hand_loader=components["hand_loader"],
-    )
-    return AlignmentDataset(
-        songs=songs,
-        slicer=components["slicer"],
-        target_generator=components["target_generator"],
-    )
-
-
-def make_loader(
-    dataset: AlignmentDataset,
-    *,
-    batch_size: int,
-    shuffle: bool,
-    seed: int,
-    device: torch.device,
-) -> DataLoader:
-    """Build the deterministic, single-process baseline DataLoader."""
-
-    generator = torch.Generator()
-    generator.manual_seed(seed)
-    return DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=shuffle,
-        num_workers=0,
-        pin_memory=device.type == "cuda",
-        collate_fn=collate_alignment_batch,
-        generator=generator,
-    )
 
 
 def _tensor_to_device(value: torch.Tensor, device: torch.device) -> torch.Tensor:
@@ -139,87 +78,6 @@ def evaluate(
     return loss_sum / valid_sum
 
 
-def _batch_value(batch: dict[str, Any], name: str, index: int) -> Any:
-    value = batch[name]
-    if isinstance(value, torch.Tensor):
-        item = value[index].detach().cpu()
-        return item.item() if item.ndim == 0 else item.numpy()
-    return value[index]
-
-
-@torch.no_grad()
-def dump_inference(
-    model: AirPianoTransformer,
-    loader: DataLoader,
-    device: torch.device,
-    output_dir: Path,
-    *,
-    bf16: bool,
-) -> float:
-    """Write one self-contained NPZ per slice and return aggregate BCE."""
-
-    model.eval()
-    output_dir.mkdir(parents=True, exist_ok=True)
-    total_loss = 0.0
-    total_valid = 0
-    for batch in loader:
-        target_device = _tensor_to_device(batch["target"], device)
-        frame_mask_device = _tensor_to_device(batch["frame_mask"], device)
-        chord_mask_device = _tensor_to_device(batch["chord_mask"], device)
-        with _autocast(device, bf16):
-            logits = _forward(model, batch, device)
-        probabilities = torch.sigmoid(logits.float())
-
-        for index in range(logits.shape[0]):
-            valid = (
-                frame_mask_device[index, :, None]
-                & chord_mask_device[index, None, :]
-            )
-            count = int(valid.sum())
-            if count:
-                element_loss = F.binary_cross_entropy_with_logits(
-                    logits[index].float(),
-                    target_device[index].float(),
-                    reduction="none",
-                )
-                item_loss = float(element_loss[valid].mean())
-                total_loss += float(element_loss[valid].sum())
-                total_valid += count
-            else:
-                item_loss = float("nan")
-
-            record_id = str(_batch_value(batch, "record_id", index))
-            frame_start = int(_batch_value(batch, "frame_start", index))
-            write_npz(
-                output_dir / safe_record_name(record_id, frame_start),
-                schema_version=np.asarray("airpiano-inference-v1"),
-                probability=probabilities[index].cpu().numpy().astype(np.float32),
-                target=batch["target"][index].cpu().numpy().astype(np.float32),
-                frame_mask=batch["frame_mask"][index].cpu().numpy().astype(bool),
-                chord_mask=batch["chord_mask"][index].cpu().numpy().astype(bool),
-                chord_pitches=batch["chords"][index].cpu().numpy().astype(bool),
-                chord_ids=np.asarray(
-                    _batch_value(batch, "chord_ids", index), dtype=np.int64
-                ),
-                record_id=np.asarray(record_id),
-                frame_start=np.asarray(frame_start, dtype=np.int64),
-                fps=np.asarray(
-                    float(_batch_value(batch, "fps", index)), dtype=np.float64
-                ),
-                loss=np.asarray(item_loss, dtype=np.float64),
-            )
-    return total_loss / total_valid
-
-
-def load_model_checkpoint(path: str | Path, device: torch.device) -> AirPianoTransformer:
-    """Restore the fixed transformer from an AirPiano state-dict checkpoint."""
-
-    payload = torch.load(Path(path), map_location=device, weights_only=False)
-    model = AirPianoTransformer().to(device)
-    model.load_state_dict(payload["model"], strict=True)
-    return model
-
-
 def _lr_lambda(step: int, *, warmup_steps: int, total_steps: int) -> float:
     if warmup_steps and step < warmup_steps:
         return float(step + 1) / float(warmup_steps)
@@ -229,28 +87,23 @@ def _lr_lambda(step: int, *, warmup_steps: int, total_steps: int) -> float:
 
 
 def train(cfg: DictConfig) -> None:
-    """Train, validate each epoch, restore the last model, then infer test."""
+    """Train the baseline, validate each epoch, and write checkpoints."""
 
     import wandb
 
     seed = int(cfg.seed)
     seed_everything(seed)
     device = torch.device(str(cfg.device))
-    components = build_data_components(cfg)
-    train_dataset = build_dataset(cfg, "train", components=components)
-    valid_dataset = build_dataset(cfg, "valid", components=components)
-    test_dataset = build_dataset(cfg, "test", components=components)
+    components = data.build_data_components(cfg)
+    train_dataset = data.build_dataset(cfg, "train", components=components)
+    valid_dataset = data.build_dataset(cfg, "valid", components=components)
     batch_size = int(cfg.train.batch_size)
-    train_loader = make_loader(
+    train_loader = data.make_loader(
         train_dataset, batch_size=batch_size, shuffle=True, seed=seed, device=device
     )
-    valid_loader = make_loader(
+    valid_loader = data.make_loader(
         valid_dataset, batch_size=batch_size, shuffle=False, seed=seed, device=device
     )
-    test_loader = make_loader(
-        test_dataset, batch_size=batch_size, shuffle=False, seed=seed, device=device
-    )
-
     model = AirPianoTransformer().to(device)
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -269,7 +122,6 @@ def train(cfg: DictConfig) -> None:
         ),
     )
     checkpoint_dir = resolve_output_path(cfg, "checkpoints")
-    test_output_dir = resolve_output_path(cfg, "inference/test")
     wandb_dir = resolve_output_path(cfg, cfg.wandb.dir)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     wandb_dir.mkdir(parents=True, exist_ok=True)
@@ -345,39 +197,5 @@ def train(cfg: DictConfig) -> None:
             if valid_loss < best_loss:
                 best_loss = valid_loss
                 torch.save(checkpoint, checkpoint_dir / "best.pt")
-
-        model = load_model_checkpoint(checkpoint_dir / "last.pt", device)
-        test_loss = dump_inference(
-            model, test_loader, device, test_output_dir, bf16=bf16
-        )
-        write_json(test_output_dir / "test_loss.json", {"test_loss": test_loss})
-        run.log({"test/loss": test_loss})
-        print(f"test_loss={test_loss:.8f}", flush=True)
     finally:
         run.finish()
-
-
-def infer_dataset(
-    cfg: DictConfig,
-    dataset: AlignmentDataset,
-    checkpoint: str | Path,
-    output_dir: str | Path,
-) -> float:
-    """Run checkpoint inference over one dataset, as used by realtime."""
-
-    device = torch.device(str(cfg.device))
-    loader = make_loader(
-        dataset,
-        batch_size=int(cfg.train.batch_size),
-        shuffle=False,
-        seed=int(cfg.seed),
-        device=device,
-    )
-    model = load_model_checkpoint(checkpoint, device)
-    return dump_inference(
-        model,
-        loader,
-        device,
-        Path(output_dir).expanduser().resolve(),
-        bf16=bool(cfg.train.bf16),
-    )

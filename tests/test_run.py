@@ -41,7 +41,7 @@ class RunTest(unittest.TestCase):
 
     def test_dispatch_runs_stage_list_in_order_with_the_same_config(self) -> None:
         config = OmegaConf.create(
-            {"stage": ["preprocess", "train"], "sentinel": {"value": 1}}
+            {"stage": ["preprocess", "train", "test"], "sentinel": {"value": 1}}
         )
         calls: list[tuple[str, object]] = []
 
@@ -56,10 +56,13 @@ class RunTest(unittest.TestCase):
         with patch.object(app, "STAGES", handlers):
             app.main.__wrapped__(config)
 
-        self.assertEqual([name for name, _ in calls], ["preprocess", "train"])
+        self.assertEqual(
+            [name for name, _ in calls], ["preprocess", "train", "test"]
+        )
         self.assertTrue(all(received is config for _, received in calls))
         handlers["preprocess"].assert_called_once_with(config)
         handlers["train"].assert_called_once_with(config)
+        handlers["test"].assert_called_once_with(config)
         for name in ("realtime", "visualize", "sonify"):
             handlers[name].assert_not_called()
 
@@ -76,6 +79,7 @@ class RunTest(unittest.TestCase):
 
         handlers["preprocess"].assert_called_once_with(config)
         handlers["train"].assert_called_once_with(config)
+        handlers["test"].assert_not_called()
         handlers["realtime"].assert_not_called()
         handlers["visualize"].assert_not_called()
         handlers["sonify"].assert_not_called()

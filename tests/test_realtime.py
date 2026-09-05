@@ -15,7 +15,7 @@ from omegaconf import OmegaConf
 from torch import nn
 
 import airpiano.realtime as realtime_stage
-from airpiano import train
+from airpiano import inference
 from airpiano.preprocessing.canonical import CANONICAL_SCHEMA_VERSION
 from airpiano.render.artifact import load_artifact
 from airpiano.render.sonify import sonify_artifact
@@ -120,7 +120,7 @@ class RealtimeTest(unittest.TestCase):
                     side_effect=instantiate_preprocessor,
                 ),
                 patch.object(
-                    train,
+                    inference,
                     "load_model_checkpoint",
                     return_value=_TinyModel(),
                 ) as load_checkpoint,

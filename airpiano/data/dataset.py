@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Any
 
 import torch
-from torch.utils.data import Dataset
+from hydra.utils import instantiate
+from omegaconf import DictConfig
+from torch.utils.data import DataLoader, Dataset
 
 from .slicing import FutureChordSlicer
 from .targets import TargetGenerator
@@ -85,3 +88,61 @@ def collate_alignment_batch(batch: list[dict[str, Any]]) -> dict[str, Any]:
             [float(sample["fps"]) for sample in batch], dtype=torch.float64
         ),
     }
+
+
+def build_data_components(cfg: DictConfig) -> dict[str, Any]:
+    """Instantiate the replaceable data components declared in YAML."""
+
+    return {
+        "file_loader": instantiate(cfg.dataset.file_loader),
+        "midi_loader": instantiate(cfg.dataset.midi_loader),
+        "hand_loader": instantiate(cfg.dataset.hand_loader),
+        "slicer": instantiate(cfg.dataset.slicer),
+        "target_generator": instantiate(cfg.dataset.target_generator),
+    }
+
+
+def build_dataset(
+    cfg: DictConfig,
+    split: str,
+    *,
+    components: dict[str, Any] | None = None,
+) -> AlignmentDataset:
+    """Eagerly load one split and precompute all slice/chord indices."""
+
+    components = components or build_data_components(cfg)
+    songs = components["file_loader"].load(
+        split_file=Path(str(cfg.data.splits[split])).expanduser().resolve(),
+        midi_root=Path(str(cfg.data.midi_root)).expanduser().resolve(),
+        hand_root=Path(str(cfg.data.hand_root)).expanduser().resolve(),
+        midi_loader=components["midi_loader"],
+        hand_loader=components["hand_loader"],
+    )
+    return AlignmentDataset(
+        songs=songs,
+        slicer=components["slicer"],
+        target_generator=components["target_generator"],
+    )
+
+
+def make_loader(
+    dataset: AlignmentDataset,
+    *,
+    batch_size: int,
+    shuffle: bool,
+    seed: int,
+    device: torch.device,
+) -> DataLoader:
+    """Build the deterministic, single-process baseline DataLoader."""
+
+    generator = torch.Generator()
+    generator.manual_seed(seed)
+    return DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        num_workers=0,
+        pin_memory=device.type == "cuda",
+        collate_fn=collate_alignment_batch,
+        generator=generator,
+    )

@@ -1,6 +1,12 @@
 """Public data API for AirPiano."""
 
-from .dataset import AlignmentDataset, collate_alignment_batch
+from .dataset import (
+    AlignmentDataset,
+    build_data_components,
+    build_dataset,
+    collate_alignment_batch,
+    make_loader,
+)
 from .files import EagerSongReader, FileLoader, RelativeStemPairer
 from .hands import (
     CANONICAL_HAND_SCHEMA,
@@ -35,5 +41,8 @@ __all__ = [
     "RelativeStemPairer",
     "TargetGenerator",
     "TriangularSoftener",
+    "build_data_components",
+    "build_dataset",
     "collate_alignment_batch",
+    "make_loader",
 ]

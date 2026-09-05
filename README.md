@@ -22,12 +22,13 @@ without its legacy configuration matrix. The legacy experiment used 96 chord
 slots; the current baseline uses 200 so the expanded canonical-data
 intersection does not truncate its one 119-overlap record.
 
-The only supported stages are:
+The supported stages are:
 
 - `preprocess`: video to ragged WiLoR cache, ragged cache to canonical pose, or
   both operations.
-- `train`: training, per-epoch validation, checkpoint selection, final test
-  evaluation, and per-slice test inference.
+- `train`: training, per-epoch validation, and checkpoint selection.
+- `test`: test-set evaluation and per-slice inference from a configurable
+  checkpoint.
 - `realtime`: file-based preprocessing and inference for one synchronized
   video/MIDI bundle.
 - `visualize`: prediction and target heatmaps for one inference NPZ.
@@ -37,7 +38,7 @@ The only supported stages are:
 streaming service.
 
 Deliberate non-goals include model architecture switches, alternate losses,
-note-token fields, hand-presence filtering, a test-only stage, global-song
+note-token fields, hand-presence filtering, global-song
 stitching, distributed training, checkpoint resume, video downloading, and
 compatibility with V2N checkpoints. The model and loss expose no YAML options.
 
@@ -45,7 +46,7 @@ compatibility with V2N checkpoints. The model and loss expose no YAML options.
 
 | Path | Responsibility |
 | --- | --- |
-| `run.py` | Hydra bootstrap and five-entry stage dispatch only. |
+| `run.py` | Hydra bootstrap and six-entry stage dispatch only. |
 | `configs/baseline.yaml` | The single runtime configuration. |
 | `scripts/convert_legacy_splits.py` | One-time conversion of the original PianoMotion split lists to generalized record stems. |
 | `scripts/migrate_pianomotion_data.py` | Resumable, verified migration of PianoMotion postprocessed data to `/storage2`. |
@@ -57,9 +58,10 @@ compatibility with V2N checkpoints. The model and loss expose no YAML options.
 | `airpiano/preprocessing/wilor/backend.py` | Headless model loading, baseline crop preprocessing, and batched inference. |
 | `airpiano/preprocessing/wilor/cache.py` | Video probing/decoding, atomic chunks/manifests, resumption, and completion. |
 | `airpiano/preprocessing/canonical.py` | Best-left/right selection and fixed-rate canonicalization. |
-| `airpiano/data/` | Relative-stem pairing, MIDI parsing, hand transforms, slicing, targets, and eager dataset. |
+| `airpiano/data/` | Relative-stem pairing, MIDI/hand loading, slicing, targets, eager datasets, and DataLoader construction. |
 | `airpiano/model/` | Fixed transformer layers, assembly, and masked BCE. |
-| `airpiano/train.py` | Training, evaluation, checkpoint loading, and shared dataset inference. |
+| `airpiano/train.py` | Dataset construction, training, validation, and checkpoint creation. |
+| `airpiano/inference.py` | Checkpoint loading, shared dataset inference, and config-owned test artifact dumping. |
 | `airpiano/realtime.py` | Rooted one-record preprocessing and inference workflow. |
 | `airpiano/render/` | Artifact loading, heatmaps, and sonification. |
 | `airpiano/utils.py` | Direct JSON/NPZ output and artifact-name helpers. |
@@ -76,7 +78,9 @@ Useful explicit imports are:
 from airpiano.preprocessing.pipeline import preprocess
 from airpiano.preprocessing.video import VideoToWiLoR
 from airpiano.preprocessing.canonical import WiLoRToCanonical
+from airpiano.data import build_data_components, build_dataset, make_loader
 from airpiano.train import train
+from airpiano.inference import test
 from airpiano.realtime import realtime
 from airpiano.model.transformer import AirPianoTransformer
 from airpiano.model.loss import masked_bce_loss
@@ -692,12 +696,11 @@ Training writes `checkpoints/last.pt` after every validation epoch and updates
 `best_valid_loss`, and the resolved `config`. Training always starts fresh; it
 does not resume optimizer state.
 
-After training, test evaluation and artifact dumping restore
-`checkpoints/last.pt`. Realtime also defaults to `checkpoints/last.pt`;
-`best.pt` remains available through an explicit override. Test inference writes
-one independent compressed NPZ per slice plus `test_loss.json`, and realtime
-writes the same slice format plus `realtime_loss.json`. There is no inference
-manifest or cross-slice stitching.
+The separate test stage defaults to `checkpoints/last.pt`, as does realtime;
+`best.pt` or any compatible checkpoint remains available through an explicit
+override. Test inference writes one independent compressed NPZ per slice plus
+`test_loss.json`, and realtime writes the same slice format plus
+`realtime_loss.json`. There is no inference manifest or cross-slice stitching.
 
 Inspect the epoch and optimizer-update step stored in either checkpoint without
 loading it onto a GPU:
@@ -791,11 +794,12 @@ conda run -n v2n python run.py stage=preprocess \
   'preprocess.split_files=[/absolute/path/to/smoke.txt]'
 ```
 
-To preprocess and then train sequentially in one invocation, pass a Hydra list:
+To preprocess, train, and then infer the test set sequentially in one
+invocation, pass a Hydra list:
 
 ```bash
 conda run -n v2n python run.py \
-  'stage=[preprocess,train]' \
+  'stage=[preprocess,train,test]' \
   preprocess.task=ragged_to_canonical
 ```
 
@@ -803,7 +807,7 @@ Stages run once each in the listed order and receive the same resolved root
 configuration. Execution is fail-fast: if one stage raises, subsequent stages
 are not run.
 
-### Train, validate, test, and dump predictions
+### Train and validate
 
 ```bash
 conda run -n v2n python run.py stage=train
@@ -811,15 +815,35 @@ conda run -n v2n python run.py stage=train
 
 The fixed loop uses AdamW, 20 epochs, batch size 2, accumulation 8, learning
 rate `3e-4`, weight decay `0.01`, clipping `1.0`, 5% linear warmup followed by
-cosine decay, BF16 CUDA autocast, and seed 42. W&B logs only `train/loss`,
-`valid/loss`, and `test/loss`. The online run uses project `air_piano`, name
-`baseline`, and stores local W&B files under
-`outputs/baseline/logs/wandb/`. Checkpoints and final test inference use the
-fixed categorized paths shown above, and the test pass restores `last.pt`.
+cosine decay, BF16 CUDA autocast, and seed 42. W&B logs only `train/loss` and
+`valid/loss`. The online run uses project `air_piano`, name `baseline`, and
+stores local W&B files under `outputs/baseline/logs/wandb/`. Training writes
+checkpoints but does not load the test split or dump inference artifacts.
 
 Do not use a second invocation as resume or overwrite behavior. If the fixed
 tree already belongs to a prior run, inspect it and move it to an external
 archive or explicitly remove it before starting again.
+
+### Test-set inference
+
+Run test evaluation and dump every slice using the default `last.pt`:
+
+```bash
+conda run -n v2n python run.py stage=test
+```
+
+Choose another compatible checkpoint and, optionally, another artifact
+directory without retraining:
+
+```bash
+conda run -n v2n python run.py stage=test \
+  test.checkpoint=checkpoints/best.pt \
+  test.output_dir=inference/test-best
+```
+
+Both paths are relative to `outputs/baseline/` unless given as absolute paths.
+The stage writes `test_loss.json` beside its per-slice NPZ files and does not
+open a W&B run.
 
 ### Realtime bundle
 
@@ -916,7 +940,7 @@ Hydra `key=value` syntax.
 
 | Field | Baseline | Meaning |
 | --- | --- | --- |
-| `stage` | `train` | One of the five supported handlers. |
+| `stage` | `train` | One of the six supported handlers, or an ordered Hydra list. |
 | `device` | `cuda:1` | Training and WiLoR device. |
 | `seed` | `42` | Python, NumPy, Torch, CUDA, and shuffle seed. |
 | `output.root` | `outputs` | Parent of generated project artifacts. |
@@ -989,6 +1013,8 @@ stable. The model and loss intentionally have no `_target_`.
 | `wandb.name` | `baseline` | Run name. |
 | `wandb.entity` | `null` | Optional team/entity. |
 | `wandb.dir` | `logs` | Project-relative parent; W&B creates its `wandb/` directory here. |
+| `test.checkpoint` | `checkpoints/last.pt` | Project-relative checkpoint loaded by `stage=test`; absolute paths also work. |
+| `test.output_dir` | `inference/test` | Project-relative test artifact and loss directory. |
 | `realtime.root` | `realtime` | Project-relative synchronized input/cache bundle root. |
 | `realtime.stem` | `null` | Required root-relative performance stem. |
 | `realtime.checkpoint` | `checkpoints/last.pt` | Project-relative default AirPiano checkpoint; absolute paths also work. |
@@ -1000,10 +1026,10 @@ stable. The model and loss intentionally have no `_target_`.
 | `sonify.duration_seconds` | `1.0` | Fixed output-note duration. |
 | `sonify.velocity` | `64` | Fixed note-on velocity. |
 
-The categorized checkpoint and test-inference directories are fixed in the
-training handler rather than exposed as training options. Relative paths in
-this table resolve beneath `output.dir`; an absolute override bypasses that
-prefix.
+The checkpoint directory remains fixed in the training handler. Test checkpoint
+and artifact paths are owned by the test handler and exposed independently.
+Relative paths in this table resolve beneath `output.dir`; an absolute override
+bypasses that prefix.
 
 ## Extension contracts
 
@@ -1073,8 +1099,8 @@ sonification, artifact tests, and documentation in the same change.
     batch size does not reduce eager dataset memory.
 13. Training always starts online W&B project `air_piano` and has no
     disabled/offline mode.
-14. All default inference restores `last.pt`; selecting `best.pt` is an explicit
-    override.
+14. Test and realtime inference default to `last.pt`; selecting `best.pt` is an
+    explicit override.
 15. The fixed project directory is not cleared or validated before training.
     Duplicate runs are unsupported and can mix overwritten and stale files.
 16. Test/realtime predictions have no manifest, and visualization and
