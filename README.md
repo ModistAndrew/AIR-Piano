@@ -86,7 +86,7 @@ from airpiano.model.transformer import AirPianoTransformer
 from airpiano.model.loss import masked_bce_loss
 from airpiano.render.artifact import load_artifact
 from airpiano.render.visualize import visualize, visualize_artifact
-from airpiano.render.sonify import sonify, sonify_artifact
+from airpiano.render.sonify import sonify, sonify_artifact, sonify_ground_truth
 ```
 
 ## Environment setup
@@ -907,10 +907,17 @@ conda run -n v2n python run.py stage=sonify \
   sonify.threshold=0.2
 ```
 
-Those commands write the default
-`outputs/baseline/visualizations/visualization.png` and
-`outputs/baseline/sonifications/sonification.mid`. Relative input and output
-overrides are project-relative; absolute paths are also accepted:
+Those commands write the default visualization plus prediction and source-MIDI
+ground truth:
+
+```text
+outputs/baseline/visualizations/visualization.png
+outputs/baseline/sonifications/sonification.mid
+outputs/baseline/sonifications/ground_truth.mid
+```
+
+Relative artifact and output overrides are project-relative; absolute paths are
+also accepted:
 
 ```bash
 conda run -n v2n python run.py stage=visualize \
@@ -921,8 +928,22 @@ conda run -n v2n python run.py stage=visualize \
 Visualization draws probability and target heatmaps with shared `[0,1]`
 scaling. Sonification selects each valid chord's earliest maximum frame and
 emits all active pitches when that maximum is at least the threshold. Notes are
-one second at velocity 64 by default. Timing is slice-relative and overlapping
-slices are not merged.
+one second at velocity 64 by default. It also resolves
+`<sonify.midi_root>/<record_id>.mid` and writes the source notes beginning in
+the real, unpadded slice. Ground-truth pitch, velocity, and duration are
+preserved, offsets are clipped at the slice end, and timing is rebased to zero.
+Notes already active before the slice are omitted. Both outputs use one track
+at 120 BPM; pedals, programs, channels, source tempo events, and other MIDI
+metadata are not preserved. Timing is slice-relative and overlapping slices
+are not merged.
+
+For a realtime artifact, point the MIDI root at its bundle:
+
+```bash
+conda run -n v2n python run.py stage=sonify \
+  sonify.input=inference/realtime/<stem>/<slice>.npz \
+  sonify.midi_root=outputs/baseline/realtime/midi
+```
 
 Inspect artifacts directly without pickle:
 
@@ -1021,7 +1042,9 @@ stable. The model and loss intentionally have no `_target_`.
 | `realtime.output_dir` | `inference/realtime` | Project-relative parent for per-stem predictions. |
 | `realtime.overwrite` | `false` | Raw and canonical preprocessing reuse policy. |
 | `visualize.input`, `visualize.output` | `null`, `visualizations/visualization.png` | One inference artifact and project-relative heatmap output. |
-| `sonify.input`, `sonify.output` | `null`, `sonifications/sonification.mid` | One inference artifact and project-relative MIDI output. |
+| `sonify.input`, `sonify.output` | `null`, `sonifications/sonification.mid` | One inference artifact and project-relative prediction MIDI output. |
+| `sonify.midi_root` | `${data.midi_root}` | Root used with the artifact `record_id` to locate source MIDI. |
+| `sonify.ground_truth_output` | `sonifications/ground_truth.mid` | Project-relative source-MIDI excerpt output. |
 | `sonify.threshold` | `0.2` | Inclusive chord peak threshold. |
 | `sonify.duration_seconds` | `1.0` | Fixed output-note duration. |
 | `sonify.velocity` | `64` | Fixed note-on velocity. |

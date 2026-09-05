@@ -22,6 +22,8 @@ class InferenceArtifact:
     chord_mask: np.ndarray
     chord_pitches: np.ndarray
     fps: float
+    record_id: str
+    frame_start: int
 
     @property
     def support(self) -> np.ndarray:
@@ -42,5 +44,6 @@ def load_artifact(input_path: str | Path) -> InferenceArtifact:
             chord_mask=payload["chord_mask"].copy(),
             chord_pitches=payload["chord_pitches"].copy(),
             fps=float(payload["fps"]),
+            record_id=str(payload["record_id"]),
+            frame_start=int(payload["frame_start"]),
         )
-
