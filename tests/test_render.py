@@ -6,7 +6,7 @@ import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 import mido
 import numpy as np
@@ -53,24 +53,26 @@ class RenderTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             project = root / "project"
-            artifact = project / "inference" / "result.npz"
-            heatmap = project / "visualizations" / "result.png"
-            midi = project / "sonifications" / "result.mid"
-            ground_truth = project / "sonifications" / "ground-truth.mid"
+            artifact_root = project / "inference" / "test"
+            artifact_root.mkdir(parents=True)
+            artifacts = [artifact_root / "a.npz", artifact_root / "take.v2.npz"]
+            for artifact in artifacts:
+                artifact.touch()
+            nested = artifact_root / "nested"
+            nested.mkdir()
+            (nested / "ignored.npz").touch()
             midi_root = root / "midi"
-            source_midi = midi_root / "subject" / "session.v1" / "take.03.mid"
             config = OmegaConf.create(
                 {
                     "output": {"dir": str(project)},
                     "visualize": {
-                        "input": "inference/result.npz",
-                        "output": "visualizations/result.png",
+                        "root": "inference/test",
+                        "output_dir": "visualizations",
                     },
                     "sonify": {
-                        "input": "inference/result.npz",
-                        "output": "sonifications/result.mid",
+                        "root": "inference/test",
+                        "output_dir": "sonifications",
                         "midi_root": str(midi_root),
-                        "ground_truth_output": "sonifications/ground-truth.mid",
                         "threshold": 0.35,
                         "duration_seconds": 0.75,
                         "velocity": 72,
@@ -82,69 +84,103 @@ class RenderTest(unittest.TestCase):
                 patch.object(
                     visualize_stage,
                     "visualize_artifact",
-                    return_value=heatmap.resolve(),
+                    side_effect=lambda _, output: Path(output).resolve(),
                 ) as draw,
                 patch.object(
                     sonify_stage,
                     "sonify_artifact",
-                    return_value=midi.resolve(),
+                    side_effect=lambda _, output, **__: Path(output).resolve(),
                 ) as decode,
                 patch.object(
                     sonify_stage,
                     "load_artifact",
-                    return_value=SimpleNamespace(
-                        record_id="subject/session.v1/take.03"
-                    ),
+                    side_effect=[
+                        SimpleNamespace(record_id="subject/a"),
+                        SimpleNamespace(record_id="subject/take.v2"),
+                    ],
                 ),
                 patch.object(
                     sonify_stage,
                     "sonify_ground_truth",
-                    return_value=ground_truth.resolve(),
+                    side_effect=lambda _, __, output: Path(output).resolve(),
                 ) as ground_truth_decode,
                 redirect_stdout(printed),
             ):
                 visualize_stage.visualize(config)
                 sonify_stage.sonify(config)
 
-            draw.assert_called_once_with(artifact.resolve(), heatmap.resolve())
-            decode.assert_called_once_with(
-                artifact.resolve(),
-                midi.resolve(),
-                threshold=0.35,
-                duration_seconds=0.75,
-                velocity=72,
+            self.assertEqual(
+                draw.call_args_list,
+                [
+                    call(artifacts[0], project / "visualizations" / "a.png"),
+                    call(
+                        artifacts[1],
+                        project / "visualizations" / "take.v2.png",
+                    ),
+                ],
             )
-            ground_truth_decode.assert_called_once_with(
-                artifact.resolve(),
-                source_midi.resolve(),
-                ground_truth.resolve(),
+            self.assertEqual(
+                [item.args[:2] for item in decode.call_args_list],
+                [
+                    (
+                        artifacts[0],
+                        project / "sonifications" / "predict" / "a.mid",
+                    ),
+                    (
+                        artifacts[1],
+                        project / "sonifications" / "predict" / "take.v2.mid",
+                    ),
+                ],
             )
-            self.assertIn(f"wrote {heatmap.resolve()}", printed.getvalue())
-            self.assertIn(
-                f"wrote prediction {midi.resolve()}", printed.getvalue()
+            self.assertTrue(
+                all(item.kwargs == {
+                    "threshold": 0.35,
+                    "duration_seconds": 0.75,
+                    "velocity": 72,
+                } for item in decode.call_args_list)
             )
-            self.assertIn(
-                f"wrote ground truth {ground_truth.resolve()}", printed.getvalue()
+            self.assertEqual(
+                ground_truth_decode.call_args_list,
+                [
+                    call(
+                        artifacts[0],
+                        midi_root / "subject" / "a.mid",
+                        project / "sonifications" / "ground_truth" / "a.mid",
+                    ),
+                    call(
+                        artifacts[1],
+                        midi_root / "subject" / "take.v2.mid",
+                        project
+                        / "sonifications"
+                        / "ground_truth"
+                        / "take.v2.mid",
+                    ),
+                ],
             )
+            self.assertNotIn("ignored", printed.getvalue())
 
     def test_config_handlers_preserve_absolute_overrides(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            artifact = root / "absolute.npz"
-            heatmap = root / "absolute.png"
-            midi = root / "absolute.mid"
-            ground_truth = root / "absolute-ground-truth.mid"
+            artifact_root = root / "absolute-input"
+            artifact_root.mkdir()
+            artifact = artifact_root / "take.v2.npz"
+            artifact.touch()
+            heatmap_root = root / "absolute-visualizations"
+            sonification_root = root / "absolute-sonifications"
             midi_root = root / "absolute-midi"
             source_midi = midi_root / "nested" / "take.v2.mid"
             config = OmegaConf.create(
                 {
                     "output": {"dir": str(root / "unused")},
-                    "visualize": {"input": str(artifact), "output": str(heatmap)},
+                    "visualize": {
+                        "root": str(artifact_root),
+                        "output_dir": str(heatmap_root),
+                    },
                     "sonify": {
-                        "input": str(artifact),
-                        "output": str(midi),
+                        "root": str(artifact_root),
+                        "output_dir": str(sonification_root),
                         "midi_root": str(midi_root),
-                        "ground_truth_output": str(ground_truth),
                         "threshold": 0.2,
                         "duration_seconds": 1.0,
                         "velocity": 64,
@@ -155,12 +191,12 @@ class RenderTest(unittest.TestCase):
                 patch.object(
                     visualize_stage,
                     "visualize_artifact",
-                    return_value=heatmap.resolve(),
+                    return_value=(heatmap_root / "take.v2.png").resolve(),
                 ) as draw,
                 patch.object(
                     sonify_stage,
                     "sonify_artifact",
-                    return_value=midi.resolve(),
+                    return_value=(sonification_root / "predict" / "take.v2.mid").resolve(),
                 ) as decode,
                 patch.object(
                     sonify_stage,
@@ -170,24 +206,26 @@ class RenderTest(unittest.TestCase):
                 patch.object(
                     sonify_stage,
                     "sonify_ground_truth",
-                    return_value=ground_truth.resolve(),
+                    return_value=(
+                        sonification_root / "ground_truth" / "take.v2.mid"
+                    ).resolve(),
                 ) as ground_truth_decode,
             ):
                 visualize_stage.visualize(config)
                 sonify_stage.sonify(config)
 
-            draw.assert_called_once_with(artifact.resolve(), heatmap.resolve())
+            draw.assert_called_once_with(artifact, heatmap_root / "take.v2.png")
             decode.assert_called_once_with(
-                artifact.resolve(),
-                midi.resolve(),
+                artifact,
+                sonification_root / "predict" / "take.v2.mid",
                 threshold=0.2,
                 duration_seconds=1.0,
                 velocity=64,
             )
             ground_truth_decode.assert_called_once_with(
-                artifact.resolve(),
+                artifact,
                 source_midi.resolve(),
-                ground_truth.resolve(),
+                sonification_root / "ground_truth" / "take.v2.mid",
             )
 
     def test_visualize_artifact_draws_two_masked_heatmaps(self) -> None:

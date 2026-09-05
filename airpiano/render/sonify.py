@@ -13,26 +13,31 @@ from .artifact import load_artifact
 
 
 def sonify(cfg: DictConfig) -> None:
-    """Write prediction and source-MIDI excerpts for one inference slice."""
+    """Sonify every inference artifact directly inside the configured root."""
 
-    input_path = resolve_output_path(cfg, cfg.sonify.input)
-    prediction_output = sonify_artifact(
-        input_path,
-        resolve_output_path(cfg, cfg.sonify.output),
-        threshold=float(cfg.sonify.threshold),
-        duration_seconds=float(cfg.sonify.duration_seconds),
-        velocity=int(cfg.sonify.velocity),
-    )
-    artifact = load_artifact(input_path)
+    root = resolve_output_path(cfg, cfg.sonify.root)
+    output_dir = resolve_output_path(cfg, cfg.sonify.output_dir)
     midi_root = Path(str(cfg.sonify.midi_root)).expanduser().resolve()
-    midi_path = midi_root / f"{artifact.record_id}.mid"
-    ground_truth_output = sonify_ground_truth(
-        input_path,
-        midi_path,
-        resolve_output_path(cfg, cfg.sonify.ground_truth_output),
-    )
-    print(f"wrote prediction {prediction_output}", flush=True)
-    print(f"wrote ground truth {ground_truth_output}", flush=True)
+    for input_path in sorted(root.glob("*.npz")):
+        if not input_path.is_file():
+            continue
+        basename = input_path.name[: -len(".npz")]
+        prediction_output = sonify_artifact(
+            input_path,
+            output_dir / "predict" / f"{basename}.mid",
+            threshold=float(cfg.sonify.threshold),
+            duration_seconds=float(cfg.sonify.duration_seconds),
+            velocity=int(cfg.sonify.velocity),
+        )
+        artifact = load_artifact(input_path)
+        midi_path = midi_root / f"{artifact.record_id}.mid"
+        ground_truth_output = sonify_ground_truth(
+            input_path,
+            midi_path,
+            output_dir / "ground_truth" / f"{basename}.mid",
+        )
+        print(f"wrote prediction {prediction_output}", flush=True)
+        print(f"wrote ground truth {ground_truth_output}", flush=True)
 
 
 def _seconds_to_tick(seconds: float, *, ticks_per_beat: int, tempo: int) -> int:

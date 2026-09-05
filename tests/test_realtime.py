@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import io
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -15,7 +17,7 @@ from omegaconf import OmegaConf
 from torch import nn
 
 import airpiano.realtime as realtime_stage
-from airpiano import inference
+from airpiano import data, inference
 from airpiano.preprocessing.canonical import CANONICAL_SCHEMA_VERSION
 from airpiano.render.artifact import load_artifact
 from airpiano.render.sonify import sonify_artifact
@@ -33,29 +35,54 @@ class _TinyModel(nn.Module):
 
 
 class RealtimeTest(unittest.TestCase):
+    def test_empty_root_does_not_construct_components(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            (project / "realtime").mkdir()
+            config = OmegaConf.create(
+                {
+                    "output": {"dir": str(project)},
+                    "realtime": {
+                        "root": "realtime",
+                        "output_dir": "inference/realtime",
+                        "checkpoint": "checkpoints/last.pt",
+                        "overwrite": False,
+                    },
+                }
+            )
+            with (
+                patch.object(realtime_stage, "instantiate") as instantiate,
+                patch.object(data, "build_data_components") as build_components,
+            ):
+                realtime_stage.realtime(config)
+
+            instantiate.assert_not_called()
+            build_components.assert_not_called()
+
     def test_composes_preprocessors_and_dumps_renderable_artifact(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             project = root / "project"
             bundle = project / "realtime"
-            stem = Path("session.alpha") / "take.03"
-            missing_video = bundle / "video" / "session.alpha" / "take.03.mp4"
-            midi_path = bundle / "midi" / "session.alpha" / "take.03.mid"
-            midi_path.parent.mkdir(parents=True)
-            midi = mido.MidiFile(ticks_per_beat=480)
-            track = mido.MidiTrack()
-            midi.tracks.append(track)
-            track.append(mido.Message("note_on", note=60, velocity=64, time=0))
-            track.append(mido.Message("note_off", note=60, velocity=0, time=480))
-            midi.save(midi_path)
+            bundle.mkdir(parents=True)
+            stems = ["alpha", "take.03"]
+            for stem in stems:
+                (bundle / f"{stem}.mp4").touch()
+                midi = mido.MidiFile(ticks_per_beat=480)
+                track = mido.MidiTrack()
+                midi.tracks.append(track)
+                track.append(mido.Message("note_on", note=60, velocity=64, time=0))
+                track.append(mido.Message("note_off", note=60, velocity=0, time=480))
+                midi.save(bundle / f"{stem}.mid")
+            (bundle / "video-only.mp4").touch()
+            midi = mido.MidiFile()
+            midi.save(bundle / "midi-only.mid")
             checkpoint = project / "checkpoints" / "last.pt"
             checkpoint.parent.mkdir(parents=True)
             checkpoint.write_bytes(b"checkpoint loading is patched")
 
-            raw_dir = bundle / "raw_wilor" / stem
-            canonical_path = bundle / "canonical" / "session.alpha" / "take.03.npz"
-            output_dir = project / "inference" / "realtime" / stem
-            run_order: list[str] = []
+            output_root = project / "inference" / "realtime"
+            run_order: list[tuple[str, str]] = []
             test_case = self
 
             class CachedVideoToWiLoR:
@@ -65,18 +92,26 @@ class RealtimeTest(unittest.TestCase):
                     output_dir,
                     overwrite=False,
                 ):
-                    test_case.assertFalse(Path(video_path).exists())
-                    test_case.assertEqual(Path(video_path), missing_video)
-                    test_case.assertEqual(Path(output_dir), raw_dir)
+                    video = Path(video_path)
+                    record_id = video.name[: -len(".mp4")]
+                    test_case.assertEqual(video, bundle / f"{record_id}.mp4")
+                    test_case.assertEqual(
+                        Path(output_dir), bundle / "raw_wilor" / record_id
+                    )
                     test_case.assertTrue(overwrite)
-                    run_order.append("video")
-                    return raw_dir
+                    run_order.append(("video", record_id))
+                    return Path(output_dir)
 
             class CanonicalWiLoR:
                 def run(self, raw_record_dir, output_path, overwrite=False):
-                    test_case.assertEqual(Path(raw_record_dir), raw_dir)
                     output = Path(output_path)
-                    test_case.assertEqual(output, canonical_path)
+                    record_id = output.name[: -len(".npz")]
+                    test_case.assertEqual(
+                        Path(raw_record_dir), bundle / "raw_wilor" / record_id
+                    )
+                    test_case.assertEqual(
+                        output, bundle / "canonical" / f"{record_id}.npz"
+                    )
                     test_case.assertTrue(overwrite)
                     output.parent.mkdir(parents=True, exist_ok=True)
                     np.savez_compressed(
@@ -86,7 +121,7 @@ class RealtimeTest(unittest.TestCase):
                         fps=np.asarray(30.0, dtype=np.float64),
                         schema_version=np.asarray(CANONICAL_SCHEMA_VERSION),
                     )
-                    run_order.append("canonical")
+                    run_order.append(("canonical", record_id))
                     return output
 
             config = OmegaConf.load(
@@ -99,7 +134,6 @@ class RealtimeTest(unittest.TestCase):
             config.dataset.file_loader.pairer._target_ = (
                 "airpiano.data.files.RelativeStemPairer"
             )
-            config.realtime.stem = stem.as_posix()
             config.realtime.overwrite = True
 
             targets: list[str] = []
@@ -113,6 +147,7 @@ class RealtimeTest(unittest.TestCase):
                     return CanonicalWiLoR()
                 raise AssertionError(target)
 
+            printed = io.StringIO()
             with (
                 patch.object(
                     realtime_stage,
@@ -124,6 +159,7 @@ class RealtimeTest(unittest.TestCase):
                     "load_model_checkpoint",
                     return_value=_TinyModel(),
                 ) as load_checkpoint,
+                redirect_stdout(printed),
             ):
                 realtime_stage.realtime(config)
 
@@ -134,34 +170,51 @@ class RealtimeTest(unittest.TestCase):
                     "airpiano.preprocessing.canonical.WiLoRToCanonical",
                 ],
             )
-            self.assertEqual(run_order, ["video", "canonical"])
-            load_checkpoint.assert_called_once_with(
-                checkpoint.resolve(), torch.device("cpu")
-            )
-            artifacts = sorted(output_dir.glob("*.npz"))
-            self.assertEqual(len(artifacts), 1)
-            with np.load(artifacts[0], allow_pickle=False) as payload:
-                self.assertEqual(str(payload["record_id"]), stem.as_posix())
-            artifact = load_artifact(artifacts[0])
             self.assertEqual(
-                artifact.probability.shape,
-                (210, int(config.dataset.slicer.chord_count)),
+                run_order,
+                [
+                    ("video", "alpha"),
+                    ("canonical", "alpha"),
+                    ("video", "take.03"),
+                    ("canonical", "take.03"),
+                ],
             )
-            self.assertEqual(int(artifact.frame_mask.sum()), 4)
-            self.assertEqual(int(artifact.chord_mask.sum()), 1)
-            heatmap = root / "realtime.png"
-            sonification = root / "realtime.mid"
-            self.assertEqual(
-                visualize_artifact(artifacts[0], heatmap), heatmap.resolve()
-            )
-            self.assertEqual(
-                sonify_artifact(artifacts[0], sonification),
-                sonification.resolve(),
-            )
-            self.assertGreater(heatmap.stat().st_size, 0)
-            self.assertGreater(sonification.stat().st_size, 0)
-            metrics = json.loads((output_dir / "realtime_loss.json").read_text())
-            self.assertGreater(metrics["loss"], 0.0)
+            self.assertEqual(load_checkpoint.call_count, 2)
+            for checkpoint_call in load_checkpoint.call_args_list:
+                self.assertEqual(
+                    checkpoint_call.args,
+                    (checkpoint.resolve(), torch.device("cpu")),
+                )
+            for stem in stems:
+                output_dir = output_root / stem
+                artifacts = sorted(output_dir.glob("*.npz"))
+                self.assertEqual(len(artifacts), 1)
+                with np.load(artifacts[0], allow_pickle=False) as payload:
+                    self.assertEqual(str(payload["record_id"]), stem)
+                artifact = load_artifact(artifacts[0])
+                self.assertEqual(
+                    artifact.probability.shape,
+                    (210, int(config.dataset.slicer.chord_count)),
+                )
+                self.assertEqual(int(artifact.frame_mask.sum()), 4)
+                self.assertEqual(int(artifact.chord_mask.sum()), 1)
+                heatmap = root / f"{stem}.png"
+                sonification = root / f"{stem}.mid"
+                self.assertEqual(
+                    visualize_artifact(artifacts[0], heatmap), heatmap.resolve()
+                )
+                self.assertEqual(
+                    sonify_artifact(artifacts[0], sonification),
+                    sonification.resolve(),
+                )
+                self.assertGreater(heatmap.stat().st_size, 0)
+                self.assertGreater(sonification.stat().st_size, 0)
+                metrics = json.loads(
+                    (output_dir / "realtime_loss.json").read_text()
+                )
+                self.assertGreater(metrics["loss"], 0.0)
+            self.assertIn("video-only", printed.getvalue())
+            self.assertIn("midi-only", printed.getvalue())
 
 
 if __name__ == "__main__":

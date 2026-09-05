@@ -108,20 +108,18 @@ wandb:
 
 realtime:
   root: realtime
-  stem: null
   checkpoint: checkpoints/last.pt
   output_dir: inference/realtime
   overwrite: false
 
 visualize:
-  input: null
-  output: visualizations/visualization.png
+  root: inference/test
+  output_dir: visualizations
 
 sonify:
-  input: null
-  output: sonifications/sonification.mid
+  root: inference/test
+  output_dir: sonifications
   midi_root: ${data.midi_root}
-  ground_truth_output: sonifications/ground_truth.mid
   threshold: 0.2
   duration_seconds: 1.0
   velocity: 64

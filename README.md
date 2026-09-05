@@ -29,10 +29,10 @@ The supported stages are:
 - `train`: training, per-epoch validation, and checkpoint selection.
 - `test`: test-set evaluation and per-slice inference from a configurable
   checkpoint.
-- `realtime`: file-based preprocessing and inference for one synchronized
-  video/MIDI bundle.
-- `visualize`: prediction and target heatmaps for one inference NPZ.
-- `sonify`: thresholded MIDI output for one inference NPZ.
+- `realtime`: batch preprocessing and inference for direct synchronized
+  video/MIDI pairs.
+- `visualize`: prediction and target heatmaps for every direct inference NPZ.
+- `sonify`: prediction and ground-truth MIDI for every direct inference NPZ.
 
 `realtime` is an end-to-end file wrapper, not a webcam or latency-bounded
 streaming service.
@@ -62,7 +62,7 @@ compatibility with V2N checkpoints. The model and loss expose no YAML options.
 | `airpiano/model/` | Fixed transformer layers, assembly, and masked BCE. |
 | `airpiano/train.py` | Dataset construction, training, validation, and checkpoint creation. |
 | `airpiano/inference.py` | Checkpoint loading, shared dataset inference, and config-owned test artifact dumping. |
-| `airpiano/realtime.py` | Rooted one-record preprocessing and inference workflow. |
+| `airpiano/realtime.py` | Root-scanned batch preprocessing and inference workflow. |
 | `airpiano/render/` | Artifact loading, heatmaps, and sonification. |
 | `airpiano/utils.py` | Direct JSON/NPZ output and artifact-name helpers. |
 | `tests/` | Focused data, preprocessing, model, training, realtime, and rendering tests. |
@@ -669,12 +669,14 @@ outputs/baseline/
 ├── logs/
 │   └── wandb/
 ├── realtime/
-│   ├── video/<stem>.mp4
-│   ├── midi/<stem>.mid
+│   ├── <stem>.mp4
+│   ├── <stem>.mid
 │   ├── raw_wilor/<stem>/
 │   └── canonical/<stem>.npz
-├── visualizations/
+├── visualizations/<artifact>.png
 └── sonifications/
+    ├── predict/<artifact>.mid
+    └── ground_truth/<artifact>.mid
 ```
 
 There is no version or run-identity layer. Starting training a second time in
@@ -845,84 +847,74 @@ Both paths are relative to `outputs/baseline/` unless given as absolute paths.
 The stage writes `test_loss.json` beside its per-slice NPZ files and does not
 open a W&B run.
 
-### Realtime bundle
+### Realtime batch
 
-Realtime derives its synchronized input/cache paths from one root and one
-required stem. The default root is relative to the fixed project directory;
-predictions have their own categorized output root:
+Place synchronized pairs directly inside the configured root. Matching is by
+the complete basename, so dotted names are preserved:
 
 ```text
-outputs/baseline/
-├── realtime/
-│   ├── video/<stem>.mp4
-│   ├── midi/<stem>.mid
-│   ├── raw_wilor/<stem>/
-│   └── canonical/<stem>.npz
-└── inference/realtime/<stem>/
-    ├── <flattened-stem>__f000000000.npz
-    ├── ...
-    └── realtime_loss.json
+outputs/baseline/realtime/
+├── performance.v2.mp4
+├── performance.v2.mid
+├── raw_wilor/performance.v2/
+└── canonical/performance.v2.npz
 ```
 
-For example, prepare synchronized files at
-`outputs/baseline/realtime/video/session_01/take.03.mp4` and
-`outputs/baseline/realtime/midi/session_01/take.03.mid`, then run with the
-default `last.pt` checkpoint:
+Run every direct pair with the default `last.pt` checkpoint:
 
 ```bash
-conda run -n v2n python run.py stage=realtime \
-  realtime.stem=session_01/take.03
+conda run -n v2n python run.py stage=realtime
 ```
 
-Select the validation-best checkpoint explicitly when wanted:
+Outputs for this example are written below
+`outputs/baseline/inference/realtime/performance.v2/`. Direct video or MIDI
+files without a matching counterpart are reported and skipped. Nested inputs
+are not scanned. WiLoR, canonical, and dataset components are constructed once
+and reused across the sorted pairs.
 
-```bash
-conda run -n v2n python run.py stage=realtime \
-  realtime.stem=session_01/take.03 \
-  realtime.checkpoint=checkpoints/best.pt
-```
-
-An absolute bundle root remains useful for synchronized inputs stored
-elsewhere; inference still defaults to the project output tree:
+Select a different root, output directory, or checkpoint as needed:
 
 ```bash
 conda run -n v2n python run.py stage=realtime \
   realtime.root=/data/performance \
-  realtime.stem=session_01/take.03
+  realtime.output_dir=inference/realtime-best \
+  realtime.checkpoint=checkpoints/best.pt
 ```
 
-The stem itself becomes `record_id`. Realtime calls the same configured
+Each basename becomes `record_id`. Realtime calls the same configured
 `VideoToWiLoR`, `WiLoRToCanonical`, `HandLoader`, slicer, target generator, and
-checkpoint inference as the offline workflow. Video and MIDI must describe the
-same performance and timeline.
+checkpoint inference as the offline workflow. Every video/MIDI pair must
+describe the same performance and timeline.
 
-### Visualize and sonify
+### Visualize and sonify batches
+
+Both stages scan direct `*.npz` files under `inference/test` by default:
 
 ```bash
-conda run -n v2n python run.py stage=visualize \
-  visualize.input=inference/test/442401135__BV1ED4y1D75s__f000000000.npz
-
-conda run -n v2n python run.py stage=sonify \
-  sonify.input=inference/test/442401135__BV1ED4y1D75s__f000000000.npz \
-  sonify.threshold=0.2
+conda run -n v2n python run.py stage=visualize
+conda run -n v2n python run.py stage=sonify sonify.threshold=0.2
 ```
 
-Those commands write the default visualization plus prediction and source-MIDI
-ground truth:
+For an input named `test.npz`, the derived outputs are:
 
 ```text
-outputs/baseline/visualizations/visualization.png
-outputs/baseline/sonifications/sonification.mid
-outputs/baseline/sonifications/ground_truth.mid
+outputs/baseline/visualizations/test.png
+outputs/baseline/sonifications/predict/test.mid
+outputs/baseline/sonifications/ground_truth/test.mid
 ```
 
-Relative artifact and output overrides are project-relative; absolute paths are
-also accepted:
+Only direct NPZ files are processed, in sorted order. Dotted basenames are
+preserved and nested directories are ignored. Relative roots and output
+directories are project-relative; absolute overrides are accepted:
 
 ```bash
 conda run -n v2n python run.py stage=visualize \
-  visualize.input=/absolute/path/to/slice.npz \
-  visualize.output=/absolute/path/to/alignment.png
+  visualize.root=inference/test-best \
+  visualize.output_dir=visualizations/test-best
+
+conda run -n v2n python run.py stage=sonify \
+  sonify.root=/absolute/path/to/artifacts \
+  sonify.output_dir=/absolute/path/to/sonifications
 ```
 
 Visualization draws probability and target heatmaps with shared `[0,1]`
@@ -937,12 +929,13 @@ at 120 BPM; pedals, programs, channels, source tempo events, and other MIDI
 metadata are not preserved. Timing is slice-relative and overlapping slices
 are not merged.
 
-For a realtime artifact, point the MIDI root at its bundle:
+For realtime artifacts, point the artifact and MIDI roots at their batch
+directories:
 
 ```bash
 conda run -n v2n python run.py stage=sonify \
-  sonify.input=inference/realtime/<stem>/<slice>.npz \
-  sonify.midi_root=outputs/baseline/realtime/midi
+  sonify.root=inference/realtime/performance.v2 \
+  sonify.midi_root=outputs/baseline/realtime
 ```
 
 Inspect artifacts directly without pickle:
@@ -1036,15 +1029,15 @@ stable. The model and loss intentionally have no `_target_`.
 | `wandb.dir` | `logs` | Project-relative parent; W&B creates its `wandb/` directory here. |
 | `test.checkpoint` | `checkpoints/last.pt` | Project-relative checkpoint loaded by `stage=test`; absolute paths also work. |
 | `test.output_dir` | `inference/test` | Project-relative test artifact and loss directory. |
-| `realtime.root` | `realtime` | Project-relative synchronized input/cache bundle root. |
-| `realtime.stem` | `null` | Required root-relative performance stem. |
+| `realtime.root` | `realtime` | Project-relative root scanned for direct matching `.mp4`/`.mid` files. |
 | `realtime.checkpoint` | `checkpoints/last.pt` | Project-relative default AirPiano checkpoint; absolute paths also work. |
 | `realtime.output_dir` | `inference/realtime` | Project-relative parent for per-stem predictions. |
 | `realtime.overwrite` | `false` | Raw and canonical preprocessing reuse policy. |
-| `visualize.input`, `visualize.output` | `null`, `visualizations/visualization.png` | One inference artifact and project-relative heatmap output. |
-| `sonify.input`, `sonify.output` | `null`, `sonifications/sonification.mid` | One inference artifact and project-relative prediction MIDI output. |
+| `visualize.root` | `inference/test` | Project-relative root scanned non-recursively for NPZ artifacts. |
+| `visualize.output_dir` | `visualizations` | Project-relative directory for basename-matched PNG files. |
+| `sonify.root` | `inference/test` | Project-relative root scanned non-recursively for NPZ artifacts. |
+| `sonify.output_dir` | `sonifications` | Parent of basename-matched `predict/` and `ground_truth/` MIDI files. |
 | `sonify.midi_root` | `${data.midi_root}` | Root used with the artifact `record_id` to locate source MIDI. |
-| `sonify.ground_truth_output` | `sonifications/ground_truth.mid` | Project-relative source-MIDI excerpt output. |
 | `sonify.threshold` | `0.2` | Inclusive chord peak threshold. |
 | `sonify.duration_seconds` | `1.0` | Fixed output-note duration. |
 | `sonify.velocity` | `64` | Fixed note-on velocity. |
@@ -1075,7 +1068,7 @@ The narrow replaceable interfaces are:
 Common changes stay localized:
 
 - New file layout: replace the pairer target and update offline/realtime path
-  ownership together if the root/stem contract changes.
+  ownership together if the record-path contract changes.
 - New MIDI parser or grouping rule: replace the reader or chord merger.
 - New pose format or normalization: replace the canonical reader or hand
   transform; preserve `[T,2,21,3]`, left/right order, presence, and zero absence.
@@ -1117,7 +1110,7 @@ sonification, artifact tests, and documentation in the same change.
    utility only for the recognized legacy PianoMotion corpus.
 10. Training requires canonical NPZs; it never starts either preprocessing
     phase.
-11. Realtime requires synchronized video and MIDI under one root/stem.
+11. Realtime requires direct synchronized `.mp4`/`.mid` pairs under one root.
 12. Three complete split datasets live in host RAM simultaneously. Lowering
     batch size does not reduce eager dataset memory.
 13. Training always starts online W&B project `air_piano` and has no
@@ -1126,8 +1119,8 @@ sonification, artifact tests, and documentation in the same change.
     explicit override.
 15. The fixed project directory is not cleared or validated before training.
     Duplicate runs are unsupported and can mix overwritten and stale files.
-16. Test/realtime predictions have no manifest, and visualization and
-    sonification consume one slice without stitching overlap.
+16. Test/realtime predictions have no manifest. Visualization and sonification
+    batch direct slices without stitching overlap.
 17. Raw chunk/manifest writes are atomic; canonical, checkpoint, inference,
     JSON, and rendered outputs are direct writes and may be partial after an
     interruption.

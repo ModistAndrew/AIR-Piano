@@ -14,13 +14,16 @@ from .artifact import load_artifact
 
 
 def visualize(cfg: DictConfig) -> None:
-    """Render the inference artifact selected by the visualization config."""
+    """Render every inference artifact directly inside the configured root."""
 
-    output = visualize_artifact(
-        resolve_output_path(cfg, cfg.visualize.input),
-        resolve_output_path(cfg, cfg.visualize.output),
-    )
-    print(f"wrote {output}", flush=True)
+    root = resolve_output_path(cfg, cfg.visualize.root)
+    output_dir = resolve_output_path(cfg, cfg.visualize.output_dir)
+    for input_path in sorted(root.glob("*.npz")):
+        if not input_path.is_file():
+            continue
+        basename = input_path.name[: -len(".npz")]
+        output = visualize_artifact(input_path, output_dir / f"{basename}.png")
+        print(f"wrote {output}", flush=True)
 
 
 def visualize_artifact(input_path: str | Path, output_path: str | Path) -> Path:
