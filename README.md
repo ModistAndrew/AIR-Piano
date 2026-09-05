@@ -59,6 +59,7 @@ compatibility with V2N checkpoints. The model and loss expose no YAML options.
 | `airpiano/preprocessing/video.py` | Public `VideoToWiLoR` Hydra component. |
 | `airpiano/preprocessing/wilor/backend.py` | Headless model loading, baseline crop preprocessing, and batched inference. |
 | `airpiano/preprocessing/wilor/cache.py` | Video probing/decoding, atomic chunks/manifests, resumption, and completion. |
+| `airpiano/preprocessing/wilor/visualize.py` | Standalone native-video overlay for ragged detections and absolute depth. |
 | `airpiano/preprocessing/canonical.py` | Best-left/right selection and fixed-rate canonicalization. |
 | `airpiano/data/` | Relative-stem pairing, MIDI/hand loading, slicing, targets, eager datasets, and DataLoader construction. |
 | `airpiano/model/` | Fixed transformer layers, assembly, and masked BCE. |
@@ -80,6 +81,7 @@ Useful explicit imports are:
 from airpiano.preprocessing.pipeline import preprocess
 from airpiano.preprocessing.video import VideoToWiLoR
 from airpiano.preprocessing.canonical import WiLoRCoordinateConverter, WiLoRToCanonical
+from airpiano.preprocessing.wilor.visualize import render_ragged_video
 from airpiano.data import build_data_components, build_dataset, make_loader
 from airpiano.train import train
 from airpiano.inference import test
@@ -504,6 +506,46 @@ successful extraction.
 
 `overwrite=true` removes the selected raw record directory before regeneration.
 Treat it as destructive and verify the exact root/stem first.
+
+### Inspect ragged motion on the source video
+
+The standalone ragged visualizer is separate from `stage=visualize`, which
+draws inference heatmaps. It requires no WiLoR model and does not produce or
+modify pose caches:
+
+```bash
+conda run -n v2n python -m airpiano.preprocessing.wilor.visualize \
+  --video /storage/jinxuan/data/PianoMotion10M/Video/442401135/BV1ED4y1D75s.mp4 \
+  --raw-cache /storage2/jinxuan/data/PianoMotion10M/wilor/442401135/BV1ED4y1D75s \
+  --output outputs/baseline/visualizations/wilor/BV1ED4y1D75s.mp4
+```
+
+By default it renders every frame in the manifest's published chunk snapshot.
+Use a half-open time excerpt when a full performance is unnecessary:
+
+```bash
+conda run -n v2n python -m airpiano.preprocessing.wilor.visualize \
+  --video /absolute/path/to/source.mp4 \
+  --raw-cache /absolute/path/to/raw_cache \
+  --output /absolute/path/to/overlay.mp4 \
+  --start-seconds 30 --duration-seconds 7 --overwrite
+```
+
+Every detector box is shown, while skeletons use only the same independently
+selected highest-confidence Left and Right detections as canonicalization.
+Joint screen positions come from `pred_keypoints_2d_full`. Their color is
+absolute full-camera depth:
+
+```text
+pred_keypoints_3d[..., 2] + pred_cam_t_full[..., 2]
+```
+
+Bones use their endpoint mean depth. One exact selected-joint min/max range and
+numeric near/far legend are shared across the rendered interval, so color does
+not flicker between frames. Source audio for the interval is retained when it
+exists; silent videos remain silent. A cache with `status: processing` can be
+inspected through its already-published chunks, and chunks published after the
+manifest snapshot are intentionally excluded.
 
 ### Raw schema compatibility policy
 
@@ -1157,9 +1199,9 @@ sonification, artifact tests, and documentation in the same change.
     Duplicate runs are unsupported and can mix overwritten and stale files.
 16. Test/realtime predictions have no manifest. Visualization and sonification
     batch direct slices without stitching overlap.
-17. Raw chunk/manifest writes are atomic; canonical, checkpoint, inference,
-    JSON, and rendered outputs are direct writes and may be partial after an
-    interruption.
+17. Raw chunk/manifest writes and ragged visualization videos are atomic;
+    canonical, checkpoint, inference, JSON, heatmap, and MIDI outputs are
+    direct writes and may be partial after an interruption.
 
 ## Validation and troubleshooting
 

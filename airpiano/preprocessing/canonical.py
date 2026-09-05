@@ -9,6 +9,7 @@ from typing import Mapping
 
 import numpy as np
 
+from airpiano.preprocessing.wilor.selection import select_best_hand_indices
 from airpiano.utils import write_npz
 
 
@@ -158,19 +159,18 @@ class WiLoRToCanonical:
         """Choose the highest-confidence left and right detection per frame."""
 
         offsets = arrays["frame_detection_offsets"]
-        handedness = arrays["is_right"]
-        confidence = arrays["detector_confidence"]
+        selected = select_best_hand_indices(
+            offsets,
+            arrays["detector_confidence"],
+            arrays["is_right"],
+        )
         for frame in range(destination_pose.shape[0]):
-            start, end = int(offsets[frame]), int(offsets[frame + 1])
-            for slot, is_right in enumerate((0, 1)):
-                candidates = np.flatnonzero(handedness[start:end] == is_right) + start
-                if candidates.size == 0:
+            for slot, winner in enumerate(selected[frame]):
+                if winner < 0:
                     continue
-
-                # np.argmax returns the first maximum, preserving detector order
-                # as the deterministic tie breaker used by the baseline.
-                winner = int(candidates[np.argmax(confidence[candidates])])
-                destination_pose[frame, slot] = self.coordinates(arrays, winner)
+                destination_pose[frame, slot] = self.coordinates(
+                    arrays, int(winner)
+                )
                 destination_presence[frame, slot] = True
 
     def _resample(

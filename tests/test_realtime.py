@@ -131,6 +131,7 @@ class RealtimeTest(unittest.TestCase):
             config.output.dir = str(project)
             config.train.batch_size = 1
             config.train.bf16 = False
+            config.realtime.root = str(bundle)
             config.dataset.file_loader.pairer._target_ = (
                 "airpiano.data.files.RelativeStemPairer"
             )
