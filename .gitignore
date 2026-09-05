@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+.hydra/
+outputs/
+wandb/
+run.log
+assets/
+
+/third_party/WiLoR/demo_img/
+/third_party/WiLoR/mano_data/

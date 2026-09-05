@@ -1,0 +1,128 @@
+defaults:
+  - _self_
+
+# Run one stage or an ordered list drawn from preprocess, train, realtime,
+# visualize, and sonify. Every path can be replaced with a Hydra override.
+stage: train
+device: cuda:1
+seed: 42
+
+output:
+  root: outputs
+  project_name: baseline
+  dir: ${output.root}/${output.project_name}
+
+data:
+  root: /storage/jinxuan/data/PianoMotion10M
+  processed_root: /storage2/jinxuan/data/PianoMotion10M
+  midi_root: ${data.root}/midi
+  video_root: ${data.root}/Video
+  raw_wilor_root: ${data.processed_root}/wilor
+  hand_root: ${data.processed_root}/airpiano_wilor_2p5d_30fps
+  splits:
+    train: assets/splits/pianomotion10m/train.txt
+    valid: assets/splits/pianomotion10m/valid.txt
+    test: assets/splits/pianomotion10m/test.txt
+
+preprocess:
+  # video_to_ragged, ragged_to_canonical, or all
+  task: ragged_to_canonical
+  split_files:
+    - ${data.splits.train}
+    - ${data.splits.valid}
+    - ${data.splits.test}
+  overwrite: false
+  video_to_ragged:
+    _target_: airpiano.preprocessing.video.VideoToWiLoR
+    wilor_repo: third_party/WiLoR
+    checkpoint: assets/wilor/wilor_final.ckpt
+    model_config: ${preprocess.video_to_ragged.wilor_repo}/pretrained_models/model_config.yaml
+    detector_checkpoint: assets/wilor/detector.pt
+    mano_model: assets/wilor/MANO_RIGHT.pkl
+    mano_mean_params: ${preprocess.video_to_ragged.wilor_repo}/mano_data/mano_mean_params.npz
+    device: ${device}
+    detector_confidence: 0.3
+    rescale_factor: 2.0
+    frame_batch_size: 8
+    hand_batch_size: 16
+    chunk_frames: 512
+    fast: false
+    compile: false
+  ragged_to_canonical:
+    _target_: airpiano.preprocessing.canonical.WiLoRToCanonical
+    target_fps: 30.0
+
+dataset:
+  file_loader:
+    _target_: airpiano.data.files.FileLoader
+    pairer:
+      _target_: airpiano.data.files.RelativeStemPairer
+    reader:
+      _target_: airpiano.data.files.EagerSongReader
+  midi_loader:
+    _target_: airpiano.data.midi.MidiLoader
+    reader:
+      _target_: airpiano.data.midi.MidoNoteReader
+    chord_merger:
+      _target_: airpiano.data.midi.InitializerChordMerger
+      tolerance_seconds: 0.05
+  hand_loader:
+    _target_: airpiano.data.hands.HandLoader
+    reader:
+      _target_: airpiano.data.hands.CanonicalNpzReader
+    transform:
+      _target_: airpiano.data.hands.CenteredXYZ10Transform
+  slicer:
+    _target_: airpiano.data.slicing.FutureChordSlicer
+    fps: 30.0
+    segment_frames: 210
+    stride_frames: 105
+    chord_count: 128
+  target_generator:
+    _target_: airpiano.data.targets.TargetGenerator
+    event_generator:
+      _target_: airpiano.data.targets.ChordOnsetEvents
+    softener:
+      _target_: airpiano.data.targets.TriangularSoftener
+      radius_seconds: 0.2
+
+train:
+  epochs: 20
+  batch_size: 2
+  gradient_accumulation_steps: 8
+  learning_rate: 3.0e-4
+  weight_decay: 0.01
+  max_grad_norm: 1.0
+  warmup_fraction: 0.05
+  bf16: true
+
+wandb:
+  project: air_piano
+  name: baseline
+  entity: null
+  dir: logs
+
+realtime:
+  root: realtime
+  stem: null
+  checkpoint: checkpoints/last.pt
+  output_dir: inference/realtime
+  overwrite: false
+
+visualize:
+  input: null
+  output: visualizations/visualization.png
+
+sonify:
+  input: null
+  output: sonifications/sonification.mid
+  threshold: 0.2
+  duration_seconds: 1.0
+  velocity: 64
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  job:
+    chdir: false
