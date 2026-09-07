@@ -308,10 +308,11 @@ class SlicingAndTargetTest(unittest.TestCase):
             fps=10.0, segment_frames=4, stride_frames=2, chord_count=3
         )
 
-        window = slicer.slice(song, frame_start=19)
+        positions = slicer.candidate_positions(chords, frame_start=19)
+        window = slicer.slice(song, 19, 23, positions)
 
-        self.assertEqual(window["chord_ids"].tolist(), [1, 2, -1])
-        self.assertEqual(window["chord_mask"].tolist(), [True, True, False])
+        self.assertEqual(window["chord_ids"].tolist(), [1, 2])
+        self.assertEqual(tuple(window["chords"].shape), (2, 128))
         self.assertEqual(window["chords"][0, 60].item(), 1.0)
         self.assertEqual(window["chords"][0, 0].item(), 1.0)
         self.assertEqual(window["chords"][0, 127].item(), 1.0)
@@ -333,7 +334,62 @@ class SlicingAndTargetTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "3 overlapping chords"):
             slicer.candidate_positions(chords, frame_start=0)
 
-    def test_dataset_precomputes_chords_masks_padded_targets_and_collates(self) -> None:
+    def test_chord_mode_uses_token_windows_and_onset_frame_bounds(self) -> None:
+        chords = tuple(
+            Chord(index, (_note(index, onset, onset + 0.1, 60 + index),))
+            for index, onset in enumerate((0.2, 0.5, 1.0, 1.4, 2.0, 2.5))
+        )
+        song = _song(chords, frame_count=40, fps=10.0)
+        slicer = FutureChordSlicer(
+            mode="chord",
+            fps=10.0,
+            segment_frames=3,
+            stride_frames=2,
+            chord_count=1,
+        )
+
+        self.assertEqual(
+            slicer.windows(song),
+            (
+                (0, 11, (0, 1, 2)),
+                (10, 21, (2, 3, 4)),
+                (14, 40, (3, 4, 5)),
+            ),
+        )
+        window = slicer.slice(song, 10, 21, (2, 3, 4))
+        self.assertEqual(tuple(window["hands"].shape), (11, 2, 21, 3))
+        self.assertEqual(tuple(window["chords"].shape), (3, 128))
+        self.assertEqual(window["chord_ids"].tolist(), [2, 3, 4])
+        self.assertNotIn("frame_mask", window)
+        self.assertNotIn("chord_mask", window)
+        torch.testing.assert_close(window["hands"], song.hands[10:21])
+
+    def test_chord_mode_keeps_real_chords_and_one_frame_windows(self) -> None:
+        chords = tuple(
+            Chord(index, (_note(index, onset, onset + 0.1, 60 + index),))
+            for index, onset in enumerate((0.2, 0.5, 1.0))
+        )
+        song = _song(chords, frame_count=20, fps=10.0)
+        singleton = FutureChordSlicer(
+            mode="chord",
+            fps=10.0,
+            segment_frames=1,
+            stride_frames=1,
+            chord_count=99,
+        )
+        self.assertEqual(singleton.windows(song)[1], (5, 6, (1,)))
+
+        window = FutureChordSlicer(
+            mode="chord",
+            fps=10.0,
+            segment_frames=4,
+            stride_frames=2,
+            chord_count=1,
+        ).slice(song, 0, 20, (0, 1, 2))
+        self.assertEqual(tuple(window["chords"].shape), (3, 128))
+        self.assertEqual(window["chord_ids"].tolist(), [0, 1, 2])
+
+    def test_dataset_returns_real_tensors_and_collate_adds_masks(self) -> None:
         class CountingSlicer(FutureChordSlicer):
             def __init__(self):
                 super().__init__(
@@ -362,22 +418,25 @@ class SlicingAndTargetTest(unittest.TestCase):
         sample = dataset[0]
         self.assertEqual(slicer.selection_calls, 1)
 
-        self.assertEqual(tuple(sample["hands"].shape), (4, 2, 21, 3))
-        self.assertEqual(tuple(sample["chords"].shape), (3, 128))
-        self.assertEqual(tuple(sample["target"].shape), (4, 3))
-        self.assertEqual(sample["frame_mask"].tolist(), [True, True, False, False])
+        self.assertEqual(tuple(sample["hands"].shape), (2, 2, 21, 3))
+        self.assertEqual(tuple(sample["chords"].shape), (2, 128))
+        self.assertEqual(tuple(sample["target"].shape), (2, 2))
+        self.assertNotIn("frame_mask", sample)
+        self.assertNotIn("chord_mask", sample)
         self.assertEqual(
             sample["hand_presence"].tolist(),
-            [[False, False], [True, False], [False, False], [False, False]],
+            [[False, False], [True, False]],
         )
         torch.testing.assert_close(
-            sample["target"][:, 0], torch.tensor([0.5, 1.0, 0.0, 0.0])
+            sample["target"][:, 0], torch.tensor([0.5, 1.0])
         )
-        self.assertEqual(torch.count_nonzero(sample["target"][2:]).item(), 0)
+        self.assertEqual(torch.count_nonzero(sample["target"][:, 1]).item(), 0)
 
         batch = collate_alignment_batch([sample, sample])
-        self.assertEqual(tuple(batch["hands"].shape), (2, 4, 2, 21, 3))
-        self.assertEqual(tuple(batch["target"].shape), (2, 4, 3))
+        self.assertEqual(tuple(batch["hands"].shape), (2, 2, 2, 21, 3))
+        self.assertEqual(tuple(batch["target"].shape), (2, 2, 2))
+        self.assertTrue(bool(batch["frame_mask"].all()))
+        self.assertTrue(bool(batch["chord_mask"].all()))
         self.assertEqual(batch["record_id"], ["subject/video", "subject/video"])
         self.assertEqual(batch["frame_start"].dtype, torch.long)
         self.assertEqual(batch["fps"].dtype, torch.float64)
@@ -395,23 +454,72 @@ class SlicingAndTargetTest(unittest.TestCase):
 
         dataset = AlignmentDataset([song], slicer, generator)
 
-        self.assertEqual(dataset.samples, ((0, 0, (0,)),))
+        self.assertEqual(dataset.samples, ((0, 0, 4, (0,)),))
 
-    def test_target_uses_global_left_edge_frame_times(self) -> None:
-        chord = Chord(0, (_note(0, 1.1, 1.2, 60),))
+    def test_chord_mode_dataset_collates_variable_frame_lengths(self) -> None:
+        chords = tuple(
+            Chord(index, (_note(index, onset, onset + 0.1, 60 + index),))
+            for index, onset in enumerate((0.2, 0.5, 1.0, 1.4, 2.0, 2.5))
+        )
+        song = _song(chords, frame_count=40, fps=10.0)
+        slicer = FutureChordSlicer(
+            mode="chord",
+            fps=10.0,
+            segment_frames=3,
+            stride_frames=2,
+            chord_count=1,
+        )
+        dataset = AlignmentDataset(
+            [song],
+            slicer,
+            TargetGenerator(ChordOnsetEvents(), TriangularSoftener(0.2)),
+        )
+        first_sample = dataset[0]
+        self.assertEqual(tuple(first_sample["target"].shape), (11, 3))
+        self.assertEqual(first_sample["target"][-1, 2].item(), 1.0)
+
+        short_song = _song(chords[:2], frame_count=8, fps=10.0)
+        short_sample = AlignmentDataset(
+            [short_song], slicer, dataset.target_generator
+        )[0]
+        batch = collate_alignment_batch(
+            [first_sample, short_sample, dataset[2]]
+        )
+
+        self.assertEqual(tuple(batch["hands"].shape), (3, 26, 2, 21, 3))
+        self.assertEqual(tuple(batch["target"].shape), (3, 26, 3))
+        self.assertEqual(int(batch["frame_mask"][0].sum()), 11)
+        self.assertFalse(bool(batch["frame_mask"][0, 11:].any()))
+        self.assertEqual(torch.count_nonzero(batch["target"][0, 11:]).item(), 0)
+        self.assertEqual(batch["chord_mask"][1].tolist(), [True, True, False])
+        self.assertEqual(batch["chord_ids"][1].tolist(), [0, 1, -1])
+        self.assertEqual(torch.count_nonzero(batch["target"][1, :, 2]).item(), 0)
+        self.assertTrue(bool(batch["frame_mask"][2].all()))
+
+        empty_song = _song((), frame_count=10, fps=10.0)
+        self.assertEqual(
+            len(AlignmentDataset([empty_song], slicer, dataset.target_generator)),
+            0,
+        )
+
+    def test_target_uses_global_times_and_preserves_outer_soft_tail(self) -> None:
+        chords = (
+            Chord(0, (_note(0, 1.1, 1.2, 60),)),
+            Chord(1, (_note(1, 1.31, 1.4, 64),)),
+        )
         target = TargetGenerator(
             ChordOnsetEvents(), TriangularSoftener(radius_seconds=0.2)
         ).generate(
-            (chord,),
+            chords,
             frame_start=10,
-            segment_frames=3,
+            frame_count=3,
             fps=10.0,
-            chord_count=2,
         )
+        self.assertEqual(tuple(target.shape), (3, 2))
         torch.testing.assert_close(
             target[:, 0], torch.tensor([0.5, 1.0, 0.5]), atol=1e-6, rtol=0
         )
-        self.assertEqual(torch.count_nonzero(target[:, 1]).item(), 0)
+        self.assertGreater(target[-1, 1].item(), 0.0)
 
 
 if __name__ == "__main__":

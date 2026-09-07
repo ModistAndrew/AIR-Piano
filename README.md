@@ -1,7 +1,8 @@
 # AirPiano operational handoff
 
 AirPiano is a compact implementation of hand-to-MIDI chord alignment with one
-baseline and a wrist-relative-coordinate ablation. It converts videos to
+baseline, a wrist-relative-coordinate ablation, and a causal chord-window
+ablation. It converts videos to
 resumable WiLoR hand detections, converts those detections to canonical 30 Hz
 two-hand poses, eagerly pairs complete songs with MIDI, and trains one fixed
 direct transformer with masked binary cross entropy.
@@ -18,9 +19,9 @@ The behavioral reference is exactly:
 ```
 
 That experiment is named `baseline` here. AirPiano preserves its essential
-30 Hz, 210-frame, fixed-width, pitch-only, continuous chord-onset behavior
+30 Hz, 210-frame, bounded-width, pitch-only, continuous chord-onset behavior
 without its legacy configuration matrix. The legacy experiment used 96 chord
-slots; the current baseline uses 200 so the expanded canonical-data
+slots; the current baseline uses 128 so the expanded canonical-data
 intersection does not truncate its one 119-overlap record.
 
 The supported stages are:
@@ -38,10 +39,11 @@ The supported stages are:
 `realtime` is an end-to-end file wrapper, not a webcam or latency-bounded
 streaming service.
 
-Deliberate non-goals include model architecture switches, alternate losses,
+Deliberate non-goals include pluggable model architectures, alternate losses,
 note-token fields, hand-presence filtering, global-song
 stitching, distributed training, checkpoint resume, video downloading, and
-compatibility with V2N checkpoints. The model and loss expose no YAML options.
+compatibility with V2N checkpoints. The model exposes only the causal frame
+self-attention switch; the model and loss are not Hydra `_target_` components.
 
 ## Repository map
 
@@ -50,6 +52,7 @@ compatibility with V2N checkpoints. The model and loss expose no YAML options.
 | `run.py` | Hydra bootstrap and six-entry stage dispatch only. |
 | `configs/baseline.yaml` | Baseline runtime configuration. |
 | `configs/wrist_xyz10.yaml` | Wrist-relative local-XYZ ×10 ablation inheriting the baseline. |
+| `configs/causal_chord24.yaml` | Causal frame-attention and 24-chord slicing ablation inheriting the baseline. |
 | `scripts/convert_legacy_splits.py` | One-time conversion of the original PianoMotion split lists to generalized record stems. |
 | `scripts/migrate_pianomotion_data.py` | Resumable, verified migration of PianoMotion postprocessed data to `/storage2`. |
 | `assets/splits/pianomotion10m/` | Ignored, locally generated train, validation, and test record stems used by the baseline. |
@@ -635,32 +638,38 @@ initializer-anchored rather than transitive.
 present slots while preserving exact zero absent slots. The baseline uses
 offset `[0.5,0.5,0]` and scale `[1,1,10]`; `wrist_xyz10` uses zero offset and
 scale `[10,10,10]`. `FileLoader` eagerly loads every paired song.
-`AlignmentDataset` precomputes frame starts and chord selection indices, omits
-windows whose chord selection is entirely padding, then slices/pads and
-generates targets in `__getitem__`. Such post-score windows have no valid cell
-on which masked BCE could be defined.
+`AlignmentDataset` precomputes frame bounds and chord selection indices, omits
+windows without real frames or chord candidates, then slices real tensors and
+generates targets in `__getitem__`. Padding and masks are added only when a
+batch is collated.
 
 One baseline item is:
 
 | Field | Type/shape | Meaning |
 | --- | --- | --- |
-| `hands` | `float32[210,2,21,3]` | Transformed left/right joints. |
-| `hand_presence` | `bool[210,2]` | Per-hand detection flags. |
-| `frame_mask` | `bool[210]` | Real frame versus right padding only. |
-| `chords` | binary `float32[C,128]` | MIDI-pitch multi-hot chord rows; baseline `C=200`. |
-| `chord_mask` | `bool[C]` | Real chord versus padding. |
-| `chord_ids` | `int64[C]` | Global chord IDs, `-1` for padding. |
-| `target` | `float32[210,C]` | Soft chord-onset alignment. |
+| `hands` | `float32[T,2,21,3]` | Real transformed left/right frames; baseline `T<=210`. |
+| `hand_presence` | `bool[T,2]` | Per-hand detection flags. |
+| `chords` | binary `float32[C,128]` | Real MIDI-pitch multi-hot rows; baseline `C<=128`. |
+| `chord_ids` | `int64[C]` | Global IDs for the selected chords. |
+| `target` | `float32[T,C]` | Soft chord-onset alignment. |
 | `record_id` | string | Complete root-relative stem. |
 | `frame_start` | integer | Global left-edge frame index. |
 | `fps` | float | Canonical/source clock used by the slicer. |
 
 The slicer emits regular 105-frame starts plus the exact right-aligned final
-window, padding a short song. It keeps every chord with any member overlapping
+window. It keeps every chord with any member overlapping
 the half-open window, appends later chords until the configured fixed width is
-available, and pads at score end. More overlapping chords than that width raises
-instead of truncating positives. Duplicate pitches remain distinct notes
-internally but collapse to one multi-hot entry.
+available or the score ends, and returns only real frames and chords. More
+overlapping chords than that width raises instead of truncating positives.
+Duplicate pitches remain distinct notes internally but collapse to one
+multi-hot entry.
+
+With `mode=chord`, `segment_frames` and `stride_frames` instead count chord
+tokens and `chord_count` is ignored. Token windows retain the exact
+right-aligned tail. The first score window starts at song frame 0; other
+windows start at the frame at or before their first chord onset. The final
+score window ends at song end; other windows include the first sampled frame
+at or after their last chord onset.
 
 Targets use global frame times and chord initializer onsets:
 
@@ -668,8 +677,9 @@ Targets use global frame times and chord initializer onsets:
 target[t,c] = max(0, 1 - abs(global_frame_time[t] - chord_onset[c]) / 0.2)
 ```
 
-Padded cells are zero. Missing hands do not remove frames, targets, or loss
-positions.
+The collator pads both axes to the batch maxima, creates `frame_mask` and
+`chord_mask`, uses `-1` for padded chord IDs, and leaves padded target cells
+zero. Missing hands do not remove frames, targets, or loss positions.
 
 ### Fixed model and criterion
 
@@ -688,7 +698,11 @@ bits and separately embeds 128-pitch chords into width 512. Four chord
 transformer layers and four frame self/cross-attention blocks feed 32-wide
 pairwise projections. The score bias starts from positive prior `0.0055`.
 Absent hand coordinates are zeroed, presence remains an input feature, padded
-attention is protected from NaNs, and padded logits are zero.
+attention is protected from NaNs, and padded logits are zero. When
+`model.causal_frame_attention=true`, frame self-attention at time `t` sees only
+frames through `t`; chord encoding and frame-to-chord attention still see all
+selected chord tokens. The checkpoint's saved setting controls inference, and
+older checkpoints default to non-causal attention.
 
 `masked_bce_loss` is ordinary `BCEWithLogitsLoss` over:
 
@@ -793,6 +807,10 @@ Each slice NPZ contains:
 | `fps` | `float64` scalar. |
 | `loss` | `float64` scalar per-item BCE. |
 
+`T` and `C` are the padded maxima of the item's inference batch; the masks
+identify the real slice extents. With a one-item batch they are the real frame
+and chord counts.
+
 Artifact filenames replace `/` and `\\` in the record ID with `__`, then append
 `__f<frame_start as nine digits>.npz`. Canonical files and inference artifacts
 are unchanged by the generalized path migration.
@@ -879,6 +897,17 @@ Its canonical files live under
 logs, inference, and rendering use `outputs/wrist_xyz10/`. The ×10 factor is an
 online hand transform, so later scale ablations can reuse the same canonical
 cache.
+
+### Causal 24-chord ablation
+
+This combined ablation uses causal frame self-attention and slices the score
+into 24-chord windows with a 12-chord stride. It reuses the baseline canonical
+hand cache and writes all outputs under `outputs/causal_chord24/`:
+
+```bash
+conda run -n v2n python run.py --config-name causal_chord24 stage=train
+conda run -n v2n python run.py --config-name causal_chord24 stage=test
+```
 
 ### Train and validate
 
@@ -1078,7 +1107,7 @@ repository root or override them with absolute paths.
 | `InitializerChordMerger.tolerance_seconds` | Initializer-relative grouping at `0.05`. |
 | `CanonicalNpzReader` | Direct trusted canonical array loading. |
 | `OffsetScaleTransform` | Apply configured per-axis offset and scale, then restore absent slots to zero. |
-| `FutureChordSlicer` | 30 Hz, 210 frames, stride 105, fixed 200 future-extending candidates. |
+| `FutureChordSlicer` | Frame mode: 30 Hz, 210 frames, stride 105, fixed 128 future-extending candidates. Chord mode is available as described above. |
 | `ChordOnsetEvents` | One event at each chord initializer onset. |
 | `TriangularSoftener.radius_seconds` | Continuous target radius `0.2`. |
 
@@ -1136,7 +1165,7 @@ The narrow replaceable interfaces are:
 | `CanonicalNpzReader` | `read(path) -> HandSequence`. |
 | `WiLoRCoordinateConverter` | `(raw_arrays, detection_index) -> float32[21,3]` canonical hand. |
 | Hand transform | `(pose, presence) -> pose` with unchanged shape and absent slots zero. |
-| Slicer | Expose fixed dimensions and implement starts, candidate selection, and slicing. |
+| Slicer | Produce real frame/chord slices and implement starts and candidate selection. |
 | Event generator | `times(chords) -> float64[event_count]`. |
 | Softener | `soften(frame_times, event_times) -> [T,event_count]`. |
 
@@ -1166,9 +1195,10 @@ sonification, artifact tests, and documentation in the same change.
 
 ## Critical invariants and common traps
 
-1. `frame_mask` means real versus padded time only. Presence is not a frame
-   mask and never filters records, frames, targets, or BCE positions. Dataset
-   windows are omitted only when they contain no real chord candidate.
+1. `frame_mask` and `chord_mask` are created only by batch collation. Presence
+   is not a frame mask and never filters records, frames, targets, or BCE
+   positions. Dataset windows are omitted only when they contain no real frame
+   or chord candidate.
 2. Hand slot order is `[Left, Right]`; chord vectors always span MIDI pitches
    `0..127`.
 3. Canonical FPS and slicer FPS are both 30. Interpolation occurs only in

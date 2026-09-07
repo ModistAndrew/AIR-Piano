@@ -1,4 +1,4 @@
-"""In-memory alignment dataset and fixed-shape collation."""
+"""In-memory alignment dataset and padded batch collation."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from typing import Any
 import torch
 from hydra.utils import instantiate
 from omegaconf import DictConfig
+from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader, Dataset
 
 from .slicing import FutureChordSlicer
@@ -17,7 +18,7 @@ from .types import Song
 
 
 class AlignmentDataset(Dataset):
-    """Slice eagerly loaded full songs into fixed hand/chord windows."""
+    """Slice eagerly loaded full songs into aligned hand/chord windows."""
 
     def __init__(
         self,
@@ -28,35 +29,35 @@ class AlignmentDataset(Dataset):
         self.songs = tuple(songs)
         self.slicer = slicer
         self.target_generator = target_generator
-        samples: list[tuple[int, int, tuple[int, ...]]] = []
+        samples: list[tuple[int, int, int, tuple[int, ...]]] = []
         for song_index, song in enumerate(self.songs):
-            for frame_start in self.slicer.starts(len(song.hands)):
-                positions = self.slicer.candidate_positions(
-                    song.chords, frame_start
+            for frame_start, frame_stop, positions in self.slicer.windows(song):
+                samples.append(
+                    (song_index, frame_start, frame_stop, positions)
                 )
-                # A window after the score ends can contain real hand frames but
-                # no chord candidates. Its chord mask would be entirely padding,
-                # so it has no cells on which masked BCE can be defined.
-                if positions:
-                    samples.append((song_index, frame_start, positions))
         self.samples = tuple(samples)
 
     def __len__(self) -> int:
         return len(self.samples)
 
     def __getitem__(self, index: int) -> dict[str, Any]:
-        song_index, frame_start, chord_positions = self.samples[int(index)]
+        song_index, frame_start, frame_stop, chord_positions = self.samples[
+            int(index)
+        ]
         song = self.songs[song_index]
-        window = self.slicer.slice(song, frame_start, chord_positions)
+        window = self.slicer.slice(
+            song,
+            frame_start,
+            frame_stop,
+            chord_positions,
+        )
         selected_chords = window.pop("selected_chords")
         target = self.target_generator.generate(
             selected_chords,
             frame_start=frame_start,
-            segment_frames=self.slicer.segment_frames,
+            frame_count=len(window["hands"]),
             fps=self.slicer.fps,
-            chord_count=self.slicer.chord_count,
         )
-        target *= window["frame_mask"][:, None]
         return {
             **window,
             "target": target,
@@ -67,19 +68,46 @@ class AlignmentDataset(Dataset):
 
 
 def collate_alignment_batch(batch: list[dict[str, Any]]) -> dict[str, Any]:
-    """Stack fixed arrays while retaining source metadata."""
+    """Pad frame/chord axes and create masks from each sample's lengths."""
 
-    tensor_fields = (
-        "hands",
-        "hand_presence",
-        "frame_mask",
-        "chords",
-        "chord_mask",
-        "target",
-        "chord_ids",
+    frame_lengths = torch.tensor(
+        [len(sample["hands"]) for sample in batch], dtype=torch.long
     )
+    chord_lengths = torch.tensor(
+        [len(sample["chords"]) for sample in batch], dtype=torch.long
+    )
+    max_frames = int(frame_lengths.max())
+    max_chords = int(chord_lengths.max())
+    target = torch.zeros(
+        (len(batch), max_frames, max_chords),
+        dtype=batch[0]["target"].dtype,
+    )
+    for index, sample in enumerate(batch):
+        frame_count, chord_count = sample["target"].shape
+        target[index, :frame_count, :chord_count] = sample["target"]
+
     return {
-        **{field: torch.stack([sample[field] for sample in batch]) for field in tensor_fields},
+        "hands": pad_sequence(
+            [sample["hands"] for sample in batch], batch_first=True
+        ),
+        "hand_presence": pad_sequence(
+            [sample["hand_presence"] for sample in batch], batch_first=True
+        ),
+        "frame_mask": (
+            torch.arange(max_frames)[None, :] < frame_lengths[:, None]
+        ),
+        "chords": pad_sequence(
+            [sample["chords"] for sample in batch], batch_first=True
+        ),
+        "chord_mask": (
+            torch.arange(max_chords)[None, :] < chord_lengths[:, None]
+        ),
+        "target": target,
+        "chord_ids": pad_sequence(
+            [sample["chord_ids"] for sample in batch],
+            batch_first=True,
+            padding_value=-1,
+        ),
         "record_id": [str(sample["record_id"]) for sample in batch],
         "frame_start": torch.tensor(
             [int(sample["frame_start"]) for sample in batch], dtype=torch.long

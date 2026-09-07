@@ -38,8 +38,9 @@ class _TinyDataset(Dataset):
 
 
 class _TinyModel(nn.Module):
-    def __init__(self) -> None:
+    def __init__(self, causal_frame_attention: bool = False) -> None:
         super().__init__()
+        self.causal_frame_attention = causal_frame_attention
         self.bias = nn.Parameter(torch.tensor(0.0))
 
     def forward(self, hands, hand_presence, chords, frame_mask, chord_mask):
@@ -82,6 +83,8 @@ class TrainTest(unittest.TestCase):
             "WiLoRToCanonical",
         )
         self.assertEqual(str(config.output.dir), "outputs/baseline")
+        self.assertEqual(components["slicer"].mode, "frame")
+        self.assertFalse(bool(config.model.causal_frame_attention))
         self.assertEqual(str(config.wandb.project), "air_piano")
         self.assertEqual(str(config.test.checkpoint), "checkpoints/last.pt")
         self.assertEqual(str(config.realtime.checkpoint), "checkpoints/last.pt")
@@ -110,6 +113,21 @@ class TrainTest(unittest.TestCase):
             components["hand_loader"].transform.scale, (10.0, 10.0, 10.0)
         )
 
+    def test_causal_chord24_config_combines_both_ablation_modes(self) -> None:
+        config_directory = Path(__file__).parents[1] / "configs"
+        with initialize_config_dir(
+            version_base=None, config_dir=str(config_directory.resolve())
+        ):
+            config = compose(config_name="causal_chord24")
+
+        slicer = data.build_data_components(config)["slicer"]
+        self.assertEqual(str(config.output.dir), "outputs/causal_chord24")
+        self.assertEqual(str(config.wandb.name), "causal_chord24")
+        self.assertTrue(bool(config.model.causal_frame_attention))
+        self.assertEqual(slicer.mode, "chord")
+        self.assertEqual(slicer.segment_frames, 24)
+        self.assertEqual(slicer.stride_frames, 12)
+
     @staticmethod
     def _config(output: Path):
         return OmegaConf.create(
@@ -122,6 +140,7 @@ class TrainTest(unittest.TestCase):
                     "dir": str(output),
                 },
                 "dataset": {},
+                "model": {"causal_frame_attention": False},
                 "data": {"splits": {}, "midi_root": ".", "hand_root": "."},
                 "train": {
                     "epochs": 1,
@@ -195,6 +214,9 @@ class TrainTest(unittest.TestCase):
             )
             self.assertEqual(checkpoint["epoch"], 1)
             self.assertEqual(checkpoint["global_step"], 1)
+            self.assertFalse(
+                checkpoint["config"]["model"]["causal_frame_attention"]
+            )
             self.assertFalse((output / "inference" / "test").exists())
 
 

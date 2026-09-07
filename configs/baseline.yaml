@@ -80,6 +80,7 @@ dataset:
       scale: [1.0, 1.0, 10.0]
   slicer:
     _target_: airpiano.data.slicing.FutureChordSlicer
+    mode: frame
     fps: 30.0
     segment_frames: 210
     stride_frames: 105
@@ -91,6 +92,9 @@ dataset:
     softener:
       _target_: airpiano.data.targets.TriangularSoftener
       radius_seconds: 0.2
+
+model:
+  causal_frame_attention: false
 
 train:
   epochs: 20

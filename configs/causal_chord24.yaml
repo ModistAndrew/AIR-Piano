@@ -1,0 +1,19 @@
+defaults:
+  - baseline
+  - _self_
+
+output:
+  project_name: causal_chord24
+
+dataset:
+  slicer:
+    mode: chord
+    # In chord mode these values count chord tokens; chord_count is ignored.
+    segment_frames: 24
+    stride_frames: 12
+
+model:
+  causal_frame_attention: true
+
+wandb:
+  name: causal_chord24

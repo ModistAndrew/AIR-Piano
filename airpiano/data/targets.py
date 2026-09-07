@@ -30,7 +30,7 @@ class TriangularSoftener:
 
 
 class TargetGenerator:
-    """Generate a padded frame-by-chord target on the global frame clock."""
+    """Generate a frame-by-chord target on the global frame clock."""
 
     def __init__(
         self,
@@ -45,22 +45,18 @@ class TargetGenerator:
         chords: tuple[Chord, ...],
         *,
         frame_start: int,
-        segment_frames: int,
+        frame_count: int,
         fps: float,
-        chord_count: int,
     ) -> torch.Tensor:
         # Frame indices remain global so every window uses the song's time clock.
         frame_times = (
             torch.arange(
                 frame_start,
-                frame_start + segment_frames,
+                frame_start + frame_count,
                 dtype=torch.float64,
             )
             / float(fps)
         )
-        values = self.softener.soften(
+        return self.softener.soften(
             frame_times, self.event_generator.times(chords)
-        )
-        target = torch.zeros((segment_frames, chord_count), dtype=torch.float32)
-        target[:, : len(chords)] = values.to(torch.float32)
-        return target
+        ).to(torch.float32)

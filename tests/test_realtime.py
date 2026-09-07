@@ -195,7 +195,7 @@ class RealtimeTest(unittest.TestCase):
                 artifact = load_artifact(artifacts[0])
                 self.assertEqual(
                     artifact.probability.shape,
-                    (210, int(config.dataset.slicer.chord_count)),
+                    (4, 1),
                 )
                 self.assertEqual(int(artifact.frame_mask.sum()), 4)
                 self.assertEqual(int(artifact.chord_mask.sum()), 1)

@@ -15,7 +15,10 @@ from airpiano.model.transformer import AirPianoTransformer
 
 class AirPianoTransformerTest(unittest.TestCase):
     def test_fixed_api_shapes_padding_and_all_padded_samples(self) -> None:
-        self.assertEqual(tuple(inspect.signature(AirPianoTransformer).parameters), ())
+        self.assertEqual(
+            tuple(inspect.signature(AirPianoTransformer).parameters),
+            ("causal_frame_attention",),
+        )
         model = AirPianoTransformer().eval()
         hands = torch.randn(2, 3, 2, 21, 3)
         presence = torch.ones(2, 3, 2, dtype=torch.bool)
@@ -54,6 +57,38 @@ class AirPianoTransformerTest(unittest.TestCase):
 
         torch.testing.assert_close(actual, expected, rtol=0.0, atol=0.0)
         self.assertTrue(bool((actual != 0.0).all()))
+
+    def test_causal_attention_prevents_future_frames_changing_prefix(self) -> None:
+        torch.manual_seed(9)
+        model = AirPianoTransformer(causal_frame_attention=True).eval()
+        hands = torch.randn(1, 4, 2, 21, 3)
+        presence = torch.ones(1, 4, 2, dtype=torch.bool)
+        altered_hands = hands.clone()
+        altered_hands[:, 2:] = torch.randn_like(altered_hands[:, 2:]) * 100.0
+        altered_presence = presence.clone()
+        altered_presence[:, 2:] = False
+        chords = torch.zeros(1, 3, 128)
+        chords[0, 0, 60] = 1.0
+        chords[0, 1, 64] = 1.0
+        chords[0, 2, 67] = 1.0
+        frame_mask = torch.ones(1, 4, dtype=torch.bool)
+        chord_mask = torch.ones(1, 3, dtype=torch.bool)
+
+        with torch.no_grad():
+            expected = model(
+                hands, presence, chords, frame_mask, chord_mask
+            )
+            actual = model(
+                altered_hands,
+                altered_presence,
+                chords,
+                frame_mask,
+                chord_mask,
+            )
+
+        torch.testing.assert_close(
+            actual[:, :2], expected[:, :2], rtol=0.0, atol=1e-6
+        )
 
     def test_backward_reaches_hand_chord_transformer_and_scorer(self) -> None:
         torch.manual_seed(11)

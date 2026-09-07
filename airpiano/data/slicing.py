@@ -1,8 +1,9 @@
-"""Fixed-window hand and future-chord slicing."""
+"""Frame-based and chord-token hand/score slicing."""
 
 from __future__ import annotations
 
 import bisect
+import math
 
 import torch
 
@@ -10,7 +11,7 @@ from .types import Chord, Song
 
 
 class FutureChordSlicer:
-    """Build fixed-width windows using overlap candidates, then successors."""
+    """Build frame windows or fixed-width chord-token windows."""
 
     def __init__(
         self,
@@ -18,18 +19,22 @@ class FutureChordSlicer:
         segment_frames: int = 210,
         stride_frames: int = 105,
         chord_count: int = 96,
+        mode: str = "frame",
     ):
+        if mode not in {"frame", "chord"}:
+            raise ValueError(f"unsupported slicing mode: {mode}")
+        self.mode = mode
         self.fps = float(fps)
         self.segment_frames = int(segment_frames)
         self.stride_frames = int(stride_frames)
         self.chord_count = int(chord_count)
 
-    def starts(self, frame_count: int) -> tuple[int, ...]:
+    def starts(self, item_count: int) -> tuple[int, ...]:
         """Return regular starts plus the exact right-aligned final start."""
 
-        if frame_count <= self.segment_frames:
+        if item_count <= self.segment_frames:
             return (0,)
-        final_start = frame_count - self.segment_frames
+        final_start = item_count - self.segment_frames
         starts = list(range(0, final_start + 1, self.stride_frames))
         if starts[-1] != final_start:
             starts.append(final_start)
@@ -68,45 +73,85 @@ class FutureChordSlicer:
             selected.extend(range(successor_start, successor_stop))
         return tuple(selected)
 
+    def chord_frame_bounds(
+        self,
+        song: Song,
+        chord_positions: tuple[int, ...],
+    ) -> tuple[int, int]:
+        """Map a chord-token window to its clamped hand-frame interval."""
+
+        first_position = chord_positions[0]
+        last_position = chord_positions[-1]
+        frame_count = len(song.hands)
+        frame_start = (
+            0
+            if first_position == 0
+            else math.floor(song.chords[first_position].onset * self.fps)
+        )
+        frame_stop = (
+            frame_count
+            if last_position == len(song.chords) - 1
+            else math.ceil(song.chords[last_position].onset * self.fps) + 1
+        )
+        return (
+            max(0, min(frame_start, frame_count)),
+            max(0, min(frame_stop, frame_count)),
+        )
+
+    def windows(
+        self, song: Song
+    ) -> tuple[tuple[int, int, tuple[int, ...]], ...]:
+        """Return frame bounds and selected chord positions for one song."""
+
+        windows: list[tuple[int, int, tuple[int, ...]]] = []
+        if self.mode == "frame":
+            for frame_start in self.starts(len(song.hands)):
+                positions = self.candidate_positions(song.chords, frame_start)
+                frame_stop = min(
+                    frame_start + self.segment_frames,
+                    len(song.hands),
+                )
+                if positions and frame_stop > frame_start:
+                    windows.append((frame_start, frame_stop, positions))
+            return tuple(windows)
+
+        if not song.chords:
+            return ()
+        for chord_start in self.starts(len(song.chords)):
+            chord_stop = min(
+                chord_start + self.segment_frames,
+                len(song.chords),
+            )
+            positions = tuple(range(chord_start, chord_stop))
+            frame_start, frame_stop = self.chord_frame_bounds(song, positions)
+            if frame_stop > frame_start:
+                windows.append((frame_start, frame_stop, positions))
+        return tuple(windows)
+
     def slice(
         self,
         song: Song,
         frame_start: int,
-        chord_positions: tuple[int, ...] | None = None,
+        frame_stop: int,
+        chord_positions: tuple[int, ...],
     ) -> dict[str, object]:
-        valid_frames = min(self.segment_frames, len(song.hands) - frame_start)
-        hands = torch.zeros(
-            (self.segment_frames, 2, 21, 3), dtype=torch.float32
+        selected_chords = tuple(
+            song.chords[index] for index in chord_positions
         )
-        presence = torch.zeros((self.segment_frames, 2), dtype=torch.bool)
-        hands[:valid_frames] = song.hands[frame_start : frame_start + valid_frames]
-        presence[:valid_frames] = song.presence[
-            frame_start : frame_start + valid_frames
-        ]
-        frame_mask = torch.arange(self.segment_frames) < valid_frames
-
-        positions = (
-            self.candidate_positions(song.chords, frame_start)
-            if chord_positions is None
-            else chord_positions
+        chord_values = torch.zeros(
+            (len(selected_chords), 128), dtype=torch.float32
         )
-        selected_chords = tuple(song.chords[index] for index in positions)
-        chord_values = torch.zeros((self.chord_count, 128), dtype=torch.float32)
-        chord_mask = torch.zeros(self.chord_count, dtype=torch.bool)
-        chord_ids = torch.full((self.chord_count,), -1, dtype=torch.long)
         for local_index, chord in enumerate(selected_chords):
-            chord_mask[local_index] = True
-            chord_ids[local_index] = chord.id
             for note in chord.notes:
                 # Duplicate physical notes intentionally collapse in multi-hot space.
                 chord_values[local_index, note.pitch] = 1.0
 
         return {
-            "hands": hands,
-            "hand_presence": presence,
-            "frame_mask": frame_mask,
+            "hands": song.hands[frame_start:frame_stop],
+            "hand_presence": song.presence[frame_start:frame_stop],
             "chords": chord_values,
-            "chord_mask": chord_mask,
-            "chord_ids": chord_ids,
+            "chord_ids": torch.tensor(
+                [chord.id for chord in selected_chords], dtype=torch.long
+            ),
             "selected_chords": selected_chords,
         }

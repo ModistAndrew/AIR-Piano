@@ -38,8 +38,9 @@ class _TinyDataset(Dataset):
 
 
 class _TinyModel(nn.Module):
-    def __init__(self) -> None:
+    def __init__(self, causal_frame_attention: bool = False) -> None:
         super().__init__()
+        self.causal_frame_attention = causal_frame_attention
         self.bias = nn.Parameter(torch.tensor(0.0))
 
     def forward(self, hands, hand_presence, chords, frame_mask, chord_mask):
@@ -48,6 +49,35 @@ class _TinyModel(nn.Module):
 
 
 class TestInferenceTest(unittest.TestCase):
+    def test_checkpoint_restores_causal_mode_and_legacy_default(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            causal = root / "causal.pt"
+            legacy = root / "legacy.pt"
+            torch.save(
+                {
+                    "model": _TinyModel().state_dict(),
+                    "config": {
+                        "model": {"causal_frame_attention": True}
+                    },
+                },
+                causal,
+            )
+            torch.save({"model": _TinyModel().state_dict()}, legacy)
+
+            with patch.object(
+                inference_stage, "AirPianoTransformer", _TinyModel
+            ):
+                causal_model = inference_stage.load_model_checkpoint(
+                    causal, torch.device("cpu")
+                )
+                legacy_model = inference_stage.load_model_checkpoint(
+                    legacy, torch.device("cpu")
+                )
+
+            self.assertTrue(causal_model.causal_frame_attention)
+            self.assertFalse(legacy_model.causal_frame_attention)
+
     def test_uses_configured_checkpoint_and_dumps_test_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory)
