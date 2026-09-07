@@ -104,7 +104,15 @@ def train(cfg: DictConfig) -> None:
     valid_loader = data.make_loader(
         valid_dataset, batch_size=batch_size, shuffle=False, seed=seed, device=device
     )
-    model = AirPianoTransformer().to(device)
+    model = AirPianoTransformer(
+        causal_frame_attention=bool(
+            OmegaConf.select(
+                cfg,
+                "model.causal_frame_attention",
+                default=False,
+            )
+        )
+    ).to(device)
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=float(cfg.train.learning_rate),

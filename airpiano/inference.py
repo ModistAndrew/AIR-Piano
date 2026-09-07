@@ -97,10 +97,16 @@ def dump_inference(
 def load_model_checkpoint(
     path: str | Path, device: torch.device
 ) -> AirPianoTransformer:
-    """Restore the fixed transformer from an AirPiano state-dict checkpoint."""
+    """Restore the transformer and its attention mode from a checkpoint."""
 
     payload = torch.load(Path(path), map_location=device, weights_only=False)
-    model = AirPianoTransformer().to(device)
+    checkpoint_config = payload.get("config", {})
+    model_config = checkpoint_config.get("model", {})
+    model = AirPianoTransformer(
+        causal_frame_attention=bool(
+            model_config.get("causal_frame_attention", False)
+        )
+    ).to(device)
     model.load_state_dict(payload["model"], strict=True)
     return model
 

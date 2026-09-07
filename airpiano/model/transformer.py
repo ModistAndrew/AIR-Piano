@@ -26,8 +26,9 @@ class AirPianoTransformer(nn.Module):
     chords in the current slice.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, causal_frame_attention: bool = False) -> None:
         super().__init__()
+        self.causal_frame_attention = bool(causal_frame_attention)
         self.hand_embedding = nn.Sequential(
             nn.Linear(128, MODEL_DIM),
             nn.GELU(),
@@ -144,11 +145,19 @@ class AirPianoTransformer(nn.Module):
         )
 
         frame_padding_mask = self._safe_frame_padding_mask(frame_mask)
+        frame_attention_mask = None
+        if self.causal_frame_attention:
+            frame_attention_mask = torch.ones(
+                (frame_count, frame_count),
+                dtype=torch.bool,
+                device=frames.device,
+            ).triu(diagonal=1)
         for layer in self.frame_layers:
             frames = layer(
                 frames,
                 chord_memory,
                 frame_padding_mask=frame_padding_mask,
+                frame_attention_mask=frame_attention_mask,
                 chord_padding_mask=chord_padding_mask,
             )
             frames = frames.masked_fill(~frame_mask.unsqueeze(-1), 0.0)

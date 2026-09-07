@@ -72,6 +72,7 @@ class FrameAlignmentBlock(nn.Module):
         chord_memory: torch.Tensor,
         *,
         frame_padding_mask: torch.Tensor,
+        frame_attention_mask: torch.Tensor | None,
         chord_padding_mask: torch.Tensor,
     ) -> torch.Tensor:
         """Update ``[B,T,D]`` frames using valid frame and chord positions."""
@@ -82,6 +83,7 @@ class FrameAlignmentBlock(nn.Module):
             normalized,
             normalized,
             key_padding_mask=frame_padding_mask,
+            attn_mask=frame_attention_mask,
             need_weights=False,
         )
         frames = frames + self.dropout(update)
