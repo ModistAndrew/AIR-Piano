@@ -22,6 +22,7 @@ from airpiano.utils import resolve_path
 
 
 SCHEMA_VERSION = "airpiano-wilor-ragged-v1"
+FIRST_DUE_SAMPLING_POLICY = "first_due"
 
 
 def utc_now() -> str:
@@ -261,21 +262,105 @@ class FFmpegVideoReader:
             self.process.wait()
 
 
+class FirstDueVideoReader:
+    """Expose deterministic first-due samples from a native-rate reader."""
+
+    def __init__(self, reader: Any, source_fps: float, target_fps: float) -> None:
+        self.reader = reader
+        self.source_fps = source_fps
+        self.target_fps = target_fps
+        self.source_position = 0
+        self.output_position = 0
+        self.source_frames_per_output = (
+            Fraction(str(source_fps)) / Fraction(str(target_fps))
+        )
+
+    def _advance_to_due_frame(self) -> bool:
+        due_numerator = (
+            self.output_position * self.source_frames_per_output.numerator
+        )
+        due_source_index = (
+            due_numerator + self.source_frames_per_output.denominator - 1
+        ) // self.source_frames_per_output.denominator
+        while self.source_position < due_source_index:
+            if not self.reader.grab():
+                return False
+            self.source_position += 1
+        return True
+
+    def read(self) -> tuple[bool, np.ndarray | None]:
+        if not self._advance_to_due_frame():
+            return False, None
+        ok, frame = self.reader.read()
+        if ok:
+            self.source_position += 1
+            self.output_position += 1
+        return ok, frame
+
+    def grab(self) -> bool:
+        if not self._advance_to_due_frame() or not self.reader.grab():
+            return False
+        self.source_position += 1
+        self.output_position += 1
+        return True
+
+    def timestamp_seconds(self) -> float:
+        return self.reader.timestamp_seconds()
+
+    def release(self) -> None:
+        self.reader.release()
+
+
+def video_metadata_for_cache(
+    source_metadata: dict[str, Any], target_fps: float | None
+) -> dict[str, Any]:
+    """Return manifest metadata for native or first-due cached frames."""
+
+    metadata = dict(source_metadata)
+    source_fps = float(metadata["fps"])
+    if target_fps is not None and (
+        not math.isfinite(target_fps) or target_fps <= 0
+    ):
+        raise ValueError("target_fps must be positive or None")
+    if target_fps is None or math.isclose(
+        target_fps, source_fps, rel_tol=1e-9, abs_tol=1e-9
+    ):
+        return metadata
+    if target_fps > source_fps:
+        raise ValueError(
+            f"target_fps {target_fps} cannot exceed source fps {source_fps}"
+        )
+    metadata["source_fps"] = source_fps
+    metadata["fps"] = float(target_fps)
+    metadata["sampling_policy"] = FIRST_DUE_SAMPLING_POLICY
+    return metadata
+
+
 def open_video_reader(
     path: Path, metadata: dict[str, Any]
-) -> OpenCVVideoReader | FFmpegVideoReader:
-    """Use OpenCV normally and FFmpeg for AV1 or unavailable OpenCV codecs."""
+) -> OpenCVVideoReader | FFmpegVideoReader | FirstDueVideoReader:
+    """Open a native decoder and apply manifest-declared temporal sampling."""
 
+    source_fps = float(metadata.get("source_fps", metadata["fps"]))
     if metadata.get("codec_name") == "av1":
-        return FFmpegVideoReader(
-            path, metadata["width"], metadata["height"], metadata["fps"]
+        reader: OpenCVVideoReader | FFmpegVideoReader = FFmpegVideoReader(
+            path, metadata["width"], metadata["height"], source_fps
         )
-    try:
-        return OpenCVVideoReader(path, metadata["fps"])
-    except RuntimeError:
-        return FFmpegVideoReader(
-            path, metadata["width"], metadata["height"], metadata["fps"]
-        )
+    else:
+        try:
+            reader = OpenCVVideoReader(path, source_fps)
+        except RuntimeError:
+            reader = FFmpegVideoReader(
+                path, metadata["width"], metadata["height"], source_fps
+            )
+
+    effective_fps = float(metadata["fps"])
+    if source_fps > effective_fps:
+        if metadata.get("sampling_policy") != FIRST_DUE_SAMPLING_POLICY:
+            reader.release()
+            raise ValueError("downsampled video metadata requires first_due policy")
+        return FirstDueVideoReader(reader, source_fps, effective_fps)
+    return reader
 
 
 def require_schema(manifest: dict[str, Any], manifest_path: Path) -> None:
@@ -335,14 +420,39 @@ def existing_chunk_info(path: Path) -> tuple[int, int, int, int]:
     return count, first, last, detections
 
 
+def cache_rate_matches(
+    existing: dict[str, Any], requested: dict[str, Any]
+) -> bool:
+    """Compare native/downsampled rate contracts for safe partial resumption."""
+
+    existing_source = float(existing.get("source_fps", existing["fps"]))
+    requested_source = float(requested.get("source_fps", requested["fps"]))
+    return (
+        math.isclose(
+            float(existing["fps"]),
+            float(requested["fps"]),
+            rel_tol=1e-9,
+            abs_tol=1e-9,
+        )
+        and math.isclose(
+            existing_source,
+            requested_source,
+            rel_tol=1e-9,
+            abs_tol=1e-9,
+        )
+        and existing.get("sampling_policy") == requested.get("sampling_policy")
+    )
+
+
 def process_video(
     video_path: str | Path,
     output_dir: str | Path,
     backend: WiLoRBackend,
     chunk_frames: int = 512,
     overwrite: bool = False,
+    target_fps: float | None = None,
 ) -> Path:
-    """Infer a video, resuming every completely published source-frame chunk."""
+    """Infer native or sampled frames, resuming completely published chunks."""
 
     video = resolve_path(video_path)
     output = resolve_path(output_dir)
@@ -358,7 +468,14 @@ def process_video(
     manifest_path = output / "manifest.json"
     old_manifest = read_manifest(output) if manifest_path.exists() else None
 
-    video_metadata = probe_video(video)
+    video_metadata = video_metadata_for_cache(probe_video(video), target_fps)
+    if old_manifest is not None and not cache_rate_matches(
+        old_manifest["video"], video_metadata
+    ):
+        raise RuntimeError(
+            "cannot resume partial WiLoR cache with a different frame-rate "
+            "contract; use a new output directory or explicitly overwrite it"
+        )
     timestamp = utc_now()
     manifest: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,

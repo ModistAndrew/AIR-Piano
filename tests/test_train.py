@@ -83,10 +83,9 @@ class TrainTest(unittest.TestCase):
                 "target_generator": "TargetGenerator",
             },
         )
-        self.assertEqual(
-            type(instantiate(config.preprocess.video_to_ragged)).__name__,
-            "VideoToWiLoR",
-        )
+        video_extractor = instantiate(config.preprocess.video_to_ragged)
+        self.assertEqual(type(video_extractor).__name__, "VideoToWiLoR")
+        self.assertIsNone(video_extractor.target_fps)
         self.assertEqual(type(canonicalizer).__name__, "WiLoRToCanonical")
         self.assertIsNone(canonicalizer.postprocessor)
         self.assertEqual(str(config.output.dir), "outputs/baseline")
@@ -161,6 +160,7 @@ class TrainTest(unittest.TestCase):
 
         components = data.build_data_components(config)
         canonicalizer = instantiate(config.preprocess.ragged_to_canonical)
+        video_extractor = instantiate(config.preprocess.video_to_ragged)
         slicer = components["slicer"]
 
         self.assertEqual(str(config.output.dir), "outputs/pianovam")
@@ -190,6 +190,7 @@ class TrainTest(unittest.TestCase):
             },
         )
         self.assertEqual(canonicalizer.target_fps, 30.0)
+        self.assertEqual(video_extractor.target_fps, 30.0)
         self.assertEqual(slicer.fps, 30.0)
         self.assertEqual(slicer.segment_frames, 210)
         self.assertEqual(slicer.stride_frames, 105)
@@ -199,6 +200,38 @@ class TrainTest(unittest.TestCase):
         )
         self.assertEqual(
             components["hand_loader"].transform.scale, (1.0, 1.0, 10.0)
+        )
+
+    def test_only_pianovam_downsamples_before_wilor(self) -> None:
+        config_directory = Path(__file__).parents[1] / "configs"
+        with initialize_config_dir(
+            version_base=None, config_dir=str(config_directory.resolve())
+        ):
+            configurations = {
+                name: compose(config_name=name)
+                for name in (
+                    "baseline",
+                    "causal_chord24",
+                    "chord_duration",
+                    "pianovam",
+                    "smoothed",
+                    "wrist_xyz10",
+                )
+            }
+
+        self.assertEqual(
+            {
+                name: config.preprocess.video_to_ragged.target_fps
+                for name, config in configurations.items()
+            },
+            {
+                "baseline": None,
+                "causal_chord24": None,
+                "chord_duration": None,
+                "pianovam": 30.0,
+                "smoothed": None,
+                "wrist_xyz10": None,
+            },
         )
 
     def test_causal_chord24_config_combines_both_ablation_modes(self) -> None:

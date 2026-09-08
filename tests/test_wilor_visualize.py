@@ -1,4 +1,4 @@
-"""Tests for the native-frame ragged WiLoR video visualizer."""
+"""Tests for the ragged WiLoR source-video visualizer."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 import numpy as np
 
+from airpiano.preprocessing.wilor import cache as cache_module
 from airpiano.preprocessing.wilor.cache import SCHEMA_VERSION
 from airpiano.preprocessing.wilor.selection import select_best_hand_indices
 from airpiano.preprocessing.wilor import visualize as visualize_module
@@ -200,6 +201,87 @@ class RaggedWiLoRVisualizeTest(unittest.TestCase):
             with self.assertRaises(FileExistsError):
                 render_ragged_video(video, raw, output)
             self.assertEqual(render_ragged_video(video, raw, output, overwrite=True), output.resolve())
+
+    def test_render_reads_the_source_frames_selected_by_downsampling(self) -> None:
+        class SourceReader:
+            def __init__(self) -> None:
+                self.frames = [
+                    np.full((48, 64, 3), index, dtype=np.uint8)
+                    for index in range(8)
+                ]
+                self.position = 0
+
+            def read(self):
+                if self.position == len(self.frames):
+                    return False, None
+                frame = self.frames[self.position]
+                self.position += 1
+                return True, frame
+
+            def grab(self):
+                if self.position == len(self.frames):
+                    return False
+                self.position += 1
+                return True
+
+            def timestamp_seconds(self):
+                return (self.position - 1) / 20.0
+
+            def release(self):
+                pass
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            raw = _write_cache(root)
+            output = root / "rendered.mp4"
+            manifest_path = raw / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["video"].update(
+                fps=10.0,
+                source_fps=20.0,
+                sampling_policy=cache_module.FIRST_DUE_SAMPLING_POLICY,
+            )
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            selected_values = []
+
+            def passthrough(frame, *args):
+                del args
+                selected_values.append(int(frame[0, 0, 0]))
+                return frame
+
+            def encoder_command(video, temporary, *args):
+                del video, args
+                return [
+                    sys.executable,
+                    "-c",
+                    (
+                        "import pathlib,sys; sys.stdin.buffer.read(); "
+                        "pathlib.Path(sys.argv[1]).touch()"
+                    ),
+                    str(temporary),
+                ]
+
+            with (
+                patch.object(
+                    cache_module,
+                    "OpenCVVideoReader",
+                    return_value=SourceReader(),
+                ),
+                patch.object(
+                    visualize_module,
+                    "_ffmpeg_command",
+                    side_effect=encoder_command,
+                ),
+                patch.object(
+                    visualize_module,
+                    "draw_overlay",
+                    side_effect=passthrough,
+                ),
+            ):
+                render_ragged_video(root / "source.mp4", raw, output)
+
+            self.assertEqual(selected_values, [0, 2, 4, 6])
+            self.assertTrue(output.is_file())
 
     def test_legacy_schema_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

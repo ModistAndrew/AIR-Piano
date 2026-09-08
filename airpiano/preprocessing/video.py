@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 from airpiano.preprocessing.wilor.backend import WiLoRBackend
@@ -34,9 +35,15 @@ class VideoToWiLoR:
         chunk_frames: int = 512,
         fast: bool = False,
         compile: bool = False,
+        target_fps: float | None = None,
     ) -> None:
         repository = resolve_path(wilor_repo)
         self.chunk_frames = int(chunk_frames)
+        if target_fps is not None and (
+            not math.isfinite(target_fps) or target_fps <= 0
+        ):
+            raise ValueError("target_fps must be positive or None")
+        self.target_fps = target_fps
         self._backend = WiLoRBackend(
             wilor_repo=repository,
             checkpoint=resolve_path(checkpoint),
@@ -85,6 +92,7 @@ class VideoToWiLoR:
             self._backend,
             chunk_frames=self.chunk_frames,
             overwrite=overwrite,
+            target_fps=self.target_fps,
         )
         if not completed_output_is_valid(output):
             raise RuntimeError(f"WiLoR extraction did not complete: {output}")

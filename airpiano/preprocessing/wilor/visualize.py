@@ -1,4 +1,4 @@
-"""Render ragged WiLoR detections over their native source video."""
+"""Render ragged WiLoR detections over matching source-video frames."""
 
 from __future__ import annotations
 
@@ -36,7 +36,7 @@ DEPTH_COLORS = cv2.applyColorMap(
 
 @dataclass(frozen=True)
 class RaggedFrame:
-    """All detections and selected-hand indices for one native video frame."""
+    """All detections and selected-hand indices for one cached video frame."""
 
     frame_index: int
     timestamp_seconds: float
@@ -54,7 +54,7 @@ def frame_bounds(
     start_seconds: float,
     duration_seconds: float | None,
 ) -> tuple[int, int]:
-    """Select cached native frames in a half-open wall-clock interval."""
+    """Select cached frames in a half-open wall-clock interval."""
 
     available_start = int(chunks[0]["frame_start"])
     available_end = int(chunks[-1]["frame_end"])

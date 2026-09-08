@@ -72,6 +72,8 @@ class _Backend:
     def __init__(self, fail_on_call: int | None = None) -> None:
         self.fail_on_call = fail_on_call
         self.calls: list[list[int]] = []
+        self.frame_values: list[list[int]] = []
+        self.timestamps: list[list[float]] = []
 
     def model_metadata(self) -> dict[str, str]:
         return {"model": "fake"}
@@ -80,8 +82,9 @@ class _Backend:
         return {"chunk_frames": chunk_frames}
 
     def build_chunk(self, indices, timestamps, frames):
-        del frames
         self.calls.append(list(indices))
+        self.frame_values.append([int(frame[0, 0, 0]) for frame in frames])
+        self.timestamps.append(list(timestamps))
         if len(self.calls) == self.fail_on_call:
             raise RuntimeError("simulated interruption")
         return _empty_chunk(list(indices), list(timestamps))
@@ -139,6 +142,7 @@ class VideoComponentTest(unittest.TestCase):
                 extractor = video_module.VideoToWiLoR(
                     wilor_repo=root / "upstream",
                     device="cpu",
+                    target_fps=30.0,
                 )
                 result = extractor.run(root / "deleted.mp4", output)
 
@@ -242,6 +246,196 @@ class CacheTest(unittest.TestCase):
         self.assertEqual(metadata["size_bytes"], 1234)
         run.assert_called_once()
         self.assertEqual(run.call_args.args[0][0], "ffprobe")
+
+    def test_first_due_reader_selects_fractional_rate_source_frames(self) -> None:
+        native = _Reader(13, fps=60.0)
+        reader = cache_module.FirstDueVideoReader(native, 60.0, 25.0)
+        values = []
+        timestamps = []
+
+        while True:
+            ok, frame = reader.read()
+            if not ok:
+                break
+            values.append(int(frame[0, 0, 0]))
+            timestamps.append(reader.timestamp_seconds())
+        reader.release()
+
+        self.assertEqual(values, [0, 3, 5, 8, 10, 12])
+        np.testing.assert_allclose(
+            timestamps, np.asarray(values, dtype=np.float64) / 60.0
+        )
+        self.assertTrue(native.released)
+
+    def test_60_to_30_processing_halves_backend_inputs_and_records_rates(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            video = root / "video.mp4"
+            video.touch()
+            output = root / "raw"
+            reader = _Reader(6, fps=60.0)
+            backend = _Backend()
+
+            with (
+                patch.object(
+                    cache_module,
+                    "probe_video",
+                    return_value=_video_metadata(6, fps=60.0),
+                ),
+                patch.object(
+                    cache_module,
+                    "OpenCVVideoReader",
+                    return_value=reader,
+                ),
+            ):
+                cache_module.process_video(
+                    video,
+                    output,
+                    backend,
+                    chunk_frames=8,
+                    target_fps=30.0,
+                )
+
+            self.assertEqual(backend.calls, [[0, 1, 2]])
+            self.assertEqual(backend.frame_values, [[0, 2, 4]])
+            np.testing.assert_allclose(backend.timestamps, [[0.0, 2 / 60, 4 / 60]])
+            manifest = cache_module.read_manifest(output)
+            self.assertEqual(manifest["video"]["fps"], 30.0)
+            self.assertEqual(manifest["video"]["source_fps"], 60.0)
+            self.assertEqual(
+                manifest["video"]["sampling_policy"],
+                cache_module.FIRST_DUE_SAMPLING_POLICY,
+            )
+            self.assertEqual(manifest["decoded_frame_count"], 3)
+            self.assertTrue(cache_module.completed_output_is_valid(output))
+
+    def test_rate_validation_and_equal_rate_native_metadata(self) -> None:
+        source = _video_metadata(6, fps=60.0)
+
+        self.assertEqual(cache_module.video_metadata_for_cache(source, None), source)
+        self.assertEqual(cache_module.video_metadata_for_cache(source, 60.0), source)
+        with self.assertRaisesRegex(ValueError, "positive"):
+            cache_module.video_metadata_for_cache(source, 0.0)
+        with self.assertRaisesRegex(ValueError, "cannot exceed"):
+            cache_module.video_metadata_for_cache(source, 60.1)
+
+    def test_completed_native_cache_is_reused_for_a_new_target_rate(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            video = root / "video.mp4"
+            video.touch()
+            output = root / "raw"
+
+            with (
+                patch.object(
+                    cache_module,
+                    "probe_video",
+                    return_value=_video_metadata(4, fps=60.0),
+                ) as probe,
+                patch.object(
+                    cache_module,
+                    "open_video_reader",
+                    return_value=_Reader(4, fps=60.0),
+                ),
+            ):
+                cache_module.process_video(video, output, _Backend(), chunk_frames=4)
+                cache_module.process_video(
+                    video,
+                    output,
+                    _Backend(),
+                    chunk_frames=4,
+                    target_fps=30.0,
+                )
+
+            self.assertEqual(probe.call_count, 1)
+            manifest = cache_module.read_manifest(output)
+            self.assertEqual(manifest["video"]["fps"], 60.0)
+            self.assertNotIn("source_fps", manifest["video"])
+            self.assertNotIn("sampling_policy", manifest["video"])
+
+    def test_partial_cache_refuses_a_different_requested_rate(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            video = root / "video.mp4"
+            video.touch()
+            output = root / "raw"
+            reader = _Reader(6, fps=60.0)
+
+            with (
+                patch.object(
+                    cache_module,
+                    "probe_video",
+                    return_value=_video_metadata(6, fps=60.0),
+                ),
+                patch.object(
+                    cache_module,
+                    "open_video_reader",
+                    return_value=reader,
+                ) as open_reader,
+            ):
+                with self.assertRaisesRegex(RuntimeError, "simulated interruption"):
+                    cache_module.process_video(
+                        video,
+                        output,
+                        _Backend(fail_on_call=2),
+                        chunk_frames=2,
+                    )
+                with self.assertRaisesRegex(RuntimeError, "different frame-rate"):
+                    cache_module.process_video(
+                        video,
+                        output,
+                        _Backend(),
+                        chunk_frames=2,
+                        target_fps=30.0,
+                    )
+
+            self.assertEqual(open_reader.call_count, 1)
+            self.assertEqual(cache_module.read_manifest(output)["video"]["fps"], 60.0)
+
+    def test_downsampled_partial_cache_resumes_on_the_same_rate(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            video = root / "video.mp4"
+            video.touch()
+            output = root / "raw"
+            first_reader = _Reader(10, fps=60.0)
+            resumed_reader = _Reader(10, fps=60.0)
+            interrupted = _Backend(fail_on_call=2)
+            resumed = _Backend()
+
+            with (
+                patch.object(
+                    cache_module,
+                    "probe_video",
+                    return_value=_video_metadata(10, fps=60.0),
+                ),
+                patch.object(
+                    cache_module,
+                    "OpenCVVideoReader",
+                    side_effect=[first_reader, resumed_reader],
+                ),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "simulated interruption"):
+                    cache_module.process_video(
+                        video,
+                        output,
+                        interrupted,
+                        chunk_frames=2,
+                        target_fps=30.0,
+                    )
+                cache_module.process_video(
+                    video,
+                    output,
+                    resumed,
+                    chunk_frames=2,
+                    target_fps=30.0,
+                )
+
+            self.assertEqual(resumed.calls, [[2, 3], [4]])
+            self.assertEqual(resumed.frame_values, [[4, 6], [8]])
+            self.assertTrue(cache_module.completed_output_is_valid(output))
 
     def test_interrupted_cache_resumes_and_publishes_partial_final_chunk(
         self,

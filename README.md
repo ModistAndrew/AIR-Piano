@@ -311,11 +311,13 @@ four-hand subsets. The expected counts are 81 train, 9 valid, and 9 test (99
 records total). Use `--data-root` and `--output-root` only for an alternate
 installation.
 
-This preset does not reuse `processed_wilor_25fps`. It applies the normal
-AirPiano pipeline to every native 60 fps source frame, stores resumable
-current-schema ragged detections, and canonicalizes them at 30 Hz. Before the
-long run, verify at least 20 GiB free on `/storage2`, GPU 1 availability, and
-the three licensed WiLoR assets:
+This preset does not reuse `processed_wilor_25fps`. For records without a raw
+cache, it first-due samples the native video to 30 Hz before hand detection and
+WiLoR inference. Valid completed raw caches are always reused, so earlier 60 Hz
+records remain untouched while new records use 30 Hz. Canonicalization reads
+each record's effective raw rate and produces uniform 30 Hz NPZs from either.
+Before the long run, verify at least 20 GiB free on `/storage2`, GPU 1
+availability, and the three licensed WiLoR assets:
 
 ```bash
 conda run -n v2n python run.py --config-name pianovam --cfg job --resolve
@@ -344,7 +346,12 @@ conda run -n v2n python run.py --config-name pianovam \
   stage=preprocess preprocess.task=ragged_to_canonical
 ```
 
-Keep `preprocess.overwrite=false` when restarting. Completion requires 99
+Keep `preprocess.overwrite=false` when restarting. Before changing a requested
+raw rate, allow the currently processing record to complete; a partial cache
+whose recorded rate does not match the request is deliberately refused to
+prevent mixed-rate chunks. Do not delete a partial record or its source video
+as part of this rollout. Completed caches are never regenerated automatically,
+even if their rate differs from the current setting. Completion requires 99
 `_SUCCESS` markers under the configured ragged root and 99 canonical NPZs:
 
 ```bash
@@ -536,6 +543,10 @@ in-tree backend and cache implementation. Model objects are loaded lazily on
 the first uncached video and reused by later calls on the same component.
 Renderer initialization is disabled for headless execution. Ordinary video is
 decoded with OpenCV; AV1 or an OpenCV-open failure uses system FFmpeg.
+`target_fps=None` processes the native rate. A positive target at or below the
+source rate uses deterministic first-due temporal sampling before the backend;
+for example, 60 to 30 Hz selects source frames `0, 2, 4, ...`. Upsampling and
+non-positive targets are rejected.
 
 The output layout for one stem is:
 
@@ -558,18 +569,21 @@ airpiano-wilor-ragged-v1
 The manifest contains `schema_version`, `status`, `video_path`, `video`,
 `model`, `inference`, `vertex_reconstruction`, `chunks`, creation/update times,
 and—once work advances—`decoded_frame_count` and `detection_count`. A complete
-manifest also has `completed_at`. `video` records probed codec, dimensions,
-source rate, duration, and file metadata. `model` records absolute upstream
-paths and asset hashes. `inference` records all extraction settings. Each chunk
-inventory entry contains `file`, `frame_start`, `frame_end`, and `detections`.
+manifest also has `completed_at`. `video.fps` is the effective cached rate used
+by canonicalization. Downsampled caches additionally record `video.source_fps`
+and `video.sampling_policy: first_due`; manifests without these optional fields
+mean native-rate processing. The remaining video fields describe the probed
+source. `model` records absolute upstream paths and asset hashes. `inference`
+records all extraction settings. Each chunk inventory entry contains `file`,
+`frame_start`, `frame_end`, and `detections`.
 
-Each compressed chunk is source-frame-major. Let `F` be frames in the chunk and
+Each compressed chunk is cached-frame-major. Let `F` be frames in the chunk and
 `D` be all hand detections across them:
 
 | Array | Shape/type and meaning |
 | --- | --- |
-| `frame_indices` | `int64[F]`, zero-based source indices. |
-| `frame_timestamps_seconds` | `float64[F]`, source timestamps. |
+| `frame_indices` | `int64[F]`, contiguous zero-based indices on the effective cached timeline. |
+| `frame_timestamps_seconds` | `float64[F]`, timestamps of the selected source frames. |
 | `frame_detection_offsets` | `int64[F+1]`, ragged boundaries into every detection array. |
 | `boxes_xyxy` | `float32[D,4]`, detector boxes. |
 | `detector_confidence` | `float32[D]`, detector scores. |
@@ -593,9 +607,12 @@ Chunks and manifests are written to temporary files, flushed, and atomically
 published. The manifest starts with `status: processing`, is updated after each
 published chunk, becomes `status: complete` after decode-length checks, and only
 then receives `_SUCCESS`. If interrupted, rerunning with `overwrite=false`
-reuses contiguous completed chunks, advances the decoder past their source
-frames, and resumes at the first missing chunk. A valid completed cache is
-reused before looking for the source MP4, so the video may be archived after
+reuses contiguous completed chunks, advances the sampling-aware decoder past
+them, and resumes at the first missing chunk. Resumption refuses an effective
+rate, source rate, or sampling-policy mismatch so one record cannot contain
+mixed-rate chunks. A valid completed cache is reused before looking for the
+source MP4 and without comparing its rate to the current request, so retained
+native-rate caches remain reusable and the video may be archived after
 successful extraction.
 
 `overwrite=true` removes the selected raw record directory before regeneration.
@@ -615,6 +632,8 @@ conda run -n v2n python -m airpiano.preprocessing.wilor.visualize \
 ```
 
 By default it renders every frame in the manifest's published chunk snapshot.
+For a first-due sampled cache, source reading applies the manifest's same policy
+so overlays use exactly the frames processed by WiLoR.
 Use a half-open time excerpt when a full performance is unnecessary:
 
 ```bash
@@ -1261,7 +1280,8 @@ Hydra `key=value` syntax.
 
 The `pianovam` preset overrides these paths with the PianoVAM source root,
 `/storage2/jinxuan/data/PianoVAM_v1` processed root, uppercase `MIDI/`, and
-`assets/splits/pianovam/*.txt`. It otherwise retains the baseline 30 Hz,
+`assets/splits/pianovam/*.txt`. It also requests 30 Hz first-due sampling before
+WiLoR for missing raw records. It retains the baseline 30 Hz canonical rate,
 210-frame, 105-stride, 128-chord, and pose-transform settings.
 
 ### WiLoR and canonicalization
@@ -1272,6 +1292,7 @@ The `pianovam` preset overrides these paths with the PianoVAM source root,
 | `preprocess.split_files` | all three configured splits | First-seen ordered union to process. |
 | `preprocess.overwrite` | `false` | Reuse compatible raw/canonical products; `true` regenerates selected work. |
 | `video_to_ragged._target_` | `airpiano.preprocessing.video.VideoToWiLoR` | Public extraction component. |
+| `video_to_ragged.target_fps` | `null` | Optional pre-WiLoR first-due sampling rate; PianoVAM overrides this to `30.0`. |
 | `wilor_repo` | `third_party/WiLoR` | Full vendored official source snapshot. |
 | `checkpoint` | `assets/wilor/wilor_final.ckpt` | WiLoR checkpoint. |
 | `model_config` | vendored `model_config.yaml` | Upstream architecture configuration. |
@@ -1282,7 +1303,7 @@ The `pianovam` preset overrides these paths with the PianoVAM source root,
 | `rescale_factor` | `2.0` | Hand crop expansion. |
 | `frame_batch_size` | `8` | Frames sent to detection per step. |
 | `hand_batch_size` | `16` | Crops sent to WiLoR per step. |
-| `chunk_frames` | `512` | Source frames per resumable chunk. |
+| `chunk_frames` | `512` | Effective cached frames per resumable chunk. |
 | `fast` | `false` | Enable upstream half/skip-block fast path. |
 | `compile` | `false` | Compile the backbone when fast mode is used. |
 | `ragged_to_canonical._target_` | `airpiano.preprocessing.canonical.WiLoRToCanonical` | Current raw schema to canonical NPZ. |

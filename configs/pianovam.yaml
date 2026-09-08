@@ -16,3 +16,7 @@ data:
     train: assets/splits/pianovam/train.txt
     valid: assets/splits/pianovam/valid.txt
     test: assets/splits/pianovam/test.txt
+
+preprocess:
+  video_to_ragged:
+    target_fps: 30.0
