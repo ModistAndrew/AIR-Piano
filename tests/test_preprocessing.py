@@ -16,6 +16,8 @@ from airpiano.preprocessing.canonical import (
     CANONICAL_SCHEMA_VERSION,
     RAW_SCHEMA_VERSION,
     GapAwareSavitzkyGolayPostprocessor,
+    InsufficientHandPresenceError,
+    LowestWristHandSelector,
     WiLoRCoordinateConverter,
     WiLoRToCanonical,
     raw_cache_has_markers,
@@ -246,6 +248,50 @@ class PreprocessingTest(unittest.TestCase):
             original = output.read_bytes()
             (raw / "manifest.json").write_text("not json", encoding="utf-8")
             self.assertEqual(WiLoRToCanonical().run(raw, output).read_bytes(), original)
+
+    def test_lowest_wrist_selector_applies_confidence_after_ranking(self) -> None:
+        arrays = _chunk_arrays(
+            0,
+            2,
+            [
+                [
+                    (0, 0.95, 20, 40, 1),
+                    (0, 0.74, 40, 180, 2),
+                    (1, 0.90, 60, 80, 3),
+                    (1, 0.75, 80, 160, 4),
+                ],
+                [],
+            ],
+        )
+
+        selected = LowestWristHandSelector(
+            minimum_detector_confidence=0.75
+        )(arrays)
+
+        # The lower left candidate is rejected after winning the vertical
+        # ranking; the higher-confidence upper candidate is not substituted.
+        np.testing.assert_array_equal(selected, [[-1, 3], [-1, -1]])
+
+    def test_canonicalizer_rejects_low_presence_before_writing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            raw = root / "raw"
+            output = root / "canonical.npz"
+            _write_raw_cache(raw)
+
+            with self.assertRaises(InsufficientHandPresenceError) as raised:
+                WiLoRToCanonical(minimum_presence=0.90).run(raw, output)
+
+            self.assertEqual(raised.exception.raw_record_dir, raw.resolve())
+            self.assertEqual(raised.exception.presence, 0.75)
+            self.assertEqual(raised.exception.minimum_presence, 0.90)
+            self.assertFalse(output.exists())
+
+            accepted = root / "accepted.npz"
+            self.assertEqual(
+                WiLoRToCanonical(minimum_presence=0.75).run(raw, accepted),
+                accepted.resolve(),
+            )
 
     def test_gap_aware_postprocessor_fills_only_short_internal_gaps(self) -> None:
         frames = 12
@@ -513,6 +559,74 @@ class PreprocessingTest(unittest.TestCase):
 
             with self.assertRaises(json.JSONDecodeError):
                 pipeline.preprocess(config)
+
+    def test_pipeline_reports_presence_rejection_and_continues(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            split = root / "split.txt"
+            split.write_text(
+                "subject/rejected\nsubject/valid\n",
+                encoding="utf-8",
+            )
+            raw_root = root / "raw"
+            hand_root = root / "canonical"
+            for name in ("rejected", "valid"):
+                raw = raw_root / "subject" / name
+                raw.mkdir(parents=True)
+                (raw / "manifest.json").write_text("{}", encoding="utf-8")
+                (raw / "_SUCCESS").touch()
+
+            class RaggedToCanonical:
+                def run(self, raw_record_dir, output_path, overwrite=False):
+                    raw = Path(raw_record_dir)
+                    if raw.name == "rejected":
+                        raise InsufficientHandPresenceError(raw, 0.50, 0.90)
+                    output = Path(output_path)
+                    output.parent.mkdir(parents=True, exist_ok=True)
+                    output.write_bytes(b"canonical fixture")
+                    return output
+
+            config = OmegaConf.create(
+                {
+                    "data": {
+                        "video_root": str(root / "videos"),
+                        "raw_wilor_root": str(raw_root),
+                        "hand_root": str(hand_root),
+                    },
+                    "preprocess": {
+                        "task": "ragged_to_canonical",
+                        "split_files": [str(split)],
+                        "overwrite": False,
+                        "ragged_to_canonical": {
+                            "_target_": (
+                                "airpiano.preprocessing.canonical."
+                                "WiLoRToCanonical"
+                            )
+                        },
+                    },
+                }
+            )
+            printed = io.StringIO()
+            with (
+                patch.object(
+                    pipeline,
+                    "instantiate",
+                    return_value=RaggedToCanonical(),
+                ),
+                redirect_stdout(printed),
+            ):
+                pipeline.preprocess(config)
+
+            self.assertFalse(
+                (hand_root / "subject" / "rejected.npz").exists()
+            )
+            self.assertTrue((hand_root / "subject" / "valid.npz").is_file())
+            report = printed.getvalue()
+            self.assertIn("[preprocess rejected] subject/rejected", report)
+            self.assertIn(
+                "completed_or_reused=1 missing=0 rejected=1",
+                report,
+            )
 
     def test_pipeline_reuses_canonical_and_skips_missing_markers(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

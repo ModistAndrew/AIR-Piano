@@ -24,6 +24,25 @@ PosePostprocessor = Callable[
     [np.ndarray, np.ndarray, float],
     tuple[np.ndarray, np.ndarray],
 ]
+HandSelector = Callable[[Mapping[str, np.ndarray]], np.ndarray]
+
+
+class InsufficientHandPresenceError(RuntimeError):
+    """Raised when a canonical record fails its configured presence gate."""
+
+    def __init__(
+        self,
+        raw_record_dir: Path,
+        presence: float,
+        minimum_presence: float,
+    ) -> None:
+        self.raw_record_dir = raw_record_dir
+        self.presence = presence
+        self.minimum_presence = minimum_presence
+        super().__init__(
+            f"{raw_record_dir}: hand presence {presence:.6f} is below "
+            f"the required {minimum_presence:.6f}"
+        )
 
 
 def raw_cache_has_markers(path: str | Path) -> bool:
@@ -84,6 +103,38 @@ class WiLoRCoordinateConverter:
         converted[:, :2] = xy
         converted[:, 2] = wrist_relative[:, 2]
         return converted
+
+
+class LowestWristHandSelector:
+    """Select the lowest wrist per handedness, then apply confidence."""
+
+    def __init__(self, minimum_detector_confidence: float = 0.75) -> None:
+        if not 0.0 <= minimum_detector_confidence <= 1.0:
+            raise ValueError(
+                "minimum_detector_confidence must be between zero and one"
+            )
+        self.minimum_detector_confidence = float(minimum_detector_confidence)
+
+    def __call__(self, arrays: Mapping[str, np.ndarray]) -> np.ndarray:
+        offsets = arrays["frame_detection_offsets"]
+        confidence = arrays["detector_confidence"]
+        handedness = arrays["is_right"]
+        wrist_v = arrays["pred_keypoints_2d_full"][:, 0, 1]
+        selected = np.full((len(offsets) - 1, 2), -1, np.int64)
+
+        for frame in range(len(selected)):
+            start = int(offsets[frame])
+            end = int(offsets[frame + 1])
+            for slot in range(2):
+                candidates = np.flatnonzero(handedness[start:end] == slot) + start
+                if not candidates.size:
+                    continue
+                lowest_v = np.max(wrist_v[candidates])
+                lowest = candidates[wrist_v[candidates] == lowest_v]
+                winner = int(lowest[np.argmax(confidence[lowest])])
+                if confidence[winner] >= self.minimum_detector_confidence:
+                    selected[frame, slot] = winner
+        return selected
 
 
 class GapAwareSavitzkyGolayPostprocessor:
@@ -174,11 +225,19 @@ class WiLoRToCanonical:
         self,
         target_fps: float = TARGET_FPS,
         coordinates: WiLoRCoordinateConverter | None = None,
+        selector: HandSelector | None = None,
         postprocessor: PosePostprocessor | None = None,
+        minimum_presence: float | None = None,
     ) -> None:
+        if minimum_presence is not None and not 0.0 <= minimum_presence <= 1.0:
+            raise ValueError("minimum_presence must be between zero and one")
         self.target_fps = float(target_fps)
         self.coordinates = coordinates or WiLoRCoordinateConverter()
+        self.selector = selector
         self.postprocessor = postprocessor
+        self.minimum_presence = (
+            None if minimum_presence is None else float(minimum_presence)
+        )
 
     def run(
         self,
@@ -192,12 +251,19 @@ class WiLoRToCanonical:
         if output.exists() and not overwrite:
             return output
 
-        pose, presence, source_fps = self._read_raw_sequence(
-            resolve_path(raw_record_dir)
-        )
+        raw_directory = resolve_path(raw_record_dir)
+        pose, presence, source_fps = self._read_raw_sequence(raw_directory)
         if self.postprocessor is not None:
             pose, presence = self.postprocessor(pose, presence, source_fps)
         pose, presence = self._resample(pose, presence, source_fps)
+        if self.minimum_presence is not None:
+            presence_rate = float(np.mean(presence))
+            if presence_rate < self.minimum_presence:
+                raise InsufficientHandPresenceError(
+                    raw_directory,
+                    presence_rate,
+                    self.minimum_presence,
+                )
         write_npz(
             output,
             pose=pose,
@@ -249,14 +315,17 @@ class WiLoRToCanonical:
         destination_pose: np.ndarray,
         destination_presence: np.ndarray,
     ) -> None:
-        """Choose the highest-confidence left and right detection per frame."""
+        """Choose one left and right detection per frame."""
 
         offsets = arrays["frame_detection_offsets"]
-        selected = select_best_hand_indices(
-            offsets,
-            arrays["detector_confidence"],
-            arrays["is_right"],
-        )
+        if self.selector is None:
+            selected = select_best_hand_indices(
+                offsets,
+                arrays["detector_confidence"],
+                arrays["is_right"],
+            )
+        else:
+            selected = self.selector(arrays)
         for frame in range(destination_pose.shape[0]):
             for slot, winner in enumerate(selected[frame]):
                 if winner < 0:

@@ -50,7 +50,9 @@ preprocess:
   ragged_to_canonical:
     _target_: airpiano.preprocessing.canonical.WiLoRToCanonical
     target_fps: 30.0
+    selector: null
     postprocessor: null
+    minimum_presence: null
     coordinates:
       _target_: airpiano.preprocessing.canonical.WiLoRCoordinateConverter
       xy_source: normalized_2d

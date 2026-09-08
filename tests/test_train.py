@@ -123,9 +123,18 @@ class TrainTest(unittest.TestCase):
             type(canonicalizer.postprocessor).__name__,
             "GapAwareSavitzkyGolayPostprocessor",
         )
+        self.assertEqual(
+            type(canonicalizer.selector).__name__,
+            "LowestWristHandSelector",
+        )
+        self.assertEqual(
+            canonicalizer.selector.minimum_detector_confidence,
+            0.75,
+        )
         self.assertEqual(canonicalizer.postprocessor.max_gap_seconds, 0.09)
         self.assertEqual(canonicalizer.postprocessor.window_seconds, 0.17)
         self.assertEqual(canonicalizer.postprocessor.polyorder, 2)
+        self.assertEqual(canonicalizer.minimum_presence, 0.90)
 
     def test_wrist_xyz10_config_constructs_ablation_components(self) -> None:
         config_directory = Path(__file__).parents[1] / "configs"

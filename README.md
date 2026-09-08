@@ -43,8 +43,7 @@ latency-bounded streaming services. Full-song inference simulates online frame
 visibility after preprocessing the complete recording.
 
 Deliberate non-goals include pluggable model architectures, alternate losses,
-note-level tokens, hand-presence filtering, distributed training, checkpoint
-resume, video downloading, and
+note-level tokens, distributed training, checkpoint resume, video downloading, and
 compatibility with V2N checkpoints. The model exposes causal frame-attention
 and chord-duration switches and is constructed through a Hydra `_target_`.
 The loss remains fixed in code.
@@ -55,7 +54,7 @@ The loss remains fixed in code.
 | --- | --- |
 | `run.py` | Hydra bootstrap and seven-entry stage dispatch only. |
 | `configs/baseline.yaml` | Baseline runtime configuration. |
-| `configs/smoothed.yaml` | Opt-in short-gap filling and temporal pose smoothing preset. |
+| `configs/smoothed.yaml` | Lowest-wrist selection, presence filtering, short-gap filling, and pose smoothing preset. |
 | `configs/pianovam.yaml` | PianoVAM-only 30 Hz configuration inheriting the baseline. |
 | `configs/wrist_xyz10.yaml` | Wrist-relative local-XYZ ×10 ablation inheriting the baseline. |
 | `configs/chord_duration.yaml` | Duration-conditioned chord-token ablation inheriting the baseline. |
@@ -718,16 +717,22 @@ selected hand's local 3D wrist joint from all XYZ joints. Coordinate conversion
 happens before optional temporal post-processing and temporal resampling;
 scaling is deliberately deferred to the configured `HandLoader` transform.
 
-The baseline sets `postprocessor: null`, preserving the selected ragged output
-exactly until resampling. The opt-in `smoothed` preset runs
-`GapAwareSavitzkyGolayPostprocessor` at the source frame rate. Independently for
-each hand, it linearly fills bounded internal gaps up to `0.09` seconds, splits
-the sequence at every remaining absence, and applies a centered order-2
+The baseline sets `selector: null`, `postprocessor: null`, and
+`minimum_presence: null`, preserving highest-confidence selection until
+resampling. The `smoothed` preset instead selects the largest full-image wrist
+V independently for each handedness, then marks that slot absent when the
+selected detection confidence is below `0.75`. It runs
+`GapAwareSavitzkyGolayPostprocessor` at the source frame rate, linearly filling
+bounded internal gaps up to `0.09` seconds and applying a centered order-2
 Savitzky-Golay filter with a `0.17`-second window to sufficiently long present
-runs. Leading, trailing, and longer gaps remain absent and exactly zero. Gap
-filling changes `presence`; filtering alone does not. This postprocessor does
-not track candidates or reject identity switches, so an incorrect selected hand
-can influence nearby smoothed frames.
+runs. Leading, trailing, and longer gaps remain absent and exactly zero.
+
+After resampling, `smoothed` requires mean presence over both hand slots to be
+at least `0.90`. A rejected record raises a dedicated presence exception before
+writing its canonical NPZ; offline preprocessing reports the rejection and
+continues with the next record. The postprocessor does not track candidates or
+reject identity switches, so an incorrect selected hand can still influence
+nearby smoothed frames.
 
 Absent slots are exact zero. Mixed input rates are sampled at target-frame
 centers using linear pose interpolation; a hand is present only if present at
@@ -1028,7 +1033,7 @@ conda run -n v2n python run.py --config-name smoothed \
   stage=preprocess preprocess.task=ragged_to_canonical
 ```
 
-This preset writes canonical files to
+This preset writes accepted canonical files to
 `${data.processed_root}/airpiano_wilor_2p5d_smoothed_30fps` and project artifacts
 to `outputs/smoothed/`. Canonical NPZs do not embed post-processing settings,
 and an existing output is trusted when `preprocess.overwrite=false`. After
@@ -1307,15 +1312,18 @@ WiLoR for missing raw records. It retains the baseline 30 Hz canonical rate,
 | `fast` | `false` | Enable upstream half/skip-block fast path. |
 | `compile` | `false` | Compile the backbone when fast mode is used. |
 | `ragged_to_canonical._target_` | `airpiano.preprocessing.canonical.WiLoRToCanonical` | Current raw schema to canonical NPZ. |
+| `ragged_to_canonical.selector` | `null` | Optional ragged-detection selector; `smoothed` uses lowest wrist V followed by a `0.75` confidence cutoff. |
 | `ragged_to_canonical.postprocessor` | `null` | Optional source-rate `(pose, presence, source_fps) -> (pose, presence)` step before resampling. |
+| `ragged_to_canonical.minimum_presence` | `null` | Optional final mean-presence gate evaluated after resampling and before writing. |
 | `coordinates._target_` | `airpiano.preprocessing.canonical.WiLoRCoordinateConverter` | Convert each selected raw detection into one canonical hand. |
 | `coordinates.xy_source` | `normalized_2d` | Use normalized full-image XY; `wrist_relative_3d` selects local XYZ relative to the wrist. |
 | `coordinates.z_source` | `wrist_relative_3d` | Local WiLoR depth relative to the selected hand's wrist. |
 | `target_fps` | `30.0` | Canonical output rate. |
 
-The `smoothed` preset configures
+The `smoothed` preset configures `LowestWristHandSelector(0.75)`,
 `GapAwareSavitzkyGolayPostprocessor(max_gap_seconds=0.09,
-window_seconds=0.17, polyorder=2)` and writes to a distinct canonical root.
+window_seconds=0.17, polyorder=2)`, and a `0.90` final presence gate. It writes
+accepted records to a distinct canonical root.
 
 These code and asset paths use the same repository-root resolver as every
 other AirPiano path. Hydra also keeps `job.chdir: false`, so it never relocates
@@ -1384,7 +1392,8 @@ The narrow replaceable interfaces are:
 | Component | Required interface |
 | --- | --- |
 | `VideoToWiLoR` | `run(video_path, output_dir, overwrite=False) -> Path`; emit the configured canonicalizer's raw contract. |
-| `WiLoRToCanonical` | `run(raw_record_dir, output_path, overwrite=False) -> Path`; emit canonical pose NPZ. |
+| `WiLoRToCanonical` | `run(raw_record_dir, output_path, overwrite=False) -> Path`; emit canonical pose NPZ or raise the configured presence rejection before writing. |
+| Canonical hand selector | `(raw_arrays) -> int64[frames,2]` absolute detection indices, using `-1` for absence. |
 | Canonical postprocessor | `(pose, presence, source_fps) -> (pose, presence)` with unchanged `[T,2,21,3]`/`[T,2]` shapes, `float32`/`bool` dtypes, and exact-zero absent slots. |
 | `RelativeStemPairer` | `pair(split_file, midi_root, hand_root) -> list[FilePair]`. |
 | `EagerSongReader` | `read(pair, midi_loader, hand_loader) -> Song`; the loader exposes it as `.reader` for realtime. |
@@ -1407,6 +1416,8 @@ Common changes stay localized:
 - New WiLoR coordinate representation: change the converter's XY/Z sources or
   replace its `_target_`; use a distinct canonical root when the stored
   coordinate meaning changes.
+- New ragged-candidate policy: replace `ragged_to_canonical.selector`; preserve
+  its absolute-index contract.
 - New temporal cleanup: replace `ragged_to_canonical.postprocessor`; preserve
   its array contract and use a distinct canonical root for changed settings.
 - Earlier rather than later chord extension: replace the slicer while retaining

@@ -10,8 +10,12 @@ data:
 
 preprocess:
   ragged_to_canonical:
+    selector:
+      _target_: airpiano.preprocessing.canonical.LowestWristHandSelector
+      minimum_detector_confidence: 0.75
     postprocessor:
       _target_: airpiano.preprocessing.canonical.GapAwareSavitzkyGolayPostprocessor
       max_gap_seconds: 0.09
       window_seconds: 0.17
       polyorder: 2
+    minimum_presence: 0.90
