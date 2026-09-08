@@ -18,6 +18,7 @@ import cv2
 import numpy as np
 
 from airpiano.preprocessing.wilor.backend import WiLoRBackend
+from airpiano.utils import resolve_path
 
 
 SCHEMA_VERSION = "airpiano-wilor-ragged-v1"
@@ -298,7 +299,7 @@ def read_manifest(output_dir: Path) -> dict[str, Any]:
 def completed_output_is_valid(output_dir: str | Path) -> bool:
     """Return completion state while rejecting incompatible cache schemas."""
 
-    output = Path(output_dir).expanduser().resolve()
+    output = resolve_path(output_dir)
     manifest_path = output / "manifest.json"
     if not manifest_path.is_file():
         return False
@@ -343,8 +344,8 @@ def process_video(
 ) -> Path:
     """Infer a video, resuming every completely published source-frame chunk."""
 
-    video = Path(video_path).expanduser().resolve()
-    output = Path(output_dir).expanduser().resolve()
+    video = resolve_path(video_path)
+    output = resolve_path(output_dir)
     if overwrite and output.exists():
         shutil.rmtree(output)
     elif completed_output_is_valid(output):

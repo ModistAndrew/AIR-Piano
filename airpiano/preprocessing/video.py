@@ -9,6 +9,7 @@ from airpiano.preprocessing.wilor.cache import (
     completed_output_is_valid,
     process_video,
 )
+from airpiano.utils import resolve_path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -34,19 +35,22 @@ class VideoToWiLoR:
         fast: bool = False,
         compile: bool = False,
     ) -> None:
-        repository = Path(wilor_repo).expanduser().resolve()
+        repository = resolve_path(wilor_repo)
         self.chunk_frames = int(chunk_frames)
         self._backend = WiLoRBackend(
             wilor_repo=repository,
-            checkpoint=checkpoint,
+            checkpoint=resolve_path(checkpoint),
             model_config=(
-                model_config
-                or repository / "pretrained_models/model_config.yaml"
+                resolve_path(model_config)
+                if model_config is not None
+                else repository / "pretrained_models/model_config.yaml"
             ),
-            detector_checkpoint=detector_checkpoint,
-            mano_model=mano_model,
+            detector_checkpoint=resolve_path(detector_checkpoint),
+            mano_model=resolve_path(mano_model),
             mano_mean_params=(
-                mano_mean_params or repository / "mano_data/mano_mean_params.npz"
+                resolve_path(mano_mean_params)
+                if mano_mean_params is not None
+                else repository / "mano_data/mano_mean_params.npz"
             ),
             device=device,
             detector_confidence=detector_confidence,
@@ -65,14 +69,14 @@ class VideoToWiLoR:
     ) -> Path:
         """Extract one video or reuse a complete current-schema raw cache."""
 
-        output = Path(output_dir).expanduser().resolve()
+        output = resolve_path(output_dir)
 
         # Reuse precedes source lookup so retained raw caches remain useful after
         # the large input video has been removed. Schema mismatches raise here.
         if not overwrite and completed_output_is_valid(output):
             return output
 
-        video = Path(video_path).expanduser().resolve()
+        video = resolve_path(video_path)
         if not video.is_file():
             raise FileNotFoundError(video)
         process_video(

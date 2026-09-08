@@ -8,23 +8,22 @@ import numpy as np
 from omegaconf import DictConfig
 
 from ..data.midi import MidoNoteReader
-from ..utils import resolve_output_path
+from ..utils import resolve_path
 from .artifact import load_artifact
 
 
 def sonify(cfg: DictConfig) -> None:
     """Sonify every inference artifact directly inside the configured root."""
 
-    root = resolve_output_path(cfg, cfg.sonify.root)
-    output_dir = resolve_output_path(cfg, cfg.sonify.output_dir)
-    midi_root = Path(str(cfg.sonify.midi_root)).expanduser().resolve()
+    root = resolve_path(cfg.sonify.root)
+    midi_root = resolve_path(cfg.sonify.midi_root)
     for input_path in sorted(root.glob("*.npz")):
         if not input_path.is_file():
             continue
         basename = input_path.name[: -len(".npz")]
         prediction_output = sonify_artifact(
             input_path,
-            output_dir / "predict" / f"{basename}.mid",
+            root / f"{basename}.mid",
             threshold=float(cfg.sonify.threshold),
             duration_seconds=float(cfg.sonify.duration_seconds),
             velocity=int(cfg.sonify.velocity),
@@ -34,7 +33,7 @@ def sonify(cfg: DictConfig) -> None:
         ground_truth_output = sonify_ground_truth(
             input_path,
             midi_path,
-            output_dir / "ground_truth" / f"{basename}.mid",
+            root / f"{basename}.gt.mid",
         )
         print(f"wrote prediction {prediction_output}", flush=True)
         print(f"wrote ground truth {ground_truth_output}", flush=True)
@@ -71,7 +70,7 @@ def _write_note_events(
         )
         previous_tick = tick
 
-    output = Path(output_path).expanduser().resolve()
+    output = resolve_path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
     midi.save(output)
     return output

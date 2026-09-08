@@ -8,6 +8,7 @@ from collections.abc import Callable
 import hydra
 from omegaconf import DictConfig, ListConfig
 
+from airpiano.full_song import full_song
 from airpiano.inference import test
 from airpiano.preprocessing.pipeline import preprocess
 from airpiano.realtime import realtime
@@ -23,6 +24,7 @@ STAGES: dict[str, StageHandler] = {
     "train": train,
     "test": test,
     "realtime": realtime,
+    "full-song": full_song,
     "visualize": visualize,
     "sonify": sonify,
 }

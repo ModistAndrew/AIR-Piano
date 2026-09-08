@@ -2,50 +2,63 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 from hydra.utils import instantiate
 from omegaconf import DictConfig
 
 from . import data
 from .inference import infer_dataset
-from .utils import resolve_output_path, write_json
+from .utils import resolve_path, write_json
 
 
-def realtime(cfg: DictConfig) -> None:
-    """Preprocess and infer every direct video/MIDI pair in one root."""
+def iter_realtime_songs(
+    cfg: DictConfig,
+    root: Path,
+    *,
+    overwrite: bool,
+    label: str = "realtime",
+    components: dict[str, Any] | None = None,
+) -> Iterator[tuple[int, int, data.Song, dict[str, Any]]]:
+    """Preprocess paired files from root video/MIDI directories."""
 
-    root = resolve_output_path(cfg, cfg.realtime.root)
+    video_root = root / "video"
+    midi_root = root / "midi"
     videos = {
         path.name[: -len(".mp4")]: path
-        for path in root.glob("*.mp4")
+        for path in video_root.glob("*.mp4")
         if path.is_file()
     }
     midis = {
         path.name[: -len(".mid")]: path
-        for path in root.glob("*.mid")
+        for path in midi_root.glob("*.mid")
         if path.is_file()
     }
     for record_id in sorted(videos.keys() - midis.keys()):
-        print(f"[realtime missing] {record_id}: {root / f'{record_id}.mid'}")
+        print(f"[{label} missing] {record_id}: {midi_root / f'{record_id}.mid'}")
     for record_id in sorted(midis.keys() - videos.keys()):
-        print(f"[realtime missing] {record_id}: {root / f'{record_id}.mp4'}")
+        print(f"[{label} missing] {record_id}: {video_root / f'{record_id}.mp4'}")
     record_ids = sorted(videos.keys() & midis.keys())
     if not record_ids:
+        print(
+            f"[{label}] no matching pairs under {video_root} and {midi_root}",
+            flush=True,
+        )
         return
-
-    output_root = resolve_output_path(cfg, cfg.realtime.output_dir)
-    checkpoint = resolve_output_path(cfg, cfg.realtime.checkpoint)
-    overwrite = bool(cfg.realtime.overwrite)
 
     # Components are shared across records so the lazy WiLoR models load once.
     video_to_ragged = instantiate(cfg.preprocess.video_to_ragged)
     ragged_to_canonical = instantiate(cfg.preprocess.ragged_to_canonical)
-    components = data.build_data_components(cfg)
+    components = components or data.build_data_components(cfg)
     for index, record_id in enumerate(record_ids, 1):
+        print(
+            f"{label} {index}/{len(record_ids)}: preprocess {record_id}",
+            flush=True,
+        )
         raw_dir = root / "raw_wilor" / record_id
         canonical_path = root / "canonical" / f"{record_id}.npz"
-        output_dir = output_root / record_id
         video_to_ragged.run(videos[record_id], raw_dir, overwrite)
         ragged_to_canonical.run(
             raw_record_dir=raw_dir,
@@ -62,6 +75,23 @@ def realtime(cfg: DictConfig) -> None:
             components["midi_loader"],
             components["hand_loader"],
         )
+        yield index, len(record_ids), song, components
+
+
+def realtime(cfg: DictConfig) -> None:
+    """Preprocess and infer every direct video/MIDI pair in one root."""
+
+    root = resolve_path(cfg.realtime.root)
+    output_root = root / "realtime"
+    checkpoint = resolve_path(cfg.realtime.checkpoint)
+    overwrite = bool(cfg.realtime.overwrite)
+
+    for index, record_count, song, components in iter_realtime_songs(
+        cfg,
+        root,
+        overwrite=overwrite,
+    ):
+        output_dir = output_root / song.record_id
         dataset = data.AlignmentDataset(
             songs=[song],
             slicer=components["slicer"],
@@ -70,6 +100,6 @@ def realtime(cfg: DictConfig) -> None:
         loss = infer_dataset(cfg, dataset, checkpoint, output_dir)
         write_json(output_dir / "realtime_loss.json", {"loss": loss})
         print(
-            f"realtime {index}/{len(record_ids)}: {record_id} loss={loss:.8f}",
+            f"realtime {index}/{record_count}: {song.record_id} loss={loss:.8f}",
             flush=True,
         )

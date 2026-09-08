@@ -14,6 +14,8 @@ from typing import Iterator, Sequence
 import cv2
 import numpy as np
 
+from airpiano.utils import resolve_path
+
 from .cache import open_video_reader, read_manifest
 from .selection import select_best_hand_indices
 
@@ -292,9 +294,9 @@ def render_ragged_video(
 ) -> Path:
     """Overlay one complete or currently published ragged-cache interval."""
 
-    video = Path(video_path).expanduser().resolve()
-    raw_cache = Path(raw_cache_dir).expanduser().resolve()
-    output = Path(output_path).expanduser().resolve()
+    video = resolve_path(video_path)
+    raw_cache = resolve_path(raw_cache_dir)
+    output = resolve_path(output_path)
     if output.exists() and not overwrite:
         raise FileExistsError(output)
 

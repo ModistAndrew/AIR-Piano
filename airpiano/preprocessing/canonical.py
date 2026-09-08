@@ -10,7 +10,7 @@ from typing import Mapping
 import numpy as np
 
 from airpiano.preprocessing.wilor.selection import select_best_hand_indices
-from airpiano.utils import write_npz
+from airpiano.utils import resolve_path, write_npz
 
 
 RAW_SCHEMA_VERSION = "airpiano-wilor-ragged-v1"
@@ -25,7 +25,7 @@ def raw_cache_has_markers(path: str | Path) -> bool:
     malformed manifests and chunks fail at their native JSON or NumPy operation.
     """
 
-    directory = Path(path).expanduser().resolve()
+    directory = resolve_path(path)
     return (
         directory.is_dir()
         and (directory / "manifest.json").is_file()
@@ -97,12 +97,12 @@ class WiLoRToCanonical:
     ) -> Path:
         """Convert one raw record to ``pose``, ``presence``, ``fps`` metadata."""
 
-        output = Path(output_path).expanduser().resolve()
+        output = resolve_path(output_path)
         if output.exists() and not overwrite:
             return output
 
         pose, presence, source_fps = self._read_raw_sequence(
-            Path(raw_record_dir).expanduser().resolve()
+            resolve_path(raw_record_dir)
         )
         pose, presence = self._resample(pose, presence, source_fps)
         write_npz(

@@ -7,6 +7,8 @@ from pathlib import Path
 
 import numpy as np
 
+from ..utils import resolve_path
+
 
 @dataclass(frozen=True)
 class InferenceArtifact:
@@ -35,7 +37,7 @@ class InferenceArtifact:
 def load_artifact(input_path: str | Path) -> InferenceArtifact:
     """Load a trusted inference NPZ, copying arrays before closing the archive."""
 
-    path = Path(input_path).expanduser().resolve()
+    path = resolve_path(input_path)
     with np.load(path, allow_pickle=False) as payload:
         return InferenceArtifact(
             probability=payload["probability"].copy(),

@@ -7,15 +7,17 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from omegaconf import DictConfig
 
 
-def resolve_output_path(cfg: DictConfig, value: str | Path) -> Path:
-    """Resolve a stage path relative to the configured project output directory."""
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
-    path = Path(value).expanduser()
+
+def resolve_path(value: str | Path) -> Path:
+    """Resolve an absolute path or an AirPiano-root-relative path."""
+
+    path = Path(str(value)).expanduser()
     if not path.is_absolute():
-        path = Path(str(cfg.output.dir)).expanduser() / path
+        path = PROJECT_ROOT / path
     return path.resolve()
 
 

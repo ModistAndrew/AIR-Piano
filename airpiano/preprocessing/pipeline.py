@@ -2,16 +2,11 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from hydra.utils import instantiate
 from omegaconf import DictConfig
 
 from airpiano.data.files import read_record_stems
-
-
-def _path(value: str | Path) -> Path:
-    return Path(value).expanduser().resolve()
+from airpiano.utils import resolve_path
 
 
 def preprocess(cfg: DictConfig) -> None:
@@ -23,10 +18,11 @@ def preprocess(cfg: DictConfig) -> None:
     if task not in {"video_to_ragged", "ragged_to_canonical", "all"}:
         raise ValueError(f"unknown preprocess task: {task}")
 
-    records = read_record_stems(cfg.preprocess.split_files)
-    video_root = _path(cfg.data.video_root)
-    raw_root = _path(cfg.data.raw_wilor_root)
-    canonical_root = _path(cfg.data.hand_root)
+    split_files = [resolve_path(path) for path in cfg.preprocess.split_files]
+    records = read_record_stems(split_files)
+    video_root = resolve_path(cfg.data.video_root)
+    raw_root = resolve_path(cfg.data.raw_wilor_root)
+    canonical_root = resolve_path(cfg.data.hand_root)
     overwrite = bool(cfg.preprocess.overwrite)
 
     # Construct only the implementation needed by the selected task. This

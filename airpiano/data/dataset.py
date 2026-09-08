@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from pathlib import Path
 from typing import Any
 
 import torch
@@ -12,6 +11,7 @@ from omegaconf import DictConfig
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader, Dataset
 
+from ..utils import resolve_path
 from .slicing import FutureChordSlicer
 from .targets import TargetGenerator
 from .types import Song
@@ -140,9 +140,9 @@ def build_dataset(
 
     components = components or build_data_components(cfg)
     songs = components["file_loader"].load(
-        split_file=Path(str(cfg.data.splits[split])).expanduser().resolve(),
-        midi_root=Path(str(cfg.data.midi_root)).expanduser().resolve(),
-        hand_root=Path(str(cfg.data.hand_root)).expanduser().resolve(),
+        split_file=resolve_path(cfg.data.splits[split]),
+        midi_root=resolve_path(cfg.data.midi_root),
+        hand_root=resolve_path(cfg.data.hand_root),
         midi_loader=components["midi_loader"],
         hand_loader=components["hand_loader"],
     )

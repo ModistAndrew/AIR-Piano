@@ -13,6 +13,8 @@ from typing import Any, Iterator, Sequence
 import cv2
 import numpy as np
 
+from airpiano.utils import resolve_path
+
 
 @contextmanager
 def repository_on_path(repository: Path) -> Iterator[None]:
@@ -318,12 +320,12 @@ class WiLoRBackend:
         fast: bool = False,
         compile: bool = False,
     ) -> None:
-        self.wilor_repo = Path(wilor_repo).expanduser().resolve()
-        self.checkpoint = Path(checkpoint).expanduser().resolve()
-        self.model_config = Path(model_config).expanduser().resolve()
-        self.detector_checkpoint = Path(detector_checkpoint).expanduser().resolve()
-        self.mano_model = Path(mano_model).expanduser().resolve()
-        self.mano_mean_params = Path(mano_mean_params).expanduser().resolve()
+        self.wilor_repo = resolve_path(wilor_repo)
+        self.checkpoint = resolve_path(checkpoint)
+        self.model_config = resolve_path(model_config)
+        self.detector_checkpoint = resolve_path(detector_checkpoint)
+        self.mano_model = resolve_path(mano_model)
+        self.mano_mean_params = resolve_path(mano_mean_params)
         self.device = str(device)
         self.detector_confidence = float(detector_confidence)
         self.rescale_factor = float(rescale_factor)

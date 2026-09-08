@@ -9,20 +9,19 @@ from pathlib import Path
 import numpy as np
 from omegaconf import DictConfig
 
-from ..utils import resolve_output_path
+from ..utils import resolve_path
 from .artifact import load_artifact
 
 
 def visualize(cfg: DictConfig) -> None:
     """Render every inference artifact directly inside the configured root."""
 
-    root = resolve_output_path(cfg, cfg.visualize.root)
-    output_dir = resolve_output_path(cfg, cfg.visualize.output_dir)
+    root = resolve_path(cfg.visualize.root)
     for input_path in sorted(root.glob("*.npz")):
         if not input_path.is_file():
             continue
         basename = input_path.name[: -len(".npz")]
-        output = visualize_artifact(input_path, output_dir / f"{basename}.png")
+        output = visualize_artifact(input_path, root / f"{basename}.png")
         print(f"wrote {output}", flush=True)
 
 
@@ -76,7 +75,7 @@ def visualize_artifact(input_path: str | Path, output_path: str | Path) -> Path:
     axes[1].set_xticklabels([f"{frame / artifact.fps:.2f}" for frame in ticks])
     axes[1].set_xlabel("Time in slice (seconds)")
 
-    output = Path(output_path).expanduser().resolve()
+    output = resolve_path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
     figure.savefig(output, dpi=180, bbox_inches="tight", facecolor="white")
     plt.close(figure)
