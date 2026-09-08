@@ -7,6 +7,3 @@ output:
 
 model:
   include_chord_duration: true
-
-wandb:
-  name: chord_duration

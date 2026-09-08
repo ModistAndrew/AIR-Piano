@@ -55,12 +55,15 @@ The loss remains fixed in code.
 | --- | --- |
 | `run.py` | Hydra bootstrap and seven-entry stage dispatch only. |
 | `configs/baseline.yaml` | Baseline runtime configuration. |
+| `configs/pianovam.yaml` | PianoVAM-only 30 Hz configuration inheriting the baseline. |
 | `configs/wrist_xyz10.yaml` | Wrist-relative local-XYZ ×10 ablation inheriting the baseline. |
 | `configs/chord_duration.yaml` | Duration-conditioned chord-token ablation inheriting the baseline. |
 | `configs/causal_chord24.yaml` | Causal frame-attention and 24-chord slicing ablation inheriting the baseline. |
 | `scripts/convert_legacy_splits.py` | One-time conversion of the original PianoMotion split lists to generalized record stems. |
+| `scripts/convert_pianovam_splits.py` | Generate AirPiano splits from PianoVAM's canonical v1.1 metadata. |
 | `scripts/migrate_pianomotion_data.py` | Resumable, verified migration of PianoMotion postprocessed data to `/storage2`. |
 | `assets/splits/pianomotion10m/` | Ignored, locally generated train, validation, and test record stems used by the baseline. |
+| `assets/splits/pianovam/` | Ignored, locally generated PianoVAM train, validation, and test record stems. |
 | `third_party/WiLoR/` | Full vendored snapshot of the official WiLoR source tree. |
 | `assets/wilor/` | Ignored, locally copied WiLoR, detector, and MANO binary assets. |
 | `airpiano/preprocessing/pipeline.py` | Config-owned offline record traversal and preprocessing orchestration. |
@@ -280,6 +283,85 @@ conda run -n v2n python scripts/convert_legacy_splits.py \
 The converter preserves first-seen order, removes duplicates, emits POSIX
 stems, and writes newline-terminated files. It is a migration utility only;
 runtime split readers accept only generalized stems.
+
+### PianoVAM splits and 30 Hz preparation
+
+`configs/pianovam.yaml` trains only on PianoVAM v1.1. Its source and generated
+roots are intentionally separate:
+
+```text
+source:     /storage/jinxuan/data/PianoVAM_v1
+processed:  /storage2/jinxuan/data/PianoVAM_v1
+splits:     <AirPiano>/assets/splits/pianovam
+```
+
+PianoVAM's `metadata.json` is the authoritative synchronization-aware split
+source. Generate the ignored local lists with:
+
+```bash
+conda run -n v2n python scripts/convert_pianovam_splits.py
+wc -l assets/splits/pianovam/*.txt
+```
+
+The converter sorts record IDs, requires the selected records' MP4 and MIDI
+files, merges `ext-train` into training, and excludes the special blurry and
+four-hand subsets. The expected counts are 81 train, 9 valid, and 9 test (99
+records total). Use `--data-root` and `--output-root` only for an alternate
+installation.
+
+This preset does not reuse `processed_wilor_25fps`. It applies the normal
+AirPiano pipeline to every native 60 fps source frame, stores resumable
+current-schema ragged detections, and canonicalizes them at 30 Hz. Before the
+long run, verify at least 20 GiB free on `/storage2`, GPU 1 availability, and
+the three licensed WiLoR assets:
+
+```bash
+conda run -n v2n python run.py --config-name pianovam --cfg job --resolve
+df -h /storage2
+nvidia-smi --query-gpu=index,name,memory.total,memory.free --format=csv
+
+head -n 1 assets/splits/pianovam/train.txt \
+  > /tmp/airpiano_pianovam_smoke.txt
+conda run -n v2n python run.py --config-name pianovam \
+  stage=preprocess preprocess.task=all \
+  'preprocess.split_files=[/tmp/airpiano_pianovam_smoke.txt]'
+```
+
+The smoke run writes to the final resumable roots, so the full run reuses it.
+Inspect its canonical NPZ before continuing; it must contain `pose`,
+`presence`, `fps`, and `schema_version`, with `float32[T,2,21,3]` pose,
+`bool[T,2]` presence, and `fps=30.0`.
+
+Run the expensive and cheap phases separately in a durable terminal session:
+
+```bash
+conda run -n v2n python run.py --config-name pianovam \
+  stage=preprocess preprocess.task=video_to_ragged
+
+conda run -n v2n python run.py --config-name pianovam \
+  stage=preprocess preprocess.task=ragged_to_canonical
+```
+
+Keep `preprocess.overwrite=false` when restarting. Completion requires 99
+`_SUCCESS` markers under the configured ragged root and 99 canonical NPZs:
+
+```bash
+find /storage2/jinxuan/data/PianoVAM_v1/wilor \
+  -name _SUCCESS -type f | wc -l
+find /storage2/jinxuan/data/PianoVAM_v1/airpiano_wilor_2p5d_30fps \
+  -maxdepth 1 -name '*.npz' -type f | wc -l
+```
+
+After both counts reach 99, train and evaluate with:
+
+```bash
+conda run -n v2n python run.py --config-name pianovam stage=train
+conda run -n v2n python run.py --config-name pianovam stage=test
+```
+
+Artifacts live under `outputs/pianovam`. PianoVAM is CC BY-NC-SA 4.0; the
+derived cache also remains subject to WiLoR and MANO terms. Do not commit or
+redistribute the source data, model assets, or derived pose arrays.
 
 ## PianoMotion postprocessed-data migration
 
@@ -866,6 +948,7 @@ working directory.
 ```bash
 conda run -n v2n python run.py --cfg job --resolve
 conda run -n v2n python scripts/convert_legacy_splits.py
+conda run -n v2n python scripts/convert_pianovam_splits.py
 ```
 
 ### Preprocess
@@ -1148,6 +1231,11 @@ Hydra `key=value` syntax.
 | `data.hand_root` | `${data.processed_root}/airpiano_wilor_2p5d_30fps` | `<stem>.npz` canonical files. |
 | `data.splits.*` | `assets/splits/pianomotion10m/*.txt` | Ignored local generalized root-relative stems. |
 
+The `pianovam` preset overrides these paths with the PianoVAM source root,
+`/storage2/jinxuan/data/PianoVAM_v1` processed root, uppercase `MIDI/`, and
+`assets/splits/pianovam/*.txt`. It otherwise retains the baseline 30 Hz,
+210-frame, 105-stride, 128-chord, and pose-transform settings.
+
 ### WiLoR and canonicalization
 
 | Field | Baseline | Meaning |
@@ -1211,7 +1299,7 @@ loss intentionally remains fixed in code.
 | `model._target_` | `airpiano.model.transformer.AirPianoTransformer` | Configured alignment model instantiated for training and restored from checkpoints. |
 | `model.include_chord_duration` | `false` | Consume the packed 200-bin duration suffix through a separate embedding. |
 | `wandb.project` | `air_piano` | Required online project. |
-| `wandb.name` | `baseline` | Run name. |
+| `wandb.name` | `${output.project_name}` | Run name shared with the local output directory. |
 | `wandb.entity` | `null` | Optional team/entity. |
 | `wandb.dir` | `${output.dir}/logs` | W&B parent directory. |
 | `test.checkpoint` | `${output.dir}/checkpoints/last.pt` | Checkpoint loaded by `stage=test`. |
@@ -1362,7 +1450,7 @@ conda run -n v2n python -c \
 | --- | --- |
 | Vendored WiLoR files are absent | Restore `third_party/WiLoR` from the AirPiano checkout. Do not create a nested clone or external Git link. |
 | `wilor` imports fail while the vendored files exist | Check the `v2n` environment against upstream requirements; source initialization is not required. |
-| Missing split file | Generate the three ignored `assets/splits/pianomotion10m` files with `scripts/convert_legacy_splits.py`. |
+| Missing split file | Generate PianoMotion lists with `scripts/convert_legacy_splits.py` or PianoVAM lists with `scripts/convert_pianovam_splits.py`, matching the selected config. |
 | Missing checkpoint, detector, or MANO file | Copy the three ignored `assets/wilor` binaries as independent regular files after accepting their licenses, then verify their hashes. |
 | `ffprobe`/`ffmpeg` not found or video decode fails | Verify both system executables. OpenCV is primary except AV1; FFmpeg is the fallback. |
 | Raw schema mismatch mentioning `pianomotion-wilor-v1` | Runtime intentionally rejects that cache. For the legacy PianoMotion corpus, run the documented migration; otherwise preserve canonical output or regenerate raw from video in a clean root. |

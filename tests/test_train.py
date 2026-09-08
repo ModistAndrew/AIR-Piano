@@ -131,6 +131,55 @@ class TrainTest(unittest.TestCase):
             components["hand_loader"].transform.scale, (10.0, 10.0, 10.0)
         )
 
+    def test_pianovam_config_keeps_baseline_behavior_at_30_fps(self) -> None:
+        config_directory = Path(__file__).parents[1] / "configs"
+        with initialize_config_dir(
+            version_base=None, config_dir=str(config_directory.resolve())
+        ):
+            config = compose(config_name="pianovam")
+
+        components = data.build_data_components(config)
+        canonicalizer = instantiate(config.preprocess.ragged_to_canonical)
+        slicer = components["slicer"]
+
+        self.assertEqual(str(config.output.dir), "outputs/pianovam")
+        self.assertEqual(str(config.wandb.name), "pianovam")
+        self.assertEqual(
+            str(config.data.root), "/storage/jinxuan/data/PianoVAM_v1"
+        )
+        self.assertEqual(
+            str(config.data.processed_root),
+            "/storage2/jinxuan/data/PianoVAM_v1",
+        )
+        self.assertEqual(str(config.data.midi_root), f"{config.data.root}/MIDI")
+        self.assertEqual(str(config.data.video_root), f"{config.data.root}/Video")
+        self.assertEqual(
+            str(config.data.raw_wilor_root), f"{config.data.processed_root}/wilor"
+        )
+        self.assertEqual(
+            str(config.data.hand_root),
+            f"{config.data.processed_root}/airpiano_wilor_2p5d_30fps",
+        )
+        self.assertEqual(
+            {name: str(path) for name, path in config.data.splits.items()},
+            {
+                "train": "assets/splits/pianovam/train.txt",
+                "valid": "assets/splits/pianovam/valid.txt",
+                "test": "assets/splits/pianovam/test.txt",
+            },
+        )
+        self.assertEqual(canonicalizer.target_fps, 30.0)
+        self.assertEqual(slicer.fps, 30.0)
+        self.assertEqual(slicer.segment_frames, 210)
+        self.assertEqual(slicer.stride_frames, 105)
+        self.assertEqual(slicer.chord_count, 128)
+        self.assertEqual(
+            components["hand_loader"].transform.offset, (0.5, 0.5, 0.0)
+        )
+        self.assertEqual(
+            components["hand_loader"].transform.scale, (1.0, 1.0, 10.0)
+        )
+
     def test_causal_chord24_config_combines_both_ablation_modes(self) -> None:
         config_directory = Path(__file__).parents[1] / "configs"
         with initialize_config_dir(

@@ -19,6 +19,3 @@ dataset:
     transform:
       offset: [0.0, 0.0, 0.0]
       scale: [10.0, 10.0, 10.0]
-
-wandb:
-  name: wrist_xyz10

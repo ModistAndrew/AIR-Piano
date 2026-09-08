@@ -112,7 +112,7 @@ test:
 
 wandb:
   project: air_piano
-  name: baseline
+  name: ${output.project_name}
   entity: null
   dir: ${output.dir}/logs
 

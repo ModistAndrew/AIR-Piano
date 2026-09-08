@@ -1,0 +1,18 @@
+defaults:
+  - baseline
+  - _self_
+
+output:
+  project_name: pianovam
+
+data:
+  root: /storage/jinxuan/data/PianoVAM_v1
+  processed_root: /storage2/jinxuan/data/PianoVAM_v1
+  midi_root: ${data.root}/MIDI
+  video_root: ${data.root}/Video
+  raw_wilor_root: ${data.processed_root}/wilor
+  hand_root: ${data.processed_root}/airpiano_wilor_2p5d_30fps
+  splits:
+    train: assets/splits/pianovam/train.txt
+    valid: assets/splits/pianovam/valid.txt
+    test: assets/splits/pianovam/test.txt

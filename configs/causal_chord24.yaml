@@ -15,9 +15,6 @@ dataset:
 model:
   causal_frame_attention: true
 
-wandb:
-  name: causal_chord24
-
 full_song:
   root: null # Set to a root containing video/ and midi/ directories.
   checkpoint: ${output.dir}/checkpoints/last.pt
