@@ -30,10 +30,12 @@ class Note:
 
 @dataclass(frozen=True)
 class Chord:
-    """A non-empty group of notes sharing an onset neighborhood."""
+    """A non-empty onset group with raw and quantized absolute duration."""
 
     id: int
     notes: tuple[Note, ...]
+    duration: float
+    quantized_dur: torch.Tensor
 
     @property
     def onset(self) -> float:

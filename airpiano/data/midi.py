@@ -1,4 +1,4 @@
-"""Physical-note MIDI parsing and pitch-only chord construction."""
+"""Physical-note MIDI parsing and duration-bearing chord construction."""
 
 from __future__ import annotations
 
@@ -7,8 +7,30 @@ from collections import defaultdict, deque
 from pathlib import Path
 
 import mido
+import torch
+import torch.nn.functional as F
 
 from .types import Chord, MidiSequence, Note
+
+
+DURATION_BINS = 200
+DURATION_COEFFICIENT = 4.0
+DURATION_CLIP_SECONDS = 16.0
+
+
+def quantize_duration_seconds(duration_seconds: torch.Tensor) -> torch.Tensor:
+    """Return MIDI2ScoreTransformer duration one-hots for absolute seconds."""
+
+    denominator = math.log(
+        DURATION_COEFFICIENT * DURATION_CLIP_SECONDS + 1.0
+    )
+    bucket_indices = torch.floor(
+        DURATION_BINS
+        * torch.log(DURATION_COEFFICIENT * duration_seconds + 1.0)
+        / denominator
+    ).to(torch.long)
+    bucket_indices = bucket_indices.clamp(0, DURATION_BINS - 1)
+    return F.one_hot(bucket_indices, num_classes=DURATION_BINS).to(torch.float32)
 
 
 class MidoNoteReader:
@@ -62,7 +84,7 @@ class InitializerChordMerger:
         self.tolerance_seconds = float(tolerance_seconds)
 
     def merge(self, notes: tuple[Note, ...]) -> tuple[Chord, ...]:
-        chords: list[Chord] = []
+        groups: list[tuple[Note, ...]] = []
         start = 0
         while start < len(notes):
             initializer = notes[start].onset
@@ -77,8 +99,27 @@ class InitializerChordMerger:
                 if onset - initializer > self.tolerance_seconds + roundoff:
                     break
                 stop += 1
-            chords.append(Chord(id=len(chords), notes=notes[start:stop]))
+            groups.append(notes[start:stop])
             start = stop
+
+        chords = []
+        for index, group in enumerate(groups):
+            onset = group[0].onset
+            if index + 1 < len(groups):
+                duration = groups[index + 1][0].onset - onset
+            else:
+                duration = max(note.offset for note in group) - onset
+            quantized_dur = quantize_duration_seconds(
+                torch.tensor(duration, dtype=torch.float64)
+            )
+            chords.append(
+                Chord(
+                    id=index,
+                    notes=group,
+                    duration=duration,
+                    quantized_dur=quantized_dur,
+                )
+            )
         return tuple(chords)
 
 

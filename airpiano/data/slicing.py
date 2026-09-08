@@ -7,7 +7,11 @@ import math
 
 import torch
 
+from .midi import DURATION_BINS
 from .types import Chord, Song
+
+
+PITCH_FEATURES = 128
 
 
 class FutureChordSlicer:
@@ -139,12 +143,14 @@ class FutureChordSlicer:
             song.chords[index] for index in chord_positions
         )
         chord_values = torch.zeros(
-            (len(selected_chords), 128), dtype=torch.float32
+            (len(selected_chords), PITCH_FEATURES + DURATION_BINS),
+            dtype=torch.float32,
         )
         for local_index, chord in enumerate(selected_chords):
             for note in chord.notes:
                 # Duplicate physical notes intentionally collapse in multi-hot space.
                 chord_values[local_index, note.pitch] = 1.0
+            chord_values[local_index, PITCH_FEATURES:] = chord.quantized_dur
 
         return {
             "hands": song.hands[frame_start:frame_stop],

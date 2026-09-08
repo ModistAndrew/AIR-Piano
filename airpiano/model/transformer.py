@@ -19,16 +19,21 @@ from .layers import (
 
 
 class AirPianoTransformer(nn.Module):
-    """Align fixed-format two-hand frames with pitch-multihot chords.
+    """Align fixed-format two-hand frames with pitch/duration chord tokens.
 
     The architecture is intentionally fixed. Sequence lengths remain dynamic:
     ``T`` is the number of hand frames and ``C`` is the number of candidate
     chords in the current slice.
     """
 
-    def __init__(self, causal_frame_attention: bool = False) -> None:
+    def __init__(
+        self,
+        causal_frame_attention: bool = False,
+        include_chord_duration: bool = False,
+    ) -> None:
         super().__init__()
         self.causal_frame_attention = bool(causal_frame_attention)
+        self.include_chord_duration = bool(include_chord_duration)
         self.hand_embedding = nn.Sequential(
             nn.Linear(128, MODEL_DIM),
             nn.GELU(),
@@ -41,6 +46,14 @@ class AirPianoTransformer(nn.Module):
             nn.LayerNorm(MODEL_DIM),
             nn.Dropout(DROPOUT),
         )
+        self.chord_duration_embedding = None
+        if self.include_chord_duration:
+            self.chord_duration_embedding = nn.Sequential(
+                nn.Linear(200, MODEL_DIM),
+                nn.GELU(),
+                nn.LayerNorm(MODEL_DIM),
+                nn.Dropout(DROPOUT),
+            )
 
         chord_layer = nn.TransformerEncoderLayer(
             d_model=MODEL_DIM,
@@ -110,7 +123,13 @@ class AirPianoTransformer(nn.Module):
         frames = frames.masked_fill(~frame_mask.unsqueeze(-1), 0.0)
 
         chord_dtype = self.chord_embedding[0].weight.dtype
-        chord_states = self.chord_embedding(chords.to(dtype=chord_dtype))
+        chord_states = self.chord_embedding(
+            chords[..., :128].to(dtype=chord_dtype)
+        )
+        if self.chord_duration_embedding is not None:
+            chord_states = chord_states + self.chord_duration_embedding(
+                chords[..., 128:].to(dtype=chord_dtype)
+            )
         chord_states = chord_states.masked_fill(~chord_mask.unsqueeze(-1), 0.0)
         global_chord = self.global_chord.expand(batch_size, -1, -1)
         chord_memory = torch.cat((global_chord, chord_states), dim=1)

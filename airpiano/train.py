@@ -9,13 +9,14 @@ from typing import Any
 
 import numpy as np
 import torch
+from hydra.utils import instantiate
 from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import DataLoader
 
 from . import data
 from .model.loss import masked_bce_loss
 from .model.transformer import AirPianoTransformer
-from .utils import resolve_output_path
+from .utils import resolve_path
 
 
 TENSOR_INPUTS = ("hands", "hand_presence", "chords", "frame_mask", "chord_mask")
@@ -104,15 +105,7 @@ def train(cfg: DictConfig) -> None:
     valid_loader = data.make_loader(
         valid_dataset, batch_size=batch_size, shuffle=False, seed=seed, device=device
     )
-    model = AirPianoTransformer(
-        causal_frame_attention=bool(
-            OmegaConf.select(
-                cfg,
-                "model.causal_frame_attention",
-                default=False,
-            )
-        )
-    ).to(device)
+    model = instantiate(cfg.model).to(device)
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=float(cfg.train.learning_rate),
@@ -129,8 +122,8 @@ def train(cfg: DictConfig) -> None:
             step, warmup_steps=warmup_steps, total_steps=total_steps
         ),
     )
-    checkpoint_dir = resolve_output_path(cfg, "checkpoints")
-    wandb_dir = resolve_output_path(cfg, cfg.wandb.dir)
+    checkpoint_dir = resolve_path(cfg.output.dir) / "checkpoints"
+    wandb_dir = resolve_path(cfg.wandb.dir)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     wandb_dir.mkdir(parents=True, exist_ok=True)
     resolved_config = OmegaConf.to_container(cfg, resolve=True)
