@@ -49,6 +49,7 @@ preprocess:
   ragged_to_canonical:
     _target_: airpiano.preprocessing.canonical.WiLoRToCanonical
     target_fps: 30.0
+    postprocessor: null
     coordinates:
       _target_: airpiano.preprocessing.canonical.WiLoRCoordinateConverter
       xy_source: normalized_2d
@@ -117,10 +118,10 @@ wandb:
   dir: ${output.dir}/logs
 
 visualize:
-  root: ${output.dir}/test
+  root: ${test.output_dir}
 
 sonify:
-  root: ${output.dir}/test
+  root: ${test.output_dir}
   midi_root: ${data.midi_root}
   threshold: 0.2
   duration_seconds: 1.0

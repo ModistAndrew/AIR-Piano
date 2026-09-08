@@ -55,6 +55,7 @@ The loss remains fixed in code.
 | --- | --- |
 | `run.py` | Hydra bootstrap and seven-entry stage dispatch only. |
 | `configs/baseline.yaml` | Baseline runtime configuration. |
+| `configs/smoothed.yaml` | Opt-in short-gap filling and temporal pose smoothing preset. |
 | `configs/pianovam.yaml` | PianoVAM-only 30 Hz configuration inheriting the baseline. |
 | `configs/wrist_xyz10.yaml` | Wrist-relative local-XYZ ×10 ablation inheriting the baseline. |
 | `configs/chord_duration.yaml` | Duration-conditioned chord-token ablation inheriting the baseline. |
@@ -92,7 +93,7 @@ Useful explicit imports are:
 ```python
 from airpiano.preprocessing.pipeline import preprocess
 from airpiano.preprocessing.video import VideoToWiLoR
-from airpiano.preprocessing.canonical import WiLoRCoordinateConverter, WiLoRToCanonical
+from airpiano.preprocessing.canonical import GapAwareSavitzkyGolayPostprocessor, WiLoRCoordinateConverter, WiLoRToCanonical
 from airpiano.preprocessing.wilor.visualize import render_ragged_video
 from airpiano.data import build_data_components, build_dataset, make_loader
 from airpiano.train import train
@@ -115,13 +116,14 @@ without user approval.
 ```bash
 cd /storage/jinxuan/workspace/AirPiano
 conda run -n v2n python -c \
-  "import torch,numpy,mido,hydra,omegaconf,wandb,matplotlib,cv2; print(torch.__version__)"
+  "import torch,numpy,scipy,mido,hydra,omegaconf,wandb,matplotlib,cv2; print(torch.__version__)"
 conda run -n v2n python run.py --cfg job --resolve
 ```
 
-System `ffmpeg` and `ffprobe`, OpenCV, PyTorch, Ultralytics, and the dependencies
-declared by WiLoR are required for video preprocessing. Confirm the system tools
-without modifying the environment:
+System `ffmpeg` and `ffprobe`, OpenCV, PyTorch, SciPy, Ultralytics, and the
+dependencies declared by WiLoR are required for video preprocessing and
+canonical post-processing. Confirm the system tools without modifying the
+environment:
 
 ```bash
 ffmpeg -version
@@ -694,8 +696,19 @@ The configured `WiLoRCoordinateConverter` owns spatial coordinates. The
 baseline uses full-image pixels divided by image width/height for XY and local
 joint depth minus wrist depth for Z. The `wrist_xyz10` ablation subtracts the
 selected hand's local 3D wrist joint from all XYZ joints. Coordinate conversion
-happens before temporal resampling; scaling is deliberately deferred to the
-configured `HandLoader` transform.
+happens before optional temporal post-processing and temporal resampling;
+scaling is deliberately deferred to the configured `HandLoader` transform.
+
+The baseline sets `postprocessor: null`, preserving the selected ragged output
+exactly until resampling. The opt-in `smoothed` preset runs
+`GapAwareSavitzkyGolayPostprocessor` at the source frame rate. Independently for
+each hand, it linearly fills bounded internal gaps up to `0.09` seconds, splits
+the sequence at every remaining absence, and applies a centered order-2
+Savitzky-Golay filter with a `0.17`-second window to sufficiently long present
+runs. Leading, trailing, and longer gaps remain absent and exactly zero. Gap
+filling changes `presence`; filtering alone does not. This postprocessor does
+not track candidates or reject identity switches, so an incorrect selected hand
+can influence nearby smoothed frames.
 
 Absent slots are exact zero. Mixed input rates are sampled at target-frame
 centers using linear pose interpolation; a hand is present only if present at
@@ -989,6 +1002,21 @@ conda run -n v2n python run.py stage=preprocess \
   'preprocess.split_files=[/absolute/path/to/smoke.txt]'
 ```
 
+To reuse the same ragged detections while generating the opt-in smoothed cache:
+
+```bash
+conda run -n v2n python run.py --config-name smoothed \
+  stage=preprocess preprocess.task=ragged_to_canonical
+```
+
+This preset writes canonical files to
+`${data.processed_root}/airpiano_wilor_2p5d_smoothed_30fps` and project artifacts
+to `outputs/smoothed/`. Canonical NPZs do not embed post-processing settings,
+and an existing output is trusted when `preprocess.overwrite=false`. After
+changing smoothing settings, select another `data.hand_root` or deliberately
+regenerate the selected canonical files with `preprocess.overwrite=true`; the
+ragged cache itself remains reusable.
+
 To preprocess, train, and then infer the test set sequentially in one
 invocation, pass a Hydra list:
 
@@ -1258,10 +1286,15 @@ The `pianovam` preset overrides these paths with the PianoVAM source root,
 | `fast` | `false` | Enable upstream half/skip-block fast path. |
 | `compile` | `false` | Compile the backbone when fast mode is used. |
 | `ragged_to_canonical._target_` | `airpiano.preprocessing.canonical.WiLoRToCanonical` | Current raw schema to canonical NPZ. |
+| `ragged_to_canonical.postprocessor` | `null` | Optional source-rate `(pose, presence, source_fps) -> (pose, presence)` step before resampling. |
 | `coordinates._target_` | `airpiano.preprocessing.canonical.WiLoRCoordinateConverter` | Convert each selected raw detection into one canonical hand. |
 | `coordinates.xy_source` | `normalized_2d` | Use normalized full-image XY; `wrist_relative_3d` selects local XYZ relative to the wrist. |
 | `coordinates.z_source` | `wrist_relative_3d` | Local WiLoR depth relative to the selected hand's wrist. |
 | `target_fps` | `30.0` | Canonical output rate. |
+
+The `smoothed` preset configures
+`GapAwareSavitzkyGolayPostprocessor(max_gap_seconds=0.09,
+window_seconds=0.17, polyorder=2)` and writes to a distinct canonical root.
 
 These code and asset paths use the same repository-root resolver as every
 other AirPiano path. Hydra also keeps `job.chdir: false`, so it never relocates
@@ -1331,6 +1364,7 @@ The narrow replaceable interfaces are:
 | --- | --- |
 | `VideoToWiLoR` | `run(video_path, output_dir, overwrite=False) -> Path`; emit the configured canonicalizer's raw contract. |
 | `WiLoRToCanonical` | `run(raw_record_dir, output_path, overwrite=False) -> Path`; emit canonical pose NPZ. |
+| Canonical postprocessor | `(pose, presence, source_fps) -> (pose, presence)` with unchanged `[T,2,21,3]`/`[T,2]` shapes, `float32`/`bool` dtypes, and exact-zero absent slots. |
 | `RelativeStemPairer` | `pair(split_file, midi_root, hand_root) -> list[FilePair]`. |
 | `EagerSongReader` | `read(pair, midi_loader, hand_loader) -> Song`; the loader exposes it as `.reader` for realtime. |
 | `MidoNoteReader` | `read(path) -> tuple[Note,...]`. |
@@ -1352,6 +1386,8 @@ Common changes stay localized:
 - New WiLoR coordinate representation: change the converter's XY/Z sources or
   replace its `_target_`; use a distinct canonical root when the stored
   coordinate meaning changes.
+- New temporal cleanup: replace `ragged_to_canonical.postprocessor`; preserve
+  its array contract and use a distinct canonical root for changed settings.
 - Earlier rather than later chord extension: replace the slicer while retaining
   all overlapping chords and the fixed-width overflow safeguard.
 - Note alignment: use singleton chords plus a compatible slicer/event generator;

@@ -15,6 +15,7 @@ from airpiano.preprocessing import pipeline
 from airpiano.preprocessing.canonical import (
     CANONICAL_SCHEMA_VERSION,
     RAW_SCHEMA_VERSION,
+    GapAwareSavitzkyGolayPostprocessor,
     WiLoRCoordinateConverter,
     WiLoRToCanonical,
     raw_cache_has_markers,
@@ -211,7 +212,10 @@ class PreprocessingTest(unittest.TestCase):
             _write_raw_cache(raw)
             output = root / "canonical" / "subject" / "video.npz"
 
-            self.assertEqual(WiLoRToCanonical().run(raw, output), output.resolve())
+            self.assertEqual(
+                WiLoRToCanonical(postprocessor=None).run(raw, output),
+                output.resolve(),
+            )
             with np.load(output, allow_pickle=False) as payload:
                 self.assertEqual(
                     set(payload.files), {"pose", "presence", "fps", "schema_version"}
@@ -242,6 +246,187 @@ class PreprocessingTest(unittest.TestCase):
             original = output.read_bytes()
             (raw / "manifest.json").write_text("not json", encoding="utf-8")
             self.assertEqual(WiLoRToCanonical().run(raw, output).read_bytes(), original)
+
+    def test_gap_aware_postprocessor_fills_only_short_internal_gaps(self) -> None:
+        frames = 12
+        pose = np.zeros((frames, 2, 21, 3), dtype=np.float32)
+        presence = np.ones((frames, 2), dtype=np.bool_)
+        for frame in range(frames):
+            pose[frame, 0] = np.float32(frame)
+            pose[frame, 1] = np.float32(100.0)
+
+        # Left: preserve boundary gaps, fill the two-frame internal gap, and
+        # leave the three-frame internal gap absent. Right: independently fill
+        # a one-frame gap even though the left hand is absent at that frame.
+        presence[[0, 3, 4, 7, 8, 9, 11], 0] = False
+        presence[8, 1] = False
+        pose[~presence] = 0.0
+
+        processed_pose, processed_presence = (
+            GapAwareSavitzkyGolayPostprocessor(
+                max_gap_seconds=0.09,
+                window_seconds=0.17,
+                polyorder=2,
+            )(pose, presence, 30.0)
+        )
+
+        expected_left_presence = np.asarray(
+            [
+                False,
+                True,
+                True,
+                True,
+                True,
+                True,
+                True,
+                False,
+                False,
+                False,
+                True,
+                False,
+            ]
+        )
+        np.testing.assert_array_equal(
+            processed_presence[:, 0], expected_left_presence
+        )
+        self.assertTrue(np.all(processed_presence[:, 1]))
+        np.testing.assert_allclose(
+            processed_pose[1:7, 0],
+            np.broadcast_to(
+                np.arange(1, 7, dtype=np.float32)[:, None, None],
+                processed_pose[1:7, 0].shape,
+            ),
+            atol=1e-6,
+        )
+        np.testing.assert_allclose(
+            processed_pose[:, 1],
+            np.full_like(processed_pose[:, 1], 100.0),
+            atol=5e-5,
+        )
+        np.testing.assert_allclose(
+            processed_pose[10, 0], np.full_like(processed_pose[10, 0], 10.0)
+        )
+        self.assertTrue(np.all(processed_pose[~processed_presence] == 0.0))
+        self.assertEqual(processed_pose.dtype, np.float32)
+        self.assertEqual(processed_presence.dtype, np.bool_)
+
+    def test_gap_aware_postprocessor_leaves_short_presence_runs_unchanged(
+        self,
+    ) -> None:
+        pose = np.zeros((11, 2, 21, 3), dtype=np.float32)
+        presence = np.zeros((11, 2), dtype=np.bool_)
+        presence[[0, 1, 2, 3, 7, 8, 9, 10], 0] = True
+        values = np.asarray(
+            [3.0, -2.0, 5.0, 1.0, 0.0, 0.0, 0.0, 20.0, -8.0, 17.0, 4.0],
+            dtype=np.float32,
+        )
+        pose[:, 0] = values[:, None, None]
+        pose[~presence] = 0.0
+
+        processed_pose, processed_presence = (
+            GapAwareSavitzkyGolayPostprocessor()(pose, presence, 30.0)
+        )
+
+        np.testing.assert_array_equal(processed_presence, presence)
+        np.testing.assert_array_equal(processed_pose, pose)
+
+    def test_gap_aware_postprocessor_preserves_polynomials_and_reduces_jitter(
+        self,
+    ) -> None:
+        frames = 21
+        time = np.arange(frames, dtype=np.float32)
+        quadratic = 0.25 * time**2 - 2.0 * time + 3.0
+        pose = np.empty((frames, 2, 21, 3), dtype=np.float32)
+        pose[:, 0] = quadratic[:, None, None]
+        pose[:, 1] = np.float32(7.0)
+        presence = np.ones((frames, 2), dtype=np.bool_)
+        postprocessor = GapAwareSavitzkyGolayPostprocessor(
+            max_gap_seconds=0.09,
+            window_seconds=0.17,
+            polyorder=2,
+        )
+
+        polynomial_pose, polynomial_presence = postprocessor(
+            pose, presence, 25.0
+        )
+
+        np.testing.assert_array_equal(polynomial_presence, presence)
+        np.testing.assert_allclose(
+            polynomial_pose[:, 0],
+            np.broadcast_to(
+                quadratic[:, None, None], polynomial_pose[:, 0].shape
+            ),
+            atol=2e-5,
+        )
+        np.testing.assert_allclose(
+            polynomial_pose[:, 1],
+            np.full_like(polynomial_pose[:, 1], 7.0),
+            atol=2e-5,
+        )
+
+        trend = 0.2 * time + 1.0
+        jitter = 0.35 * np.where(np.arange(frames) % 2 == 0, 1.0, -1.0)
+        noisy_pose = np.zeros_like(pose)
+        noisy_pose[:, 0] = (trend + jitter)[:, None, None]
+        left_only = np.zeros_like(presence)
+        left_only[:, 0] = True
+
+        smoothed_pose, smoothed_presence = postprocessor(
+            noisy_pose, left_only, 25.0
+        )
+
+        noisy_error = np.mean((noisy_pose[:, 0, 0, 0] - trend) ** 2)
+        smoothed_error = np.mean((smoothed_pose[:, 0, 0, 0] - trend) ** 2)
+        self.assertLess(smoothed_error, noisy_error)
+        np.testing.assert_array_equal(smoothed_presence, left_only)
+        self.assertTrue(np.all(smoothed_pose[:, 1] == 0.0))
+        self.assertEqual(smoothed_pose.dtype, np.float32)
+
+    def test_canonicalizer_postprocesses_full_sequence_before_resampling(
+        self,
+    ) -> None:
+        class RecordingPostprocessor:
+            def __init__(self) -> None:
+                self.calls: list[tuple[np.ndarray, np.ndarray, float]] = []
+
+            def __call__(self, pose, presence, source_fps):
+                self.calls.append((pose.copy(), presence.copy(), source_fps))
+                processed = pose.copy()
+                processed[:, 0] = np.arange(
+                    pose.shape[0], dtype=np.float32
+                )[:, None, None]
+                return processed, presence.copy()
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            raw = root / "raw"
+            output = root / "canonical.npz"
+            _write_raw_cache(raw)
+            postprocessor = RecordingPostprocessor()
+
+            WiLoRToCanonical(postprocessor=postprocessor).run(raw, output)
+
+            self.assertEqual(len(postprocessor.calls), 1)
+            source_pose, source_presence, source_fps = postprocessor.calls[0]
+            self.assertEqual(source_pose.shape, (4, 2, 21, 3))
+            self.assertTrue(np.all(source_presence[:, 0]))
+            self.assertEqual(source_fps, 60.0)
+            with np.load(output, allow_pickle=False) as payload:
+                output_pose = payload["pose"]
+                output_presence = payload["presence"]
+
+            # The callback sees frames on both sides of the raw chunk boundary
+            # (between native frames 1 and 2), then its values are resampled.
+            np.testing.assert_allclose(
+                output_pose[0, 0], np.full_like(output_pose[0, 0], 0.5)
+            )
+            np.testing.assert_allclose(
+                output_pose[1, 0], np.full_like(output_pose[1, 0], 2.5)
+            )
+            np.testing.assert_array_equal(
+                output_presence, [[True, True], [True, False]]
+            )
+            self.assertTrue(np.all(output_pose[1, 1] == 0.0))
 
     def test_wilor_to_canonical_supports_wrist_relative_xyz(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

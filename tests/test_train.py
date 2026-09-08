@@ -72,6 +72,7 @@ class TrainTest(unittest.TestCase):
     def test_baseline_constructs_every_configured_component(self) -> None:
         config = OmegaConf.load(Path(__file__).parents[1] / "configs" / "baseline.yaml")
         components = data.build_data_components(config)
+        canonicalizer = instantiate(config.preprocess.ragged_to_canonical)
         self.assertEqual(
             {name: type(value).__name__ for name, value in components.items()},
             {
@@ -86,10 +87,8 @@ class TrainTest(unittest.TestCase):
             type(instantiate(config.preprocess.video_to_ragged)).__name__,
             "VideoToWiLoR",
         )
-        self.assertEqual(
-            type(instantiate(config.preprocess.ragged_to_canonical)).__name__,
-            "WiLoRToCanonical",
-        )
+        self.assertEqual(type(canonicalizer).__name__, "WiLoRToCanonical")
+        self.assertIsNone(canonicalizer.postprocessor)
         self.assertEqual(str(config.output.dir), "outputs/baseline")
         self.assertEqual(
             type(instantiate(config.model)).__name__, "AirPianoTransformer"
@@ -106,6 +105,28 @@ class TrainTest(unittest.TestCase):
             str(config.realtime.checkpoint),
             "outputs/baseline/checkpoints/last.pt",
         )
+
+    def test_smoothed_config_constructs_opt_in_postprocessor(self) -> None:
+        config_directory = Path(__file__).parents[1] / "configs"
+        with initialize_config_dir(
+            version_base=None, config_dir=str(config_directory.resolve())
+        ):
+            config = compose(config_name="smoothed")
+
+        canonicalizer = instantiate(config.preprocess.ragged_to_canonical)
+
+        self.assertEqual(str(config.output.dir), "outputs/smoothed")
+        self.assertEqual(
+            str(config.data.hand_root),
+            f"{config.data.processed_root}/airpiano_wilor_2p5d_smoothed_30fps",
+        )
+        self.assertEqual(
+            type(canonicalizer.postprocessor).__name__,
+            "GapAwareSavitzkyGolayPostprocessor",
+        )
+        self.assertEqual(canonicalizer.postprocessor.max_gap_seconds, 0.09)
+        self.assertEqual(canonicalizer.postprocessor.window_seconds, 0.17)
+        self.assertEqual(canonicalizer.postprocessor.polyorder, 2)
 
     def test_wrist_xyz10_config_constructs_ablation_components(self) -> None:
         config_directory = Path(__file__).parents[1] / "configs"

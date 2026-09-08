@@ -1,0 +1,17 @@
+defaults:
+  - baseline
+  - _self_
+
+output:
+  project_name: smoothed
+
+data:
+  hand_root: ${data.processed_root}/airpiano_wilor_2p5d_smoothed_30fps
+
+preprocess:
+  ragged_to_canonical:
+    postprocessor:
+      _target_: airpiano.preprocessing.canonical.GapAwareSavitzkyGolayPostprocessor
+      max_gap_seconds: 0.09
+      window_seconds: 0.17
+      polyorder: 2

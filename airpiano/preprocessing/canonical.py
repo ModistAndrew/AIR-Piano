@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import json
 import math
+from collections.abc import Callable
 from pathlib import Path
 from typing import Mapping
 
 import numpy as np
+from scipy.signal import savgol_filter
 
 from airpiano.preprocessing.wilor.selection import select_best_hand_indices
 from airpiano.utils import resolve_path, write_npz
@@ -16,6 +18,12 @@ from airpiano.utils import resolve_path, write_npz
 RAW_SCHEMA_VERSION = "airpiano-wilor-ragged-v1"
 CANONICAL_SCHEMA_VERSION = "airpiano-wilor-canonical-v1"
 TARGET_FPS = 30.0
+
+
+PosePostprocessor = Callable[
+    [np.ndarray, np.ndarray, float],
+    tuple[np.ndarray, np.ndarray],
+]
 
 
 def raw_cache_has_markers(path: str | Path) -> bool:
@@ -78,6 +86,87 @@ class WiLoRCoordinateConverter:
         return converted
 
 
+class GapAwareSavitzkyGolayPostprocessor:
+    """Fill short dropouts and smooth valid source-rate pose runs."""
+
+    def __init__(
+        self,
+        max_gap_seconds: float = 0.09,
+        window_seconds: float = 0.17,
+        polyorder: int = 2,
+    ) -> None:
+        if max_gap_seconds < 0.0:
+            raise ValueError("max_gap_seconds must be non-negative")
+        if window_seconds <= 0.0:
+            raise ValueError("window_seconds must be positive")
+        if polyorder < 0:
+            raise ValueError("polyorder must be non-negative")
+        self.max_gap_seconds = float(max_gap_seconds)
+        self.window_seconds = float(window_seconds)
+        self.polyorder = int(polyorder)
+
+    def __call__(
+        self,
+        pose: np.ndarray,
+        presence: np.ndarray,
+        source_fps: float,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Return independently repaired and smoothed left/right poses."""
+
+        processed_pose = np.array(pose, dtype=np.float32, copy=True)
+        processed_presence = np.array(presence, dtype=np.bool_, copy=True)
+        max_gap_frames = math.floor(self.max_gap_seconds * source_fps + 1e-12)
+
+        for slot in range(processed_presence.shape[1]):
+            detected = np.flatnonzero(processed_presence[:, slot])
+            for left, right in zip(detected[:-1], detected[1:]):
+                gap_frames = int(right - left - 1)
+                if not 0 < gap_frames <= max_gap_frames:
+                    continue
+                alpha = (
+                    np.arange(1, gap_frames + 1, dtype=np.float32)
+                    / np.float32(gap_frames + 1)
+                )[:, None, None]
+                processed_pose[left + 1 : right, slot] = (
+                    processed_pose[left, slot] * (np.float32(1.0) - alpha)
+                    + processed_pose[right, slot] * alpha
+                )
+                processed_presence[left + 1 : right, slot] = True
+
+        requested_window = self.window_seconds * source_fps
+        window_length = max(1, 2 * math.floor(requested_window / 2.0) + 1)
+        if window_length <= self.polyorder:
+            raise ValueError(
+                f"window_seconds={self.window_seconds} resolves to "
+                f"{window_length} samples at {source_fps} fps, but must exceed "
+                f"polyorder={self.polyorder}"
+            )
+
+        for slot in range(processed_presence.shape[1]):
+            mask = processed_presence[:, slot]
+            padded = np.concatenate(
+                (np.asarray([False]), mask, np.asarray([False]))
+            )
+            starts = np.flatnonzero(~padded[:-1] & padded[1:])
+            stops = np.flatnonzero(padded[:-1] & ~padded[1:])
+            for start, stop in zip(starts, stops):
+                if stop - start < window_length:
+                    continue
+                processed_pose[start:stop, slot] = savgol_filter(
+                    processed_pose[start:stop, slot],
+                    window_length=window_length,
+                    polyorder=self.polyorder,
+                    axis=0,
+                    mode="interp",
+                )
+
+        processed_pose[~processed_presence] = 0.0
+        return (
+            processed_pose.astype(np.float32, copy=False),
+            processed_presence.astype(np.bool_, copy=False),
+        )
+
+
 class WiLoRToCanonical:
     """Select two hands from ragged detections and resample them to fixed FPS."""
 
@@ -85,9 +174,11 @@ class WiLoRToCanonical:
         self,
         target_fps: float = TARGET_FPS,
         coordinates: WiLoRCoordinateConverter | None = None,
+        postprocessor: PosePostprocessor | None = None,
     ) -> None:
         self.target_fps = float(target_fps)
         self.coordinates = coordinates or WiLoRCoordinateConverter()
+        self.postprocessor = postprocessor
 
     def run(
         self,
@@ -104,6 +195,8 @@ class WiLoRToCanonical:
         pose, presence, source_fps = self._read_raw_sequence(
             resolve_path(raw_record_dir)
         )
+        if self.postprocessor is not None:
+            pose, presence = self.postprocessor(pose, presence, source_fps)
         pose, presence = self._resample(pose, presence, source_fps)
         write_npz(
             output,
