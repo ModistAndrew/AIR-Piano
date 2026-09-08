@@ -66,12 +66,10 @@ class RenderTest(unittest.TestCase):
                 {
                     "output": {"dir": str(project)},
                     "visualize": {
-                        "root": "inference/test",
-                        "output_dir": "visualizations",
+                        "root": str(artifact_root),
                     },
                     "sonify": {
-                        "root": "inference/test",
-                        "output_dir": "sonifications",
+                        "root": str(artifact_root),
                         "midi_root": str(midi_root),
                         "threshold": 0.35,
                         "duration_seconds": 0.75,
@@ -112,10 +110,10 @@ class RenderTest(unittest.TestCase):
             self.assertEqual(
                 draw.call_args_list,
                 [
-                    call(artifacts[0], project / "visualizations" / "a.png"),
+                    call(artifacts[0], artifact_root / "a.png"),
                     call(
                         artifacts[1],
-                        project / "visualizations" / "take.v2.png",
+                        artifact_root / "take.v2.png",
                     ),
                 ],
             )
@@ -124,11 +122,11 @@ class RenderTest(unittest.TestCase):
                 [
                     (
                         artifacts[0],
-                        project / "sonifications" / "predict" / "a.mid",
+                        artifact_root / "a.mid",
                     ),
                     (
                         artifacts[1],
-                        project / "sonifications" / "predict" / "take.v2.mid",
+                        artifact_root / "take.v2.mid",
                     ),
                 ],
             )
@@ -145,15 +143,12 @@ class RenderTest(unittest.TestCase):
                     call(
                         artifacts[0],
                         midi_root / "subject" / "a.mid",
-                        project / "sonifications" / "ground_truth" / "a.mid",
+                        artifact_root / "a.gt.mid",
                     ),
                     call(
                         artifacts[1],
                         midi_root / "subject" / "take.v2.mid",
-                        project
-                        / "sonifications"
-                        / "ground_truth"
-                        / "take.v2.mid",
+                        artifact_root / "take.v2.gt.mid",
                     ),
                 ],
             )
@@ -166,8 +161,6 @@ class RenderTest(unittest.TestCase):
             artifact_root.mkdir()
             artifact = artifact_root / "take.v2.npz"
             artifact.touch()
-            heatmap_root = root / "absolute-visualizations"
-            sonification_root = root / "absolute-sonifications"
             midi_root = root / "absolute-midi"
             source_midi = midi_root / "nested" / "take.v2.mid"
             config = OmegaConf.create(
@@ -175,11 +168,9 @@ class RenderTest(unittest.TestCase):
                     "output": {"dir": str(root / "unused")},
                     "visualize": {
                         "root": str(artifact_root),
-                        "output_dir": str(heatmap_root),
                     },
                     "sonify": {
                         "root": str(artifact_root),
-                        "output_dir": str(sonification_root),
                         "midi_root": str(midi_root),
                         "threshold": 0.2,
                         "duration_seconds": 1.0,
@@ -191,12 +182,12 @@ class RenderTest(unittest.TestCase):
                 patch.object(
                     visualize_stage,
                     "visualize_artifact",
-                    return_value=(heatmap_root / "take.v2.png").resolve(),
+                    return_value=(artifact_root / "take.v2.png").resolve(),
                 ) as draw,
                 patch.object(
                     sonify_stage,
                     "sonify_artifact",
-                    return_value=(sonification_root / "predict" / "take.v2.mid").resolve(),
+                    return_value=(artifact_root / "take.v2.mid").resolve(),
                 ) as decode,
                 patch.object(
                     sonify_stage,
@@ -206,18 +197,16 @@ class RenderTest(unittest.TestCase):
                 patch.object(
                     sonify_stage,
                     "sonify_ground_truth",
-                    return_value=(
-                        sonification_root / "ground_truth" / "take.v2.mid"
-                    ).resolve(),
+                    return_value=(artifact_root / "take.v2.gt.mid").resolve(),
                 ) as ground_truth_decode,
             ):
                 visualize_stage.visualize(config)
                 sonify_stage.sonify(config)
 
-            draw.assert_called_once_with(artifact, heatmap_root / "take.v2.png")
+            draw.assert_called_once_with(artifact, artifact_root / "take.v2.png")
             decode.assert_called_once_with(
                 artifact,
-                sonification_root / "predict" / "take.v2.mid",
+                artifact_root / "take.v2.mid",
                 threshold=0.2,
                 duration_seconds=1.0,
                 velocity=64,
@@ -225,7 +214,7 @@ class RenderTest(unittest.TestCase):
             ground_truth_decode.assert_called_once_with(
                 artifact,
                 source_midi.resolve(),
-                sonification_root / "ground_truth" / "take.v2.mid",
+                artifact_root / "take.v2.gt.mid",
             )
 
     def test_visualize_artifact_draws_two_masked_heatmaps(self) -> None:

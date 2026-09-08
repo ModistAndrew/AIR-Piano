@@ -27,6 +27,7 @@ from airpiano.render.visualize import visualize_artifact
 class _TinyModel(nn.Module):
     def __init__(self) -> None:
         super().__init__()
+        self.include_chord_duration = False
         self.bias = nn.Parameter(torch.tensor(0.0))
 
     def forward(self, hands, hand_presence, chords, frame_mask, chord_mask):
@@ -43,8 +44,7 @@ class RealtimeTest(unittest.TestCase):
                 {
                     "output": {"dir": str(project)},
                     "realtime": {
-                        "root": "realtime",
-                        "output_dir": "inference/realtime",
+                        "root": str(project / "realtime"),
                         "checkpoint": "checkpoints/last.pt",
                         "overwrite": False,
                     },
@@ -64,24 +64,27 @@ class RealtimeTest(unittest.TestCase):
             root = Path(directory)
             project = root / "project"
             bundle = project / "realtime"
-            bundle.mkdir(parents=True)
+            video_root = bundle / "video"
+            midi_root = bundle / "midi"
+            video_root.mkdir(parents=True)
+            midi_root.mkdir()
             stems = ["alpha", "take.03"]
             for stem in stems:
-                (bundle / f"{stem}.mp4").touch()
+                (video_root / f"{stem}.mp4").touch()
                 midi = mido.MidiFile(ticks_per_beat=480)
                 track = mido.MidiTrack()
                 midi.tracks.append(track)
                 track.append(mido.Message("note_on", note=60, velocity=64, time=0))
                 track.append(mido.Message("note_off", note=60, velocity=0, time=480))
-                midi.save(bundle / f"{stem}.mid")
-            (bundle / "video-only.mp4").touch()
+                midi.save(midi_root / f"{stem}.mid")
+            (video_root / "video-only.mp4").touch()
             midi = mido.MidiFile()
-            midi.save(bundle / "midi-only.mid")
+            midi.save(midi_root / "midi-only.mid")
             checkpoint = project / "checkpoints" / "last.pt"
             checkpoint.parent.mkdir(parents=True)
             checkpoint.write_bytes(b"checkpoint loading is patched")
 
-            output_root = project / "inference" / "realtime"
+            output_root = bundle / "realtime"
             run_order: list[tuple[str, str]] = []
             test_case = self
 
@@ -94,7 +97,9 @@ class RealtimeTest(unittest.TestCase):
                 ):
                     video = Path(video_path)
                     record_id = video.name[: -len(".mp4")]
-                    test_case.assertEqual(video, bundle / f"{record_id}.mp4")
+                    test_case.assertEqual(
+                        video, video_root / f"{record_id}.mp4"
+                    )
                     test_case.assertEqual(
                         Path(output_dir), bundle / "raw_wilor" / record_id
                     )

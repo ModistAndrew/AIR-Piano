@@ -17,3 +17,10 @@ model:
 
 wandb:
   name: causal_chord24
+
+full_song:
+  root: null # Set to a root containing video/ and midi/ directories.
+  checkpoint: ${output.dir}/checkpoints/last.pt
+  overwrite: false
+  alignment_threshold: 0.2
+  advance_after_chords: ${dataset.slicer.stride_frames}

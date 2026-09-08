@@ -39,6 +39,18 @@ class RunTest(unittest.TestCase):
             if name != "realtime":
                 handler.assert_not_called()
 
+    def test_dispatches_full_song_stage(self) -> None:
+        config = OmegaConf.create({"stage": "full-song"})
+        handlers = {name: Mock() for name in app.STAGES}
+
+        with patch.object(app, "STAGES", handlers):
+            app.main.__wrapped__(config)
+
+        handlers["full-song"].assert_called_once_with(config)
+        for name, handler in handlers.items():
+            if name != "full-song":
+                handler.assert_not_called()
+
     def test_dispatch_runs_stage_list_in_order_with_the_same_config(self) -> None:
         config = OmegaConf.create(
             {"stage": ["preprocess", "train", "test"], "sentinel": {"value": 1}}

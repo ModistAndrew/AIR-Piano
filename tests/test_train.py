@@ -23,11 +23,14 @@ class _TinyDataset(Dataset):
         return 2
 
     def __getitem__(self, index: int):
+        chords = torch.zeros(2, 328)
+        chords[:, :128] = torch.eye(128)[:2]
+        chords[:, 128] = 1.0
         return {
             "hands": torch.zeros(2, 2, 21, 3),
             "hand_presence": torch.ones(2, 2, dtype=torch.bool),
             "frame_mask": torch.ones(2, dtype=torch.bool),
-            "chords": torch.eye(128)[:2],
+            "chords": chords,
             "chord_mask": torch.ones(2, dtype=torch.bool),
             "target": torch.tensor([[1.0, 0.0], [0.5, 0.0]]),
             "chord_ids": torch.tensor([0, 1]),
@@ -38,9 +41,14 @@ class _TinyDataset(Dataset):
 
 
 class _TinyModel(nn.Module):
-    def __init__(self, causal_frame_attention: bool = False) -> None:
+    def __init__(
+        self,
+        causal_frame_attention: bool = False,
+        include_chord_duration: bool = False,
+    ) -> None:
         super().__init__()
         self.causal_frame_attention = causal_frame_attention
+        self.include_chord_duration = include_chord_duration
         self.bias = nn.Parameter(torch.tensor(0.0))
 
     def forward(self, hands, hand_presence, chords, frame_mask, chord_mask):
@@ -83,11 +91,21 @@ class TrainTest(unittest.TestCase):
             "WiLoRToCanonical",
         )
         self.assertEqual(str(config.output.dir), "outputs/baseline")
+        self.assertEqual(
+            type(instantiate(config.model)).__name__, "AirPianoTransformer"
+        )
         self.assertEqual(components["slicer"].mode, "frame")
         self.assertFalse(bool(config.model.causal_frame_attention))
+        self.assertFalse(bool(config.model.include_chord_duration))
         self.assertEqual(str(config.wandb.project), "air_piano")
-        self.assertEqual(str(config.test.checkpoint), "checkpoints/last.pt")
-        self.assertEqual(str(config.realtime.checkpoint), "checkpoints/last.pt")
+        self.assertEqual(
+            str(config.test.checkpoint),
+            "outputs/baseline/checkpoints/last.pt",
+        )
+        self.assertEqual(
+            str(config.realtime.checkpoint),
+            "outputs/baseline/checkpoints/last.pt",
+        )
 
     def test_wrist_xyz10_config_constructs_ablation_components(self) -> None:
         config_directory = Path(__file__).parents[1] / "configs"
@@ -127,6 +145,21 @@ class TrainTest(unittest.TestCase):
         self.assertEqual(slicer.mode, "chord")
         self.assertEqual(slicer.segment_frames, 24)
         self.assertEqual(slicer.stride_frames, 12)
+        self.assertEqual(int(config.full_song.advance_after_chords), 12)
+        self.assertEqual(float(config.full_song.alignment_threshold), 0.2)
+
+    def test_chord_duration_config_enables_duration_ablation(self) -> None:
+        config_directory = Path(__file__).parents[1] / "configs"
+        with initialize_config_dir(
+            version_base=None, config_dir=str(config_directory.resolve())
+        ):
+            config = compose(config_name="chord_duration")
+
+        slicer = data.build_data_components(config)["slicer"]
+        self.assertEqual(str(config.output.dir), "outputs/chord_duration")
+        self.assertEqual(str(config.wandb.name), "chord_duration")
+        self.assertTrue(bool(config.model.include_chord_duration))
+        self.assertEqual(slicer.mode, "frame")
 
     @staticmethod
     def _config(output: Path):
@@ -140,7 +173,10 @@ class TrainTest(unittest.TestCase):
                     "dir": str(output),
                 },
                 "dataset": {},
-                "model": {"causal_frame_attention": False},
+                "model": {
+                    "causal_frame_attention": False,
+                    "include_chord_duration": False,
+                },
                 "data": {"splits": {}, "midi_root": ".", "hand_root": "."},
                 "train": {
                     "epochs": 1,
@@ -156,7 +192,7 @@ class TrainTest(unittest.TestCase):
                     "project": "air_piano",
                     "name": "baseline",
                     "entity": None,
-                    "dir": "logs",
+                    "dir": str(output / "logs"),
                 },
             }
         )
@@ -172,7 +208,9 @@ class TrainTest(unittest.TestCase):
                 patch.object(
                     data, "build_dataset", return_value=dataset
                 ) as build_dataset,
-                patch.object(train, "AirPianoTransformer", _TinyModel),
+                patch.object(
+                    train, "instantiate", return_value=_TinyModel()
+                ) as instantiate_model,
             ):
                 train.train(self._config(output))
 
@@ -188,6 +226,7 @@ class TrainTest(unittest.TestCase):
                 ],
             )
             self.assertTrue(fake_run.finished)
+            instantiate_model.assert_called_once()
             wandb_init.assert_called_once()
             self.assertEqual(wandb_init.call_args.kwargs["project"], "air_piano")
             self.assertEqual(wandb_init.call_args.kwargs["name"], "baseline")
@@ -216,6 +255,9 @@ class TrainTest(unittest.TestCase):
             self.assertEqual(checkpoint["global_step"], 1)
             self.assertFalse(
                 checkpoint["config"]["model"]["causal_frame_attention"]
+            )
+            self.assertFalse(
+                checkpoint["config"]["model"]["include_chord_duration"]
             )
             self.assertFalse((output / "inference" / "test").exists())
 

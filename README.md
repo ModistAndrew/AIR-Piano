@@ -1,8 +1,8 @@
 # AirPiano operational handoff
 
 AirPiano is a compact implementation of hand-to-MIDI chord alignment with one
-baseline, a wrist-relative-coordinate ablation, and a causal chord-window
-ablation. It converts videos to
+baseline plus wrist-relative-coordinate, duration-conditioned, and causal
+chord-window ablations. It converts videos to
 resumable WiLoR hand detections, converts those detections to canonical 30 Hz
 two-hand poses, eagerly pairs complete songs with MIDI, and trains one fixed
 direct transformer with masked binary cross entropy.
@@ -33,25 +33,30 @@ The supported stages are:
   checkpoint.
 - `realtime`: batch preprocessing and inference for direct synchronized
   video/MIDI pairs.
+- `full-song`: realtime-style preprocessing followed by frame-causal,
+  dynamically windowed inference into one artifact per song.
 - `visualize`: prediction and target heatmaps for every direct inference NPZ.
 - `sonify`: prediction and ground-truth MIDI for every direct inference NPZ.
 
-`realtime` is an end-to-end file wrapper, not a webcam or latency-bounded
-streaming service.
+`realtime` and `full-song` are end-to-end file wrappers, not webcam or
+latency-bounded streaming services. Full-song inference simulates online frame
+visibility after preprocessing the complete recording.
 
 Deliberate non-goals include pluggable model architectures, alternate losses,
-note-token fields, hand-presence filtering, global-song
-stitching, distributed training, checkpoint resume, video downloading, and
-compatibility with V2N checkpoints. The model exposes only the causal frame
-self-attention switch; the model and loss are not Hydra `_target_` components.
+note-level tokens, hand-presence filtering, distributed training, checkpoint
+resume, video downloading, and
+compatibility with V2N checkpoints. The model exposes causal frame-attention
+and chord-duration switches and is constructed through a Hydra `_target_`.
+The loss remains fixed in code.
 
 ## Repository map
 
 | Path | Responsibility |
 | --- | --- |
-| `run.py` | Hydra bootstrap and six-entry stage dispatch only. |
+| `run.py` | Hydra bootstrap and seven-entry stage dispatch only. |
 | `configs/baseline.yaml` | Baseline runtime configuration. |
 | `configs/wrist_xyz10.yaml` | Wrist-relative local-XYZ ×10 ablation inheriting the baseline. |
+| `configs/chord_duration.yaml` | Duration-conditioned chord-token ablation inheriting the baseline. |
 | `configs/causal_chord24.yaml` | Causal frame-attention and 24-chord slicing ablation inheriting the baseline. |
 | `scripts/convert_legacy_splits.py` | One-time conversion of the original PianoMotion split lists to generalized record stems. |
 | `scripts/migrate_pianomotion_data.py` | Resumable, verified migration of PianoMotion postprocessed data to `/storage2`. |
@@ -69,6 +74,7 @@ self-attention switch; the model and loss are not Hydra `_target_` components.
 | `airpiano/train.py` | Dataset construction, training, validation, and checkpoint creation. |
 | `airpiano/inference.py` | Checkpoint loading, shared dataset inference, and config-owned test artifact dumping. |
 | `airpiano/realtime.py` | Root-scanned batch preprocessing and inference workflow. |
+| `airpiano/full_song.py` | Frame-causal full-song controller and artifact workflow. |
 | `airpiano/render/` | Artifact loading, heatmaps, and sonification. |
 | `airpiano/utils.py` | Direct JSON/NPZ output and artifact-name helpers. |
 | `tests/` | Focused data, preprocessing, model, training, realtime, and rendering tests. |
@@ -89,6 +95,7 @@ from airpiano.data import build_data_components, build_dataset, make_loader
 from airpiano.train import train
 from airpiano.inference import test
 from airpiano.realtime import realtime
+from airpiano.full_song import full_song, infer_full_song
 from airpiano.model.transformer import AirPianoTransformer
 from airpiano.model.loss import masked_bce_loss
 from airpiano.render.artifact import load_artifact
@@ -632,7 +639,10 @@ algorithm failures propagate directly.
 note-on as note-off, pairs repeated channel/pitch notes FIFO, ignores sustain,
 and keeps positive-duration pairs. `InitializerChordMerger` groups later notes
 within 0.05 seconds of the initializer note; grouping is inclusive and
-initializer-anchored rather than transitive.
+initializer-anchored rather than transitive. Every resulting `Chord` stores an
+absolute duration and its precomputed `float32[200]` duration one-hot. The raw
+duration is time to the next chord onset, or time to the latest member release
+for the final chord.
 
 `OffsetScaleTransform` applies configured per-axis `(pose - offset) * scale` to
 present slots while preserving exact zero absent slots. The baseline uses
@@ -649,7 +659,7 @@ One baseline item is:
 | --- | --- | --- |
 | `hands` | `float32[T,2,21,3]` | Real transformed left/right frames; baseline `T<=210`. |
 | `hand_presence` | `bool[T,2]` | Per-hand detection flags. |
-| `chords` | binary `float32[C,128]` | Real MIDI-pitch multi-hot rows; baseline `C<=128`. |
+| `chords` | binary `float32[C,328]` | 128 MIDI-pitch multi-hot values followed by a 200-way duration one-hot; baseline `C<=128`. |
 | `chord_ids` | `int64[C]` | Global IDs for the selected chords. |
 | `target` | `float32[T,C]` | Soft chord-onset alignment. |
 | `record_id` | string | Complete root-relative stem. |
@@ -663,6 +673,17 @@ available or the score ends, and returns only real frames and chords. More
 overlapping chords than that width raises instead of truncating positives.
 Duplicate pitches remain distinct notes internally but collapse to one
 multi-hot entry.
+
+During MIDI loading, every chord's absolute duration is quantized using
+MIDI2ScoreTransformer's performance-MIDI mapping:
+
+```text
+bin = clamp(floor(200 * log(4 * duration_seconds + 1) / log(65)), 0, 199)
+```
+
+The resulting one-hot is stored as `Chord.quantized_dur`; slicing only appends
+it to the 128 pitch bits. This happens before window selection, so the last
+chord in a slice does not incorrectly receive the final-chord rule.
 
 With `mode=chord`, `segment_frames` and `stride_frames` instead count chord
 tokens and `chord_count` is ignored. Token windows retain the exact
@@ -688,21 +709,24 @@ zero. Missing hands do not remove frames, targets, or loss positions.
 ```text
 hands          [B,T,2,21,3]
 hand_presence  [B,T,2]
-chords         [B,C,128]
+chords         [B,C,328]
 frame_mask     [B,T]
 chord_mask     [B,C]
 ```
 
 and returns logits `[B,T,C]`. It embeds 126 hand coordinates plus two presence
-bits and separately embeds 128-pitch chords into width 512. Four chord
-transformer layers and four frame self/cross-attention blocks feed 32-wide
-pairwise projections. The score bias starts from positive prior `0.0055`.
+bits and always embeds the first 128 chord pitch values. When
+`model.include_chord_duration=true`, a separate embedding processes the last
+200 values and is added to the pitch embedding. Four chord transformer layers
+and four frame self/cross-attention blocks feed 32-wide pairwise projections.
+The score bias starts from positive prior `0.0055`.
 Absent hand coordinates are zeroed, presence remains an input feature, padded
 attention is protected from NaNs, and padded logits are zero. When
 `model.causal_frame_attention=true`, frame self-attention at time `t` sees only
 frames through `t`; chord encoding and frame-to-chord attention still see all
-selected chord tokens. The checkpoint's saved setting controls inference, and
-older checkpoints default to non-causal attention.
+selected chord tokens. The checkpoint's saved causal and chord-duration
+settings control inference. Older checkpoints default to non-causal,
+pitch-only operation; they cannot initialize a duration-conditioned model.
 
 `masked_bce_loss` is ordinary `BCEWithLogitsLoss` over:
 
@@ -714,10 +738,9 @@ It rejects a batch with no valid cell. Model architecture and criterion are
 fixed in code. Existing AirPiano checkpoints remain compatible after the module
 split; V2N checkpoints do not.
 
-### Fixed local output tree
+### Fixed local output trees
 
-Every generated training, inference, logging, and rendering artifact belongs to
-one fixed project directory. The baseline layout is:
+Training and test artifacts remain in the configured project directory:
 
 ```text
 outputs/baseline/
@@ -725,23 +748,34 @@ outputs/baseline/
 │   ├── best.pt
 │   └── last.pt
 ├── inference/
-│   ├── test/
-│   │   ├── *.npz
-│   │   └── test_loss.json
-│   └── realtime/<stem>/
+│   └── test/
 │       ├── *.npz
-│       └── realtime_loss.json
+│       ├── *.png
+│       ├── *.mid
+│       ├── *.gt.mid
+│       └── test_loss.json
 ├── logs/
 │   └── wandb/
-├── realtime/
-│   ├── <stem>.mp4
-│   ├── <stem>.mid
-│   ├── raw_wilor/<stem>/
-│   └── canonical/<stem>.npz
-├── visualizations/<artifact>.png
-└── sonifications/
-    ├── predict/<artifact>.mid
-    └── ground_truth/<artifact>.mid
+```
+
+Realtime-style stages keep inputs, preprocessing caches, inference artifacts,
+and rendered sidecars together under their explicitly configured root:
+
+```text
+<runtime-root>/
+├── video/<stem>.mp4
+├── midi/<stem>.mid
+├── raw_wilor/<stem>/
+├── canonical/<stem>.npz
+├── realtime/<stem>/
+│   ├── *.npz
+│   └── realtime_loss.json
+└── full_song/
+    ├── *.npz
+    ├── *.png
+    ├── *.mid
+    ├── *.gt.mid
+    └── full_song_loss.json
 ```
 
 There is no version or run-identity layer. Starting training a second time in
@@ -751,9 +785,11 @@ does not detect, clear, or resume such a run. Before an intentional rerun,
 inspect and manually archive or delete the complete `outputs/baseline/`
 directory.
 
-Relative checkpoint, realtime, inference, W&B, visualization, and sonification
-paths are resolved beneath `outputs/baseline/`. Absolute Hydra overrides stay
-absolute. Dataset and preprocessing roots retain their independent path rules.
+Every configurable path follows one rule: absolute paths are used unchanged,
+and relative paths are resolved from the AirPiano repository root, independent
+of the directory from which `run.py` is launched. Defaults that belong to a
+project explicitly include `${output.dir}`, such as
+`${output.dir}/checkpoints/last.pt`.
 
 ### Checkpoints and inference artifacts
 
@@ -767,7 +803,8 @@ The separate test stage defaults to `checkpoints/last.pt`, as does realtime;
 `best.pt` or any compatible checkpoint remains available through an explicit
 override. Test inference writes one independent compressed NPZ per slice plus
 `test_loss.json`, and realtime writes the same slice format plus
-`realtime_loss.json`. There is no inference manifest or cross-slice stitching.
+`realtime_loss.json`. Full-song inference writes one artifact per complete
+recording plus `full_song_loss.json`. There is no inference manifest.
 
 Inspect the epoch and optimizer-update step stored in either checkpoint without
 loading it onto a GPU:
@@ -814,6 +851,10 @@ and chord counts.
 Artifact filenames replace `/` and `\\` in the record ID with `__`, then append
 `__f<frame_start as nine digits>.npz`. Canonical files and inference artifacts
 are unchanged by the generalized path migration.
+
+Full-song artifacts use the same schema with `frame_start=0`, all-true masks,
+and `[all frames, all chords]` probability and target arrays. At each frame,
+chords outside the active score window have probability zero.
 
 ## Stage workflows and commands
 
@@ -909,6 +950,21 @@ conda run -n v2n python run.py --config-name causal_chord24 stage=train
 conda run -n v2n python run.py --config-name causal_chord24 stage=test
 ```
 
+### Chord-duration ablation
+
+This ablation keeps the baseline frame slicing but enables the separate
+duration embedding for the always-present duration portion of each chord
+token. It writes outputs under `outputs/chord_duration/`:
+
+```bash
+conda run -n v2n python run.py --config-name chord_duration stage=train
+conda run -n v2n python run.py --config-name chord_duration stage=test
+```
+
+A duration-enabled model requires a duration-enabled checkpoint. Pitch-only
+checkpoints retain their original 128-input pitch projection and ignore the
+packed duration suffix.
+
 ### Train and validate
 
 ```bash
@@ -949,35 +1005,37 @@ open a W&B run.
 
 ### Realtime batch
 
-Place synchronized pairs directly inside the configured root. Matching is by
-the complete basename, so dotted names are preserved:
+Place synchronized pairs in the configured root's `video/` and `midi/`
+directories. Matching is by the complete basename, so dotted names are
+preserved:
 
 ```text
-outputs/baseline/realtime/
-├── performance.v2.mp4
-├── performance.v2.mid
+<runtime-root>/
+├── video/performance.v2.mp4
+├── midi/performance.v2.mid
 ├── raw_wilor/performance.v2/
-└── canonical/performance.v2.npz
+├── canonical/performance.v2.npz
+└── realtime/performance.v2/
 ```
 
 Run every direct pair with the default `last.pt` checkpoint:
 
 ```bash
-conda run -n v2n python run.py stage=realtime
+conda run -n v2n python run.py stage=realtime \
+  realtime.root=/data/performance
 ```
 
 Outputs for this example are written below
-`outputs/baseline/inference/realtime/performance.v2/`. Direct video or MIDI
-files without a matching counterpart are reported and skipped. Nested inputs
-are not scanned. WiLoR, canonical, and dataset components are constructed once
-and reused across the sorted pairs.
+`/data/performance/realtime/performance.v2/`. Video or MIDI files without a
+matching counterpart are reported and skipped. Only direct files inside the
+two modality directories are scanned. WiLoR, canonical, and dataset components
+are constructed once and reused across the sorted pairs.
 
-Select a different root, output directory, or checkpoint as needed:
+Select a different root or checkpoint as needed:
 
 ```bash
 conda run -n v2n python run.py stage=realtime \
   realtime.root=/data/performance \
-  realtime.output_dir=inference/realtime-best \
   realtime.checkpoint=checkpoints/best.pt
 ```
 
@@ -985,6 +1043,30 @@ Each basename becomes `record_id`. Realtime calls the same configured
 `VideoToWiLoR`, `WiLoRToCanonical`, `HandLoader`, slicer, target generator, and
 checkpoint inference as the offline workflow. Every video/MIDI pair must
 describe the same performance and timeline.
+
+### Causal full-song inference
+
+The `full-song` stage accepts the same synchronized MP4/MID layout and
+preprocessing cache structure as `realtime`. It supports only chord-mode
+slicing and checkpoints trained with causal frame attention:
+
+```bash
+conda run -n v2n python run.py --config-name causal_chord24 \
+  stage=full-song \
+  full_song.root=/data/performance
+```
+
+For every arriving video frame, the controller forwards only the current frame
+history against the active 24-chord window and permanently commits the newest
+probability row. Once the leading 12 chords have each reached the inclusive
+`0.2` running-peak threshold, the score window advances by one on the next
+frame. Its history then begins at the earliest predicted peak of the new first
+chord. After the final score window is reached, it remains active through the
+end of the video. Override `full_song.alignment_threshold` or
+`full_song.advance_after_chords` to change the trigger.
+
+Outputs are written directly under `<runtime-root>/full_song/`, one NPZ per
+input basename, with a weighted aggregate loss in `full_song_loss.json`.
 
 ### Visualize and sonify batches
 
@@ -995,26 +1077,24 @@ conda run -n v2n python run.py stage=visualize
 conda run -n v2n python run.py stage=sonify sonify.threshold=0.2
 ```
 
-For an input named `test.npz`, the derived outputs are:
+For an input named `test.npz`, all derived files are written beside it:
 
 ```text
-outputs/baseline/visualizations/test.png
-outputs/baseline/sonifications/predict/test.mid
-outputs/baseline/sonifications/ground_truth/test.mid
+outputs/baseline/inference/test/test.png
+outputs/baseline/inference/test/test.mid
+outputs/baseline/inference/test/test.gt.mid
 ```
 
 Only direct NPZ files are processed, in sorted order. Dotted basenames are
-preserved and nested directories are ignored. Relative roots and output
-directories are project-relative; absolute overrides are accepted:
+preserved and nested directories are ignored. Relative roots are resolved from
+the AirPiano repository root:
 
 ```bash
 conda run -n v2n python run.py stage=visualize \
-  visualize.root=inference/test-best \
-  visualize.output_dir=visualizations/test-best
+  visualize.root=outputs/baseline/inference/test-best
 
 conda run -n v2n python run.py stage=sonify \
-  sonify.root=/absolute/path/to/artifacts \
-  sonify.output_dir=/absolute/path/to/sonifications
+  sonify.root=/absolute/path/to/artifacts
 ```
 
 Visualization draws probability and target heatmaps with shared `[0,1]`
@@ -1034,8 +1114,8 @@ directories:
 
 ```bash
 conda run -n v2n python run.py stage=sonify \
-  sonify.root=inference/realtime/performance.v2 \
-  sonify.midi_root=outputs/baseline/realtime
+  sonify.root=/data/performance/realtime/performance.v2 \
+  sonify.midi_root=/data/performance/midi
 ```
 
 Inspect artifacts directly without pickle:
@@ -1054,12 +1134,12 @@ Hydra `key=value` syntax.
 
 | Field | Baseline | Meaning |
 | --- | --- | --- |
-| `stage` | `train` | One of the six supported handlers, or an ordered Hydra list. |
+| `stage` | `train` | One of the seven supported handlers, or an ordered Hydra list. |
 | `device` | `cuda:1` | Training and WiLoR device. |
 | `seed` | `42` | Python, NumPy, Torch, CUDA, and shuffle seed. |
 | `output.root` | `outputs` | Parent of generated project artifacts. |
 | `output.project_name` | `baseline` | Single local project directory name. |
-| `output.dir` | `${output.root}/${output.project_name}` | Fixed base for relative stage-output paths. |
+| `output.dir` | `${output.root}/${output.project_name}` | Explicit project artifact directory; relative values resolve from the AirPiano root. |
 | `data.root` | `/storage/jinxuan/data/PianoMotion10M` | Parent of immutable source modalities. |
 | `data.processed_root` | `/storage2/jinxuan/data/PianoMotion10M` | Parent of generated and migrated modalities. |
 | `data.midi_root` | `${data.root}/midi` | `<stem>.mid` files. |
@@ -1095,8 +1175,9 @@ Hydra `key=value` syntax.
 | `coordinates.z_source` | `wrist_relative_3d` | Local WiLoR depth relative to the selected hand's wrist. |
 | `target_fps` | `30.0` | Canonical output rate. |
 
-Relative code/asset paths rely on Hydra's `job.chdir: false`; launch from the
-repository root or override them with absolute paths.
+These code and asset paths use the same repository-root resolver as every
+other AirPiano path. Hydra also keeps `job.chdir: false`, so it never relocates
+the process into an output directory.
 
 ### Dataset components
 
@@ -1104,15 +1185,16 @@ repository root or override them with absolute paths.
 | --- | --- |
 | `file_loader` / `RelativeStemPairer` | Pair `<stem>.mid` and `<stem>.npz`, report the intersection, then read full songs. |
 | `MidoNoteReader` | Tempo-aware physical note parsing. |
-| `InitializerChordMerger.tolerance_seconds` | Initializer-relative grouping at `0.05`. |
+| `InitializerChordMerger.tolerance_seconds` | Initializer-relative grouping at `0.05`, with absolute chord durations assigned after grouping. |
 | `CanonicalNpzReader` | Direct trusted canonical array loading. |
 | `OffsetScaleTransform` | Apply configured per-axis offset and scale, then restore absent slots to zero. |
-| `FutureChordSlicer` | Frame mode: 30 Hz, 210 frames, stride 105, fixed 128 future-extending candidates. Chord mode is available as described above. |
+| `FutureChordSlicer` | Frame mode: 30 Hz, 210 frames, stride 105, fixed 128 future-extending candidates. Every chord token contains pitch and duration features. |
 | `ChordOnsetEvents` | One event at each chord initializer onset. |
 | `TriangularSoftener.radius_seconds` | Continuous target radius `0.2`. |
 
 Each `_target_` is a replaceable seam, but its parent-facing contract must stay
-stable. The model and loss intentionally have no `_target_`.
+stable. This includes the model's five-input, `[B,T,C]` output contract. The
+loss intentionally remains fixed in code.
 
 ### Training, realtime, and rendering
 
@@ -1126,29 +1208,32 @@ stable. The model and loss intentionally have no `_target_`.
 | `max_grad_norm` | `1.0` | Update-time global norm clipping. |
 | `warmup_fraction` | `0.05` | Linear warmup fraction before cosine decay. |
 | `bf16` | `true` | CUDA BF16 autocast. |
+| `model._target_` | `airpiano.model.transformer.AirPianoTransformer` | Configured alignment model instantiated for training and restored from checkpoints. |
+| `model.include_chord_duration` | `false` | Consume the packed 200-bin duration suffix through a separate embedding. |
 | `wandb.project` | `air_piano` | Required online project. |
 | `wandb.name` | `baseline` | Run name. |
 | `wandb.entity` | `null` | Optional team/entity. |
-| `wandb.dir` | `logs` | Project-relative parent; W&B creates its `wandb/` directory here. |
-| `test.checkpoint` | `checkpoints/last.pt` | Project-relative checkpoint loaded by `stage=test`; absolute paths also work. |
-| `test.output_dir` | `inference/test` | Project-relative test artifact and loss directory. |
-| `realtime.root` | `realtime` | Project-relative root scanned for direct matching `.mp4`/`.mid` files. |
-| `realtime.checkpoint` | `checkpoints/last.pt` | Project-relative default AirPiano checkpoint; absolute paths also work. |
-| `realtime.output_dir` | `inference/realtime` | Project-relative parent for per-stem predictions. |
+| `wandb.dir` | `${output.dir}/logs` | W&B parent directory. |
+| `test.checkpoint` | `${output.dir}/checkpoints/last.pt` | Checkpoint loaded by `stage=test`. |
+| `test.output_dir` | `${output.dir}/inference/test` | Test artifact and loss directory. |
+| `realtime.root` | `null` | AirPiano-relative or absolute root containing matching `video/*.mp4` and `midi/*.mid` files. |
+| `realtime.checkpoint` | `${output.dir}/checkpoints/last.pt` | Default AirPiano checkpoint. |
 | `realtime.overwrite` | `false` | Raw and canonical preprocessing reuse policy. |
-| `visualize.root` | `inference/test` | Project-relative root scanned non-recursively for NPZ artifacts. |
-| `visualize.output_dir` | `visualizations` | Project-relative directory for basename-matched PNG files. |
-| `sonify.root` | `inference/test` | Project-relative root scanned non-recursively for NPZ artifacts. |
-| `sonify.output_dir` | `sonifications` | Parent of basename-matched `predict/` and `ground_truth/` MIDI files. |
+| `full_song.root` | `null` | AirPiano-relative or absolute root containing matching `video/*.mp4` and `midi/*.mid` files. |
+| `full_song.checkpoint` | `${output.dir}/checkpoints/last.pt` | Causal AirPiano checkpoint loaded once for the stage. |
+| `full_song.overwrite` | `false` | Raw and canonical preprocessing reuse policy. |
+| `full_song.alignment_threshold` | `0.2` | Inclusive running-peak confidence required by leading chords. |
+| `full_song.advance_after_chords` | slicer stride | Leading aligned chord count required to advance one position. |
+| `visualize.root` | `${output.dir}/inference/test` | Filesystem root scanned for NPZs and receiving basename-matched PNG files. |
+| `sonify.root` | `${output.dir}/inference/test` | Filesystem root receiving predicted `.mid` and ground-truth `.gt.mid` sidecars. |
 | `sonify.midi_root` | `${data.midi_root}` | Root used with the artifact `record_id` to locate source MIDI. |
 | `sonify.threshold` | `0.2` | Inclusive chord peak threshold. |
 | `sonify.duration_seconds` | `1.0` | Fixed output-note duration. |
 | `sonify.velocity` | `64` | Fixed note-on velocity. |
 
-The checkpoint directory remains fixed in the training handler. Test checkpoint
-and artifact paths are owned by the test handler and exposed independently.
-Relative paths in this table resolve beneath `output.dir`; an absolute override
-bypasses that prefix.
+All values in this table that represent paths accept either an absolute path or
+a path relative to the AirPiano repository root. Project placement is explicit
+through `${output.dir}` rather than being inferred by individual stages.
 
 ## Extension contracts
 
@@ -1161,7 +1246,7 @@ The narrow replaceable interfaces are:
 | `RelativeStemPairer` | `pair(split_file, midi_root, hand_root) -> list[FilePair]`. |
 | `EagerSongReader` | `read(pair, midi_loader, hand_loader) -> Song`; the loader exposes it as `.reader` for realtime. |
 | `MidoNoteReader` | `read(path) -> tuple[Note,...]`. |
-| `InitializerChordMerger` | `merge(notes) -> tuple[Chord,...]`. |
+| `InitializerChordMerger` | `merge(notes) -> tuple[Chord,...]`; every chord includes its absolute `duration` and `float32[200]` `quantized_dur`. |
 | `CanonicalNpzReader` | `read(path) -> HandSequence`. |
 | `WiLoRCoordinateConverter` | `(raw_arrays, detection_index) -> float32[21,3]` canonical hand. |
 | Hand transform | `(pose, presence) -> pose` with unchanged shape and absent slots zero. |
@@ -1187,8 +1272,8 @@ Common changes stay localized:
   finite `[T,C]` BCE targets.
 - New raw backend: replace `VideoToWiLoR` and canonicalizer targets together.
   Realtime automatically instantiates the same configured components.
-- Model/loss changes: edit `airpiano/model/` deliberately and version checkpoint
-  compatibility; they are not configuration options.
+- Model changes: provide a compatible Hydra `_target_` and version checkpoint
+  compatibility. Loss changes remain deliberate edits in `airpiano/model/`.
 
 Any new training target or inference field must be considered in visualization,
 sonification, artifact tests, and documentation in the same change.
@@ -1199,8 +1284,8 @@ sonification, artifact tests, and documentation in the same change.
    is not a frame mask and never filters records, frames, targets, or BCE
    positions. Dataset windows are omitted only when they contain no real frame
    or chord candidate.
-2. Hand slot order is `[Left, Right]`; chord vectors always span MIDI pitches
-   `0..127`.
+2. Hand slot order is `[Left, Right]`; the first 128 chord-vector entries always
+   span MIDI pitches `0..127`.
 3. Canonical FPS and slicer FPS are both 30. Interpolation occurs only in
    ragged-to-canonical preprocessing.
 4. Targets use global frame time, even though artifacts contain individual
@@ -1218,7 +1303,8 @@ sonification, artifact tests, and documentation in the same change.
    utility only for the recognized legacy PianoMotion corpus.
 10. Training requires canonical NPZs; it never starts either preprocessing
     phase.
-11. Realtime requires direct synchronized `.mp4`/`.mid` pairs under one root.
+11. Realtime-style roots contain synchronized `video/<stem>.mp4` and
+    `midi/<stem>.mid` pairs; caches and stage outputs remain under that root.
 12. Three complete split datasets live in host RAM simultaneously. Lowering
     batch size does not reduce eager dataset memory.
 13. Training always starts online W&B project `air_piano` and has no
@@ -1227,8 +1313,8 @@ sonification, artifact tests, and documentation in the same change.
     explicit override.
 15. The fixed project directory is not cleared or validated before training.
     Duplicate runs are unsupported and can mix overwritten and stale files.
-16. Test/realtime predictions have no manifest. Visualization and sonification
-    batch direct slices without stitching overlap.
+16. Predictions have no manifest. Visualization and sonification batch direct
+    NPZs and write sidecars in the same directory.
 17. Raw chunk/manifest writes and ragged visualization videos are atomic;
     canonical, checkpoint, inference, JSON, heatmap, and MIDI outputs are
     direct writes and may be partial after an interruption.

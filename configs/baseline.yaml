@@ -1,8 +1,6 @@
 defaults:
   - _self_
 
-# Run one stage or an ordered list drawn from preprocess, train, test, realtime,
-# visualize, and sonify. Every path can be replaced with a Hydra override.
 stage: train
 device: cuda:1
 seed: 42
@@ -94,7 +92,9 @@ dataset:
       radius_seconds: 0.2
 
 model:
+  _target_: airpiano.model.transformer.AirPianoTransformer
   causal_frame_attention: false
+  include_chord_duration: false
 
 train:
   epochs: 20
@@ -107,28 +107,20 @@ train:
   bf16: true
 
 test:
-  checkpoint: checkpoints/last.pt
-  output_dir: inference/test
+  checkpoint: ${output.dir}/checkpoints/last.pt
+  output_dir: ${output.dir}/test
 
 wandb:
   project: air_piano
   name: baseline
   entity: null
-  dir: logs
-
-realtime:
-  root: null # Set to a directory containing video files to run inference on them in real time.
-  checkpoint: checkpoints/last.pt
-  output_dir: inference/realtime
-  overwrite: false
+  dir: ${output.dir}/logs
 
 visualize:
-  root: inference/test
-  output_dir: visualizations
+  root: ${output.dir}/test
 
 sonify:
-  root: inference/test
-  output_dir: sonifications
+  root: ${output.dir}/test
   midi_root: ${data.midi_root}
   threshold: 0.2
   duration_seconds: 1.0

@@ -23,11 +23,16 @@ class _TinyDataset(Dataset):
         return 2
 
     def __getitem__(self, index: int):
+        chords = torch.zeros(2, 328)
+        chords[0, 60] = 1.0
+        chords[1, 64] = 1.0
+        chords[0, 128 + 10] = 1.0
+        chords[1, 128 + 20] = 1.0
         return {
             "hands": torch.zeros(2, 2, 21, 3),
             "hand_presence": torch.ones(2, 2, dtype=torch.bool),
             "frame_mask": torch.ones(2, dtype=torch.bool),
-            "chords": torch.eye(128)[:2],
+            "chords": chords,
             "chord_mask": torch.ones(2, dtype=torch.bool),
             "target": torch.tensor([[1.0, 0.0], [0.5, 0.0]]),
             "chord_ids": torch.tensor([0, 1]),
@@ -38,9 +43,14 @@ class _TinyDataset(Dataset):
 
 
 class _TinyModel(nn.Module):
-    def __init__(self, causal_frame_attention: bool = False) -> None:
+    def __init__(
+        self,
+        causal_frame_attention: bool = False,
+        include_chord_duration: bool = False,
+    ) -> None:
         super().__init__()
         self.causal_frame_attention = causal_frame_attention
+        self.include_chord_duration = include_chord_duration
         self.bias = nn.Parameter(torch.tensor(0.0))
 
     def forward(self, hands, hand_presence, chords, frame_mask, chord_mask):
@@ -53,6 +63,7 @@ class TestInferenceTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             causal = root / "causal.pt"
+            duration = root / "duration.pt"
             legacy = root / "legacy.pt"
             torch.save(
                 {
@@ -63,20 +74,46 @@ class TestInferenceTest(unittest.TestCase):
                 },
                 causal,
             )
+            torch.save(
+                {
+                    "model": _TinyModel().state_dict(),
+                    "config": {
+                        "model": {"include_chord_duration": True}
+                    },
+                },
+                duration,
+            )
             torch.save({"model": _TinyModel().state_dict()}, legacy)
 
+            def instantiate_model(config):
+                return _TinyModel(
+                    causal_frame_attention=bool(
+                        config.causal_frame_attention
+                    ),
+                    include_chord_duration=bool(
+                        config.include_chord_duration
+                    ),
+                )
+
             with patch.object(
-                inference_stage, "AirPianoTransformer", _TinyModel
+                inference_stage,
+                "instantiate",
+                side_effect=instantiate_model,
             ):
                 causal_model = inference_stage.load_model_checkpoint(
                     causal, torch.device("cpu")
+                )
+                duration_model = inference_stage.load_model_checkpoint(
+                    duration, torch.device("cpu")
                 )
                 legacy_model = inference_stage.load_model_checkpoint(
                     legacy, torch.device("cpu")
                 )
 
             self.assertTrue(causal_model.causal_frame_attention)
+            self.assertTrue(duration_model.include_chord_duration)
             self.assertFalse(legacy_model.causal_frame_attention)
+            self.assertFalse(legacy_model.include_chord_duration)
 
     def test_uses_configured_checkpoint_and_dumps_test_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -93,20 +130,24 @@ class TestInferenceTest(unittest.TestCase):
                     "dataset": {},
                     "train": {"batch_size": 1, "bf16": False},
                     "test": {
-                        "checkpoint": "checkpoints/best.pt",
-                        "output_dir": "inference/custom-test",
+                        "checkpoint": str(checkpoint),
+                        "output_dir": str(
+                            output / "inference" / "custom-test"
+                        ),
                     },
                 }
             )
 
             with (
                 patch.object(
-                    data, "build_dataset", return_value=_TinyDataset()
+                    data,
+                    "build_dataset",
+                    return_value=_TinyDataset(),
                 ) as build_dataset,
                 patch.object(
                     inference_stage,
                     "load_model_checkpoint",
-                    return_value=_TinyModel(),
+                    return_value=_TinyModel(include_chord_duration=True),
                 ) as load_checkpoint,
             ):
                 inference_stage.test(config)
