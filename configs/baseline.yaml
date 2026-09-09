@@ -114,6 +114,12 @@ test:
   checkpoint: ${output.dir}/checkpoints/last.pt
   output_dir: ${output.dir}/test
 
+realtime:
+  root: null # Set to a root containing video/ and midi/ directories.
+  checkpoint: ${output.dir}/checkpoints/last.pt
+  output_dir: ${output.dir}/realtime
+  overwrite: false
+
 wandb:
   project: air_piano
   name: ${output.project_name}

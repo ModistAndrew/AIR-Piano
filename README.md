@@ -923,15 +923,19 @@ outputs/baseline/
 │   └── wandb/
 ```
 
-Realtime-style stages keep inputs, preprocessing caches, inference artifacts,
-and rendered sidecars together under their explicitly configured root:
+Realtime-style stages keep inputs and preprocessing caches together under their
+explicitly configured input root. Cache directory names match the final
+component of `data.raw_wilor_root` and `data.hand_root`, so preprocessing presets
+use the same layout as their offline datasets:
 
 ```text
 <runtime-root>/
 ├── video/<stem>.mp4
 ├── midi/<stem>.mid
-├── raw_wilor/<stem>/
-├── canonical/<stem>.npz
+├── wilor/<stem>/
+└── airpiano_wilor_2p5d_30fps/<stem>.npz
+
+<output.dir>/
 ├── realtime/<stem>/
 │   ├── *.npz
 │   └── realtime_loss.json
@@ -1194,8 +1198,10 @@ preserved:
 <runtime-root>/
 ├── video/performance.v2.mp4
 ├── midi/performance.v2.mid
-├── raw_wilor/performance.v2/
-├── canonical/performance.v2.npz
+├── wilor/performance.v2/
+└── airpiano_wilor_2p5d_30fps/performance.v2.npz
+
+<output.dir>/
 └── realtime/performance.v2/
 ```
 
@@ -1206,11 +1212,12 @@ conda run -n v2n python run.py stage=realtime \
   realtime.root=/data/performance
 ```
 
-Outputs for this example are written below
-`/data/performance/realtime/performance.v2/`. Video or MIDI files without a
+With the baseline config, outputs for this example are written below
+`outputs/baseline/realtime/performance.v2/`. Video or MIDI files without a
 matching counterpart are reported and skipped. Only direct files inside the
 two modality directories are scanned. WiLoR, canonical, and dataset components
-are constructed once and reused across the sorted pairs.
+are constructed once and reused across the sorted pairs. Override
+`realtime.output_dir` to select another inference destination.
 
 Select a different root or checkpoint as needed:
 
@@ -1246,12 +1253,13 @@ chord. After the final score window is reached, it remains active through the
 end of the video. Override `full_song.alignment_threshold` or
 `full_song.advance_after_chords` to change the trigger.
 
-Outputs are written directly under `<runtime-root>/full_song/`, one NPZ per
-input basename, with a weighted aggregate loss in `full_song_loss.json`.
+Outputs are written directly under `full_song.output_dir`, which defaults to
+`${output.dir}/full_song`, one NPZ per input basename, with a weighted aggregate
+loss in `full_song_loss.json`.
 
 ### Visualize and sonify batches
 
-Both stages scan direct `*.npz` files under `inference/test` by default:
+Both stages recursively scan `*.npz` files under `inference/test` by default:
 
 ```bash
 conda run -n v2n python run.py stage=visualize
@@ -1266,9 +1274,10 @@ outputs/baseline/inference/test/test.mid
 outputs/baseline/inference/test/test.gt.mid
 ```
 
-Only direct NPZ files are processed, in sorted order. Dotted basenames are
-preserved and nested directories are ignored. Relative roots are resolved from
-the AirPiano repository root:
+NPZ files are processed recursively in sorted order. Dotted basenames and
+nested directory structure are preserved, and each rendered sidecar is written
+beside its source artifact. Relative roots are resolved from the AirPiano
+repository root:
 
 ```bash
 conda run -n v2n python run.py stage=visualize \
@@ -1290,12 +1299,12 @@ at 120 BPM; pedals, programs, channels, source tempo events, and other MIDI
 metadata are not preserved. Timing is slice-relative and overlapping slices
 are not merged.
 
-For realtime artifacts, point the artifact and MIDI roots at their batch
-directories:
+For realtime artifacts, point the artifact root at the parent of the per-record
+directories and the MIDI root at the runtime input directory:
 
 ```bash
 conda run -n v2n python run.py stage=sonify \
-  sonify.root=/data/performance/realtime/performance.v2 \
+  sonify.root=outputs/baseline/realtime \
   sonify.midi_root=/data/performance/midi
 ```
 
@@ -1427,14 +1436,16 @@ loss intentionally remains fixed in code.
 | `test.output_dir` | `${output.dir}/inference/test` | Test artifact and loss directory. |
 | `realtime.root` | `null` | AirPiano-relative or absolute root containing matching `video/*.mp4` and `midi/*.mid` files. |
 | `realtime.checkpoint` | `${output.dir}/checkpoints/last.pt` | Default AirPiano checkpoint. |
+| `realtime.output_dir` | `${output.dir}/realtime` | Per-record inference artifact and loss parent directory. |
 | `realtime.overwrite` | `false` | Raw and canonical preprocessing reuse policy. |
 | `full_song.root` | `null` | AirPiano-relative or absolute root containing matching `video/*.mp4` and `midi/*.mid` files. |
 | `full_song.checkpoint` | `${output.dir}/checkpoints/last.pt` | Causal AirPiano checkpoint loaded once for the stage. |
+| `full_song.output_dir` | `${output.dir}/full_song` | Full-song inference artifact and aggregate loss directory. |
 | `full_song.overwrite` | `false` | Raw and canonical preprocessing reuse policy. |
 | `full_song.alignment_threshold` | `0.2` | Inclusive running-peak confidence required by leading chords. |
 | `full_song.advance_after_chords` | slicer stride | Leading aligned chord count required to advance one position. |
-| `visualize.root` | `${output.dir}/inference/test` | Filesystem root scanned for NPZs and receiving basename-matched PNG files. |
-| `sonify.root` | `${output.dir}/inference/test` | Filesystem root receiving predicted `.mid` and ground-truth `.gt.mid` sidecars. |
+| `visualize.root` | `${output.dir}/inference/test` | Filesystem tree recursively scanned for NPZs and receiving adjacent PNG files. |
+| `sonify.root` | `${output.dir}/inference/test` | Filesystem tree recursively scanned for NPZs and receiving adjacent predicted `.mid` and ground-truth `.gt.mid` sidecars. |
 | `sonify.midi_root` | `${data.midi_root}` | Root used with the artifact `record_id` to locate source MIDI. |
 | `sonify.threshold` | `0.2` | Inclusive chord peak threshold. |
 | `sonify.duration_seconds` | `1.0` | Fixed output-note duration. |

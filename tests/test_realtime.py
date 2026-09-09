@@ -46,6 +46,7 @@ class RealtimeTest(unittest.TestCase):
                     "realtime": {
                         "root": str(project / "realtime"),
                         "checkpoint": "checkpoints/last.pt",
+                        "output_dir": str(project / "output"),
                         "overwrite": False,
                     },
                 }
@@ -63,7 +64,7 @@ class RealtimeTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             project = root / "project"
-            bundle = project / "realtime"
+            bundle = root / "runtime"
             video_root = bundle / "video"
             midi_root = bundle / "midi"
             video_root.mkdir(parents=True)
@@ -84,7 +85,7 @@ class RealtimeTest(unittest.TestCase):
             checkpoint.parent.mkdir(parents=True)
             checkpoint.write_bytes(b"checkpoint loading is patched")
 
-            output_root = bundle / "realtime"
+            output_root = project / "realtime"
             run_order: list[tuple[str, str]] = []
             test_case = self
 
@@ -101,7 +102,7 @@ class RealtimeTest(unittest.TestCase):
                         video, video_root / f"{record_id}.mp4"
                     )
                     test_case.assertEqual(
-                        Path(output_dir), bundle / "raw_wilor" / record_id
+                        Path(output_dir), bundle / "wilor" / record_id
                     )
                     test_case.assertTrue(overwrite)
                     run_order.append(("video", record_id))
@@ -112,10 +113,13 @@ class RealtimeTest(unittest.TestCase):
                     output = Path(output_path)
                     record_id = output.name[: -len(".npz")]
                     test_case.assertEqual(
-                        Path(raw_record_dir), bundle / "raw_wilor" / record_id
+                        Path(raw_record_dir), bundle / "wilor" / record_id
                     )
                     test_case.assertEqual(
-                        output, bundle / "canonical" / f"{record_id}.npz"
+                        output,
+                        bundle
+                        / "airpiano_wilor_2p5d_30fps"
+                        / f"{record_id}.npz",
                     )
                     test_case.assertTrue(overwrite)
                     output.parent.mkdir(parents=True, exist_ok=True)

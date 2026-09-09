@@ -104,6 +104,10 @@ class TrainTest(unittest.TestCase):
             str(config.realtime.checkpoint),
             "outputs/baseline/checkpoints/last.pt",
         )
+        self.assertEqual(
+            str(config.realtime.output_dir),
+            "outputs/baseline/realtime",
+        )
 
     def test_smoothed_config_constructs_opt_in_postprocessor(self) -> None:
         config_directory = Path(__file__).parents[1] / "configs"
@@ -334,6 +338,10 @@ class TrainTest(unittest.TestCase):
         self.assertEqual(slicer.stride_frames, 12)
         self.assertEqual(int(config.full_song.advance_after_chords), 12)
         self.assertEqual(float(config.full_song.alignment_threshold), 0.2)
+        self.assertEqual(
+            str(config.full_song.output_dir),
+            "outputs/causal_chord24/full_song",
+        )
 
     def test_chord_duration_config_enables_duration_ablation(self) -> None:
         config_directory = Path(__file__).parents[1] / "configs"

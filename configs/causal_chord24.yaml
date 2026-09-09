@@ -18,6 +18,7 @@ model:
 full_song:
   root: null # Set to a root containing video/ and midi/ directories.
   checkpoint: ${output.dir}/checkpoints/last.pt
+  output_dir: ${output.dir}/full_song
   overwrite: false
   alignment_threshold: 0.2
   advance_after_chords: ${dataset.slicer.stride_frames}

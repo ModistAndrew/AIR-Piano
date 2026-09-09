@@ -14,14 +14,13 @@ from .artifact import load_artifact
 
 
 def visualize(cfg: DictConfig) -> None:
-    """Render every inference artifact directly inside the configured root."""
+    """Recursively render every inference artifact below the configured root."""
 
     root = resolve_path(cfg.visualize.root)
-    for input_path in sorted(root.glob("*.npz")):
+    for input_path in sorted(root.rglob("*.npz")):
         if not input_path.is_file():
             continue
-        basename = input_path.name[: -len(".npz")]
-        output = visualize_artifact(input_path, root / f"{basename}.png")
+        output = visualize_artifact(input_path, input_path.with_suffix(".png"))
         print(f"wrote {output}", flush=True)
 
 

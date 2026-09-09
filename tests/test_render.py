@@ -60,7 +60,8 @@ class RenderTest(unittest.TestCase):
                 artifact.touch()
             nested = artifact_root / "nested"
             nested.mkdir()
-            (nested / "ignored.npz").touch()
+            nested_artifact = nested / "inside.npz"
+            nested_artifact.touch()
             midi_root = root / "midi"
             config = OmegaConf.create(
                 {
@@ -94,6 +95,7 @@ class RenderTest(unittest.TestCase):
                     "load_artifact",
                     side_effect=[
                         SimpleNamespace(record_id="subject/a"),
+                        SimpleNamespace(record_id="subject/inside"),
                         SimpleNamespace(record_id="subject/take.v2"),
                     ],
                 ),
@@ -111,6 +113,7 @@ class RenderTest(unittest.TestCase):
                 draw.call_args_list,
                 [
                     call(artifacts[0], artifact_root / "a.png"),
+                    call(nested_artifact, nested / "inside.png"),
                     call(
                         artifacts[1],
                         artifact_root / "take.v2.png",
@@ -123,6 +126,10 @@ class RenderTest(unittest.TestCase):
                     (
                         artifacts[0],
                         artifact_root / "a.mid",
+                    ),
+                    (
+                        nested_artifact,
+                        nested / "inside.mid",
                     ),
                     (
                         artifacts[1],
@@ -146,13 +153,18 @@ class RenderTest(unittest.TestCase):
                         artifact_root / "a.gt.mid",
                     ),
                     call(
+                        nested_artifact,
+                        midi_root / "subject" / "inside.mid",
+                        nested / "inside.gt.mid",
+                    ),
+                    call(
                         artifacts[1],
                         midi_root / "subject" / "take.v2.mid",
                         artifact_root / "take.v2.gt.mid",
                     ),
                 ],
             )
-            self.assertNotIn("ignored", printed.getvalue())
+            self.assertIn("inside.mid", printed.getvalue())
 
     def test_config_handlers_preserve_absolute_overrides(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

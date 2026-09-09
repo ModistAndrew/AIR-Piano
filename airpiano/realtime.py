@@ -48,6 +48,9 @@ def iter_realtime_songs(
         )
         return
 
+    raw_root = root / resolve_path(cfg.data.raw_wilor_root).name
+    canonical_root = root / resolve_path(cfg.data.hand_root).name
+
     # Components are shared across records so the lazy WiLoR models load once.
     video_to_ragged = instantiate(cfg.preprocess.video_to_ragged)
     ragged_to_canonical = instantiate(cfg.preprocess.ragged_to_canonical)
@@ -57,8 +60,8 @@ def iter_realtime_songs(
             f"{label} {index}/{len(record_ids)}: preprocess {record_id}",
             flush=True,
         )
-        raw_dir = root / "raw_wilor" / record_id
-        canonical_path = root / "canonical" / f"{record_id}.npz"
+        raw_dir = raw_root / record_id
+        canonical_path = canonical_root / f"{record_id}.npz"
         video_to_ragged.run(videos[record_id], raw_dir, overwrite)
         ragged_to_canonical.run(
             raw_record_dir=raw_dir,
@@ -82,7 +85,7 @@ def realtime(cfg: DictConfig) -> None:
     """Preprocess and infer every direct video/MIDI pair in one root."""
 
     root = resolve_path(cfg.realtime.root)
-    output_root = root / "realtime"
+    output_root = resolve_path(cfg.realtime.output_dir)
     checkpoint = resolve_path(cfg.realtime.checkpoint)
     overwrite = bool(cfg.realtime.overwrite)
 

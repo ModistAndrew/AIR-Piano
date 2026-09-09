@@ -114,7 +114,7 @@ def full_song(cfg: DictConfig) -> None:
     """Preprocess realtime-style inputs and infer one artifact per full song."""
 
     root = resolve_path(cfg.full_song.root)
-    output_dir = root / "full_song"
+    output_dir = resolve_path(cfg.full_song.output_dir)
     checkpoint = resolve_path(cfg.full_song.checkpoint)
     device = torch.device(str(cfg.device))
     components = data.build_data_components(cfg)

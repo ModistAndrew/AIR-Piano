@@ -247,6 +247,7 @@ class FullSongStageTest(unittest.TestCase):
                         "checkpoint": str(
                             project / "checkpoints" / "last.pt"
                         ),
+                        "output_dir": str(project / "full_song"),
                         "overwrite": True,
                         "alignment_threshold": 0.2,
                         "advance_after_chords": 2,
@@ -294,7 +295,7 @@ class FullSongStageTest(unittest.TestCase):
                 label="full-song",
                 components=components,
             )
-            output_dir = project / "pairs" / "full_song"
+            output_dir = project / "full_song"
             self.assertEqual(
                 [item.args[1].record_id for item in infer.call_args_list],
                 ["subject/performance.v1", "second.take"],

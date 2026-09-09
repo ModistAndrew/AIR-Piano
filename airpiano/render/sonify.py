@@ -13,17 +13,16 @@ from .artifact import load_artifact
 
 
 def sonify(cfg: DictConfig) -> None:
-    """Sonify every inference artifact directly inside the configured root."""
+    """Recursively sonify every inference artifact below the configured root."""
 
     root = resolve_path(cfg.sonify.root)
     midi_root = resolve_path(cfg.sonify.midi_root)
-    for input_path in sorted(root.glob("*.npz")):
+    for input_path in sorted(root.rglob("*.npz")):
         if not input_path.is_file():
             continue
-        basename = input_path.name[: -len(".npz")]
         prediction_output = sonify_artifact(
             input_path,
-            root / f"{basename}.mid",
+            input_path.with_suffix(".mid"),
             threshold=float(cfg.sonify.threshold),
             duration_seconds=float(cfg.sonify.duration_seconds),
             velocity=int(cfg.sonify.velocity),
@@ -33,7 +32,7 @@ def sonify(cfg: DictConfig) -> None:
         ground_truth_output = sonify_ground_truth(
             input_path,
             midi_path,
-            root / f"{basename}.gt.mid",
+            input_path.with_suffix(".gt.mid"),
         )
         print(f"wrote prediction {prediction_output}", flush=True)
         print(f"wrote ground truth {ground_truth_output}", flush=True)

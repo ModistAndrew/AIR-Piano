@@ -1,0 +1,24 @@
+defaults:
+  - wrist_xyz10
+  - _self_
+
+output:
+  project_name: wrist_xyz10_causal_chord24
+
+dataset:
+  slicer:
+    mode: chord
+    # In chord mode these values count chord tokens; chord_count is ignored.
+    segment_frames: 24
+    stride_frames: 12
+
+model:
+  causal_frame_attention: true
+
+full_song:
+  root: null # Set to a root containing video/ and midi/ directories.
+  checkpoint: ${output.dir}/checkpoints/last.pt
+  output_dir: ${output.dir}/full_song
+  overwrite: false
+  alignment_threshold: 0.2
+  advance_after_chords: ${dataset.slicer.stride_frames}
