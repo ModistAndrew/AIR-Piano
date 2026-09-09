@@ -14,8 +14,11 @@ preprocess:
       _target_: airpiano.preprocessing.canonical.LowestWristHandSelector
       minimum_detector_confidence: 0.75
     postprocessor:
-      _target_: airpiano.preprocessing.canonical.GapAwareSavitzkyGolayPostprocessor
-      max_gap_seconds: 0.09
-      window_seconds: 0.17
-      polyorder: 2
+      _target_: airpiano.preprocessing.canonical.PianoMotion10MPostprocessor
+      hampel_window_frames: 20
+      hampel_n_sigma: 3.0
+      max_missing_run_frames: 29
+      min_presence_run_frames: 15
+      savgol_window_frames: 11
+      savgol_polyorder: 3
     minimum_presence: 0.90

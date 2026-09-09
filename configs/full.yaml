@@ -1,0 +1,16 @@
+defaults:
+  - baseline
+  - _self_
+
+output:
+  project_name: full
+
+data:
+  root: /storage2/jinxuan/data/AirPianoFull
+  processed_root: ${data.root}
+  midi_root: ${data.root}/midi
+  hand_root: ${data.root}/airpiano_wilor_2p5d_30fps
+  splits:
+    train: assets/splits/full/train.txt
+    valid: assets/splits/full/valid.txt
+    test: assets/splits/full/test.txt

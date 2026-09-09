@@ -137,42 +137,117 @@ class LowestWristHandSelector:
         return selected
 
 
-class GapAwareSavitzkyGolayPostprocessor:
-    """Fill short dropouts and smooth valid source-rate pose runs."""
+class PianoMotion10MPostprocessor:
+    """Clean and smooth canonical 30 Hz poses using the paper's stages."""
 
     def __init__(
         self,
-        max_gap_seconds: float = 0.09,
-        window_seconds: float = 0.17,
-        polyorder: int = 2,
+        hampel_window_frames: int = 20,
+        hampel_n_sigma: float = 3.0,
+        max_missing_run_frames: int = 29,
+        min_presence_run_frames: int = 15,
+        savgol_window_frames: int = 11,
+        savgol_polyorder: int = 3,
     ) -> None:
-        if max_gap_seconds < 0.0:
-            raise ValueError("max_gap_seconds must be non-negative")
-        if window_seconds <= 0.0:
-            raise ValueError("window_seconds must be positive")
-        if polyorder < 0:
-            raise ValueError("polyorder must be non-negative")
-        self.max_gap_seconds = float(max_gap_seconds)
-        self.window_seconds = float(window_seconds)
-        self.polyorder = int(polyorder)
+        if hampel_window_frames <= 0:
+            raise ValueError("hampel_window_frames must be positive")
+        if hampel_n_sigma <= 0.0:
+            raise ValueError("hampel_n_sigma must be positive")
+        if max_missing_run_frames < 0:
+            raise ValueError("max_missing_run_frames must be non-negative")
+        if min_presence_run_frames <= 0:
+            raise ValueError("min_presence_run_frames must be positive")
+        if savgol_window_frames <= 0 or savgol_window_frames % 2 == 0:
+            raise ValueError("savgol_window_frames must be positive and odd")
+        if savgol_polyorder < 0:
+            raise ValueError("savgol_polyorder must be non-negative")
+        if savgol_window_frames <= savgol_polyorder:
+            raise ValueError(
+                "savgol_window_frames must exceed savgol_polyorder"
+            )
+        self.hampel_window_frames = int(hampel_window_frames)
+        self.hampel_n_sigma = float(hampel_n_sigma)
+        self.max_missing_run_frames = int(max_missing_run_frames)
+        self.min_presence_run_frames = int(min_presence_run_frames)
+        self.savgol_window_frames = int(savgol_window_frames)
+        self.savgol_polyorder = int(savgol_polyorder)
 
     def __call__(
         self,
         pose: np.ndarray,
         presence: np.ndarray,
-        source_fps: float,
+        fps: float,
     ) -> tuple[np.ndarray, np.ndarray]:
-        """Return independently repaired and smoothed left/right poses."""
+        """Return independently cleaned and smoothed left/right poses."""
+
+        if not math.isclose(fps, TARGET_FPS, rel_tol=0.0, abs_tol=1e-9):
+            raise ValueError(
+                f"PianoMotion10MPostprocessor requires {TARGET_FPS} fps, "
+                f"received {fps}"
+            )
 
         processed_pose = np.array(pose, dtype=np.float32, copy=True)
         processed_presence = np.array(presence, dtype=np.bool_, copy=True)
-        max_gap_frames = math.floor(self.max_gap_seconds * source_fps + 1e-12)
+
+        # Compute every Hampel decision against the same pre-Hampel sequence.
+        # Blocking bounds the temporary rolling-window arrays for long videos.
+        outliers = np.zeros_like(processed_presence)
+        left_context = self.hampel_window_frames // 2
+        right_context = self.hampel_window_frames - left_context - 1
+        for slot in range(processed_presence.shape[1]):
+            slot_presence = processed_presence[:, slot]
+            present_frames = np.flatnonzero(slot_presence)
+            if not present_frames.size:
+                continue
+            flattened_pose = processed_pose[:, slot].reshape(
+                processed_pose.shape[0], -1
+            )
+            observed_pose = np.where(
+                slot_presence[:, None], flattened_pose, np.nan
+            )
+            padded_pose = np.pad(
+                observed_pose,
+                ((left_context, right_context), (0, 0)),
+                mode="constant",
+                constant_values=np.nan,
+            )
+            windows = np.lib.stride_tricks.sliding_window_view(
+                padded_pose,
+                self.hampel_window_frames,
+                axis=0,
+            )
+            for block_start in range(0, len(present_frames), 4096):
+                frame_indices = present_frames[block_start : block_start + 4096]
+                block = windows[frame_indices]
+                local_median = np.nanmedian(block, axis=-1)
+                local_mad = np.nanmedian(
+                    np.abs(block - local_median[..., None]),
+                    axis=-1,
+                )
+                residual = np.abs(
+                    flattened_pose[frame_indices] - local_median
+                )
+                scaled_mad = np.float32(1.4826) * local_mad
+                standardized = np.zeros_like(residual)
+                nonzero_mad = scaled_mad > 0.0
+                np.divide(
+                    residual,
+                    scaled_mad,
+                    out=standardized,
+                    where=nonzero_mad,
+                )
+                standardized[~nonzero_mad & (residual > 0.0)] = np.inf
+                score = np.median(standardized, axis=1)
+                outliers[frame_indices, slot] = (
+                    score > self.hampel_n_sigma
+                )
+        processed_presence[outliers] = False
 
         for slot in range(processed_presence.shape[1]):
             detected = np.flatnonzero(processed_presence[:, slot])
             for left, right in zip(detected[:-1], detected[1:]):
                 gap_frames = int(right - left - 1)
-                if not 0 < gap_frames <= max_gap_frames:
+                if not 0 < gap_frames <= self.max_missing_run_frames:
                     continue
                 alpha = (
                     np.arange(1, gap_frames + 1, dtype=np.float32)
@@ -184,14 +259,16 @@ class GapAwareSavitzkyGolayPostprocessor:
                 )
                 processed_presence[left + 1 : right, slot] = True
 
-        requested_window = self.window_seconds * source_fps
-        window_length = max(1, 2 * math.floor(requested_window / 2.0) + 1)
-        if window_length <= self.polyorder:
-            raise ValueError(
-                f"window_seconds={self.window_seconds} resolves to "
-                f"{window_length} samples at {source_fps} fps, but must exceed "
-                f"polyorder={self.polyorder}"
+        for slot in range(processed_presence.shape[1]):
+            mask = processed_presence[:, slot]
+            padded = np.concatenate(
+                (np.asarray([False]), mask, np.asarray([False]))
             )
+            starts = np.flatnonzero(~padded[:-1] & padded[1:])
+            stops = np.flatnonzero(padded[:-1] & ~padded[1:])
+            for start, stop in zip(starts, stops):
+                if stop - start < self.min_presence_run_frames:
+                    processed_presence[start:stop, slot] = False
 
         for slot in range(processed_presence.shape[1]):
             mask = processed_presence[:, slot]
@@ -201,12 +278,12 @@ class GapAwareSavitzkyGolayPostprocessor:
             starts = np.flatnonzero(~padded[:-1] & padded[1:])
             stops = np.flatnonzero(padded[:-1] & ~padded[1:])
             for start, stop in zip(starts, stops):
-                if stop - start < window_length:
+                if stop - start < self.savgol_window_frames:
                     continue
                 processed_pose[start:stop, slot] = savgol_filter(
                     processed_pose[start:stop, slot],
-                    window_length=window_length,
-                    polyorder=self.polyorder,
+                    window_length=self.savgol_window_frames,
+                    polyorder=self.savgol_polyorder,
                     axis=0,
                     mode="interp",
                 )
@@ -253,9 +330,11 @@ class WiLoRToCanonical:
 
         raw_directory = resolve_path(raw_record_dir)
         pose, presence, source_fps = self._read_raw_sequence(raw_directory)
-        if self.postprocessor is not None:
-            pose, presence = self.postprocessor(pose, presence, source_fps)
         pose, presence = self._resample(pose, presence, source_fps)
+        if self.postprocessor is not None:
+            pose, presence = self.postprocessor(
+                pose, presence, self.target_fps
+            )
         if self.minimum_presence is not None:
             presence_rate = float(np.mean(presence))
             if presence_rate < self.minimum_presence:

@@ -121,7 +121,7 @@ class TrainTest(unittest.TestCase):
         )
         self.assertEqual(
             type(canonicalizer.postprocessor).__name__,
-            "GapAwareSavitzkyGolayPostprocessor",
+            "PianoMotion10MPostprocessor",
         )
         self.assertEqual(
             type(canonicalizer.selector).__name__,
@@ -131,10 +131,44 @@ class TrainTest(unittest.TestCase):
             canonicalizer.selector.minimum_detector_confidence,
             0.75,
         )
-        self.assertEqual(canonicalizer.postprocessor.max_gap_seconds, 0.09)
-        self.assertEqual(canonicalizer.postprocessor.window_seconds, 0.17)
-        self.assertEqual(canonicalizer.postprocessor.polyorder, 2)
+        self.assertEqual(canonicalizer.postprocessor.hampel_window_frames, 20)
+        self.assertEqual(canonicalizer.postprocessor.hampel_n_sigma, 3.0)
+        self.assertEqual(canonicalizer.postprocessor.max_missing_run_frames, 29)
+        self.assertEqual(canonicalizer.postprocessor.min_presence_run_frames, 15)
+        self.assertEqual(canonicalizer.postprocessor.savgol_window_frames, 11)
+        self.assertEqual(canonicalizer.postprocessor.savgol_polyorder, 3)
         self.assertEqual(canonicalizer.minimum_presence, 0.90)
+
+    def test_lowest_v_config_changes_only_candidate_selection(self) -> None:
+        config_directory = Path(__file__).parents[1] / "configs"
+        with initialize_config_dir(
+            version_base=None, config_dir=str(config_directory.resolve())
+        ):
+            config = compose(config_name="lowest_v")
+
+        canonicalizer = instantiate(config.preprocess.ragged_to_canonical)
+
+        self.assertEqual(str(config.output.dir), "outputs/lowest_v")
+        self.assertEqual(
+            str(config.data.hand_root),
+            f"{config.data.processed_root}/airpiano_wilor_2p5d_lowest_v_30fps",
+        )
+        self.assertEqual(
+            type(canonicalizer.selector).__name__,
+            "LowestWristHandSelector",
+        )
+        self.assertEqual(
+            canonicalizer.selector.minimum_detector_confidence,
+            0.0,
+        )
+        self.assertIsNone(canonicalizer.postprocessor)
+        self.assertIsNone(canonicalizer.minimum_presence)
+        self.assertEqual(canonicalizer.target_fps, 30.0)
+        self.assertEqual(canonicalizer.coordinates.xy_source, "normalized_2d")
+        self.assertEqual(
+            canonicalizer.coordinates.z_source,
+            "wrist_relative_3d",
+        )
 
     def test_wrist_xyz10_config_constructs_ablation_components(self) -> None:
         config_directory = Path(__file__).parents[1] / "configs"
@@ -222,6 +256,7 @@ class TrainTest(unittest.TestCase):
                     "baseline",
                     "causal_chord24",
                     "chord_duration",
+                    "full",
                     "pianovam",
                     "smoothed",
                     "wrist_xyz10",
@@ -237,10 +272,50 @@ class TrainTest(unittest.TestCase):
                 "baseline": None,
                 "causal_chord24": None,
                 "chord_duration": None,
+                "full": None,
                 "pianovam": 30.0,
                 "smoothed": None,
                 "wrist_xyz10": None,
             },
+        )
+
+    def test_full_config_combines_training_roots_and_keeps_baseline_behavior(
+        self,
+    ) -> None:
+        config_directory = Path(__file__).parents[1] / "configs"
+        with initialize_config_dir(
+            version_base=None, config_dir=str(config_directory.resolve())
+        ):
+            config = compose(config_name="full")
+
+        components = data.build_data_components(config)
+        root = "/storage2/jinxuan/data/AirPianoFull"
+        self.assertEqual(str(config.output.dir), "outputs/full")
+        self.assertEqual(str(config.wandb.name), "full")
+        self.assertEqual(str(config.data.root), root)
+        self.assertEqual(str(config.data.processed_root), root)
+        self.assertEqual(str(config.data.midi_root), f"{root}/midi")
+        self.assertEqual(
+            str(config.data.hand_root),
+            f"{root}/airpiano_wilor_2p5d_30fps",
+        )
+        self.assertEqual(
+            {name: str(path) for name, path in config.data.splits.items()},
+            {
+                "train": "assets/splits/full/train.txt",
+                "valid": "assets/splits/full/valid.txt",
+                "test": "assets/splits/full/test.txt",
+            },
+        )
+        self.assertEqual(components["slicer"].fps, 30.0)
+        self.assertEqual(components["slicer"].segment_frames, 210)
+        self.assertEqual(components["slicer"].stride_frames, 105)
+        self.assertEqual(components["slicer"].chord_count, 128)
+        self.assertEqual(
+            components["hand_loader"].transform.offset, (0.5, 0.5, 0.0)
+        )
+        self.assertEqual(
+            components["hand_loader"].transform.scale, (1.0, 1.0, 10.0)
         )
 
     def test_causal_chord24_config_combines_both_ablation_modes(self) -> None:

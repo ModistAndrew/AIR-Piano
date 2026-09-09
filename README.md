@@ -54,16 +54,20 @@ The loss remains fixed in code.
 | --- | --- |
 | `run.py` | Hydra bootstrap and seven-entry stage dispatch only. |
 | `configs/baseline.yaml` | Baseline runtime configuration. |
+| `configs/lowest_v.yaml` | Lowest-wrist-V selection ablation inheriting the baseline. |
 | `configs/smoothed.yaml` | Lowest-wrist selection, presence filtering, short-gap filling, and pose smoothing preset. |
 | `configs/pianovam.yaml` | PianoVAM-only 30 Hz configuration inheriting the baseline. |
+| `configs/full.yaml` | Combined PianoMotion/PianoVAM training and evaluation configuration. |
 | `configs/wrist_xyz10.yaml` | Wrist-relative local-XYZ ×10 ablation inheriting the baseline. |
 | `configs/chord_duration.yaml` | Duration-conditioned chord-token ablation inheriting the baseline. |
 | `configs/causal_chord24.yaml` | Causal frame-attention and 24-chord slicing ablation inheriting the baseline. |
 | `scripts/convert_legacy_splits.py` | One-time conversion of the original PianoMotion split lists to generalized record stems. |
 | `scripts/convert_pianovam_splits.py` | Generate AirPiano splits from PianoVAM's canonical v1.1 metadata. |
+| `scripts/create_full_data_view.py` | Build the symlink-only combined MIDI/canonical-hand view. |
 | `scripts/migrate_pianomotion_data.py` | Resumable, verified migration of PianoMotion postprocessed data to `/storage2`. |
 | `assets/splits/pianomotion10m/` | Ignored, locally generated train, validation, and test record stems used by the baseline. |
 | `assets/splits/pianovam/` | Ignored, locally generated PianoVAM train, validation, and test record stems. |
+| `assets/splits/full/` | Combined train split plus PianoMotion validation and test stems. |
 | `third_party/WiLoR/` | Full vendored snapshot of the official WiLoR source tree. |
 | `assets/wilor/` | Ignored, locally copied WiLoR, detector, and MANO binary assets. |
 | `airpiano/preprocessing/pipeline.py` | Config-owned offline record traversal and preprocessing orchestration. |
@@ -92,7 +96,7 @@ Useful explicit imports are:
 ```python
 from airpiano.preprocessing.pipeline import preprocess
 from airpiano.preprocessing.video import VideoToWiLoR
-from airpiano.preprocessing.canonical import GapAwareSavitzkyGolayPostprocessor, WiLoRCoordinateConverter, WiLoRToCanonical
+from airpiano.preprocessing.canonical import PianoMotion10MPostprocessor, WiLoRCoordinateConverter, WiLoRToCanonical
 from airpiano.preprocessing.wilor.visualize import render_ragged_video
 from airpiano.data import build_data_components, build_dataset, make_loader
 from airpiano.train import train
@@ -370,6 +374,38 @@ conda run -n v2n python run.py --config-name pianovam stage=test
 Artifacts live under `outputs/pianovam`. PianoVAM is CC BY-NC-SA 4.0; the
 derived cache also remains subject to WiLoR and MANO terms. Do not commit or
 redistribute the source data, model assets, or derived pose arrays.
+
+### Combined PianoMotion and PianoVAM training view
+
+`configs/full.yaml` trains on the existing combined split without copying
+either dataset. Its train list is PianoMotion train followed by PianoVAM train
+(963 records); validation and test remain PianoMotion-only with 101 and 13
+records. Create the absolute-symlink view with:
+
+```bash
+conda run -n v2n python scripts/create_full_data_view.py
+conda run -n v2n python run.py --config-name full --cfg job --resolve
+```
+
+The resulting `/storage2/jinxuan/data/AirPianoFull` contains unified `midi/`
+and `airpiano_wilor_2p5d_30fps/` trees. Nested record stems are preserved. The
+builder is idempotent, refuses conflicting destinations, requires every MIDI
+source, and creates dangling hand symlinks for canonical files that are still
+being generated. The normal pairer reports and skips those records until the
+targets appear; rerunning the builder is unnecessary.
+
+This preset is only for training and evaluation. Continue preprocessing with
+`baseline` for PianoMotion or `pianovam` for PianoVAM so each corpus retains its
+own source roots and pre-WiLoR sampling policy. Train and evaluate with:
+
+```bash
+conda run -n v2n python run.py --config-name full stage=train
+conda run -n v2n python run.py --config-name full stage=test
+```
+
+With every canonical file present, the expected pairing summaries are
+963/101/13 for train/valid/test. Until then, the configured loader preserves
+its normal skip-and-report behavior.
 
 ## PianoMotion postprocessed-data migration
 
@@ -714,18 +750,28 @@ The configured `WiLoRCoordinateConverter` owns spatial coordinates. The
 baseline uses full-image pixels divided by image width/height for XY and local
 joint depth minus wrist depth for Z. The `wrist_xyz10` ablation subtracts the
 selected hand's local 3D wrist joint from all XYZ joints. Coordinate conversion
-happens before optional temporal post-processing and temporal resampling;
-scaling is deliberately deferred to the configured `HandLoader` transform.
+happens before temporal resampling, and optional temporal post-processing runs
+on the canonical-rate sequence. Scaling is deliberately deferred to the
+configured `HandLoader` transform.
 
 The baseline sets `selector: null`, `postprocessor: null`, and
 `minimum_presence: null`, preserving highest-confidence selection until
 resampling. The `smoothed` preset instead selects the largest full-image wrist
 V independently for each handedness, then marks that slot absent when the
 selected detection confidence is below `0.75`. It runs
-`GapAwareSavitzkyGolayPostprocessor` at the source frame rate, linearly filling
-bounded internal gaps up to `0.09` seconds and applying a centered order-2
-Savitzky-Golay filter with a `0.17`-second window to sufficiently long present
-runs. Leading, trailing, and longer gaps remain absent and exactly zero.
+`PianoMotion10MPostprocessor` after resampling to 30 Hz. Independently for each
+hand, the postprocessor rejects pose-level Hampel outliers with a 20-frame
+window and 3-MAD threshold, fills bounded gaps up to 29 frames, removes present
+runs shorter than 15 frames, and applies an order-3 Savitzky-Golay filter with
+an 11-frame window to each remaining run. Leading, trailing, and gaps of 30 or
+more frames remain absent and exactly zero.
+
+The multivariate Hampel criterion is an explicit reproduction assumption: for
+each present hand frame, it computes a local median and scaled MAD independently
+for all 63 pose coordinates, then rejects the frame when the median standardized
+residual across those coordinates exceeds `3.0`. Missing frames are excluded
+from every local statistic, and all frame decisions use the unchanged input
+presence mask before any outliers are marked absent.
 
 After resampling, `smoothed` requires mean presence over both hand slots to be
 at least `0.90`. A rejected record raises a dedicated presence exception before
@@ -742,7 +788,7 @@ both endpoints, otherwise the full target slot is zero. Output length is:
 floor(source_frames * target_fps / source_fps)
 ```
 
-Interpolation happens here only. `HandLoader` does not resample.
+Canonical resampling happens here only. `HandLoader` does not resample.
 
 When `overwrite=false`, an existing canonical path is trusted and returned
 before raw input is inspected. Otherwise offline orchestration skips and reports
@@ -1289,6 +1335,10 @@ The `pianovam` preset overrides these paths with the PianoVAM source root,
 WiLoR for missing raw records. It retains the baseline 30 Hz canonical rate,
 210-frame, 105-stride, 128-chord, and pose-transform settings.
 
+The training/evaluation-only `full` preset points `midi_root` and `hand_root`
+at `/storage2/jinxuan/data/AirPianoFull`, the symlink view created by
+`scripts/create_full_data_view.py`, and uses `assets/splits/full/*.txt`.
+
 ### WiLoR and canonicalization
 
 | Field | Baseline | Meaning |
@@ -1313,17 +1363,26 @@ WiLoR for missing raw records. It retains the baseline 30 Hz canonical rate,
 | `compile` | `false` | Compile the backbone when fast mode is used. |
 | `ragged_to_canonical._target_` | `airpiano.preprocessing.canonical.WiLoRToCanonical` | Current raw schema to canonical NPZ. |
 | `ragged_to_canonical.selector` | `null` | Optional ragged-detection selector; `smoothed` uses lowest wrist V followed by a `0.75` confidence cutoff. |
-| `ragged_to_canonical.postprocessor` | `null` | Optional source-rate `(pose, presence, source_fps) -> (pose, presence)` step before resampling. |
+| `ragged_to_canonical.postprocessor` | `null` | Optional canonical-rate `(pose, presence, fps) -> (pose, presence)` step after resampling. |
 | `ragged_to_canonical.minimum_presence` | `null` | Optional final mean-presence gate evaluated after resampling and before writing. |
 | `coordinates._target_` | `airpiano.preprocessing.canonical.WiLoRCoordinateConverter` | Convert each selected raw detection into one canonical hand. |
 | `coordinates.xy_source` | `normalized_2d` | Use normalized full-image XY; `wrist_relative_3d` selects local XYZ relative to the wrist. |
 | `coordinates.z_source` | `wrist_relative_3d` | Local WiLoR depth relative to the selected hand's wrist. |
 | `target_fps` | `30.0` | Canonical output rate. |
 
+The `lowest_v` preset changes only candidate selection: independently for each
+handedness and frame, it chooses the detection whose wrist has the largest
+full-image V coordinate. Its selector confidence is `0.0`, so it adds no guard
+beyond the detector threshold already applied when building the ragged cache.
+It retains the baseline postprocessor and presence-gate values (`null`) and
+writes canonical records to a distinct root.
+
 The `smoothed` preset configures `LowestWristHandSelector(0.75)`,
-`GapAwareSavitzkyGolayPostprocessor(max_gap_seconds=0.09,
-window_seconds=0.17, polyorder=2)`, and a `0.90` final presence gate. It writes
-accepted records to a distinct canonical root.
+`PianoMotion10MPostprocessor(hampel_window_frames=20,
+hampel_n_sigma=3.0, max_missing_run_frames=29,
+min_presence_run_frames=15, savgol_window_frames=11,
+savgol_polyorder=3)`, and a `0.90` final presence gate. It writes accepted
+records to a distinct canonical root.
 
 These code and asset paths use the same repository-root resolver as every
 other AirPiano path. Hydra also keeps `job.chdir: false`, so it never relocates
@@ -1394,7 +1453,7 @@ The narrow replaceable interfaces are:
 | `VideoToWiLoR` | `run(video_path, output_dir, overwrite=False) -> Path`; emit the configured canonicalizer's raw contract. |
 | `WiLoRToCanonical` | `run(raw_record_dir, output_path, overwrite=False) -> Path`; emit canonical pose NPZ or raise the configured presence rejection before writing. |
 | Canonical hand selector | `(raw_arrays) -> int64[frames,2]` absolute detection indices, using `-1` for absence. |
-| Canonical postprocessor | `(pose, presence, source_fps) -> (pose, presence)` with unchanged `[T,2,21,3]`/`[T,2]` shapes, `float32`/`bool` dtypes, and exact-zero absent slots. |
+| Canonical postprocessor | `(pose, presence, fps) -> (pose, presence)` after canonical resampling, with unchanged `[T,2,21,3]`/`[T,2]` shapes, `float32`/`bool` dtypes, and exact-zero absent slots. |
 | `RelativeStemPairer` | `pair(split_file, midi_root, hand_root) -> list[FilePair]`. |
 | `EagerSongReader` | `read(pair, midi_loader, hand_loader) -> Song`; the loader exposes it as `.reader` for realtime. |
 | `MidoNoteReader` | `read(path) -> tuple[Note,...]`. |
