@@ -61,6 +61,7 @@ The loss remains fixed in code.
 | `configs/wrist_xyz10.yaml` | Wrist-relative local-XYZ ×10 ablation inheriting the baseline. |
 | `configs/chord_duration.yaml` | Duration-conditioned chord-token ablation inheriting the baseline. |
 | `configs/causal_chord24.yaml` | Causal frame-attention and 24-chord slicing ablation inheriting the baseline. |
+| `configs/wrist_xyz10_causal_chord24_chord_duration_relative.yaml` | Wrist-relative, causal 24-chord model with song-scaled duration tokens. |
 | `scripts/convert_legacy_splits.py` | One-time conversion of the original PianoMotion split lists to generalized record stems. |
 | `scripts/convert_pianovam_splits.py` | Generate AirPiano splits from PianoVAM's canonical v1.1 metadata. |
 | `scripts/create_full_data_view.py` | Build the symlink-only combined MIDI/canonical-hand view. |
@@ -804,10 +805,11 @@ algorithm failures propagate directly.
 note-on as note-off, pairs repeated channel/pitch notes FIFO, ignores sustain,
 and keeps positive-duration pairs. `InitializerChordMerger` groups later notes
 within 0.05 seconds of the initializer note; grouping is inclusive and
-initializer-anchored rather than transitive. Every resulting `Chord` stores an
-absolute duration and its precomputed `float32[200]` duration one-hot. The raw
+initializer-anchored rather than transitive. Every resulting `Chord` stores its
+absolute duration and a precomputed `float32[200]` duration one-hot. The raw
 duration is time to the next chord onset, or time to the latest member release
-for the final chord.
+for the final chord. Configurations may apply one shared random multiplier to
+all durations in a song before quantization without changing the raw values.
 
 `OffsetScaleTransform` applies configured per-axis `(pose - offset) * scale` to
 present slots while preserving exact zero absent slots. The baseline uses
@@ -839,16 +841,20 @@ overlapping chords than that width raises instead of truncating positives.
 Duplicate pitches remain distinct notes internally but collapse to one
 multi-hot entry.
 
-During MIDI loading, every chord's absolute duration is quantized using
-MIDI2ScoreTransformer's performance-MIDI mapping:
+During MIDI loading, every chord's duration is quantized using
+MIDI2ScoreTransformer's performance-MIDI mapping. By default the input is its
+absolute duration; when `duration_scale_range` is configured, one scale is
+sampled uniformly per song and applied to every duration before this mapping:
 
 ```text
 bin = clamp(floor(200 * log(4 * duration_seconds + 1) / log(65)), 0, 199)
 ```
 
 The resulting one-hot is stored as `Chord.quantized_dur`; slicing only appends
-it to the 128 pitch bits. This happens before window selection, so the last
-chord in a slice does not incorrectly receive the final-chord rule.
+it to the 128 pitch bits. The optional common scale preserves within-song
+duration ratios while varying their absolute bins. Quantization happens before
+window selection, so the last chord in a slice does not incorrectly receive
+the final-chord rule.
 
 With `mode=chord`, `segment_frames` and `stride_frames` instead count chord
 tokens and `chord_count` is ignored. Token windows retain the exact
@@ -1149,6 +1155,17 @@ conda run -n v2n python run.py --config-name chord_duration stage=test
 A duration-enabled model requires a duration-enabled checkpoint. Pitch-only
 checkpoints retain their original 128-input pitch projection and ignore the
 packed duration suffix.
+
+The wrist-relative causal variant below samples one uniform duration scale in
+`[0.5, 2.0]` for each loaded song. The same scale is used for all of that
+song's chord-duration tokens in training, validation, test, and realtime:
+
+```bash
+conda run -n v2n python run.py \
+  --config-name wrist_xyz10_causal_chord24_chord_duration_relative stage=train
+conda run -n v2n python run.py \
+  --config-name wrist_xyz10_causal_chord24_chord_duration_relative stage=test
+```
 
 ### Train and validate
 
@@ -1468,7 +1485,7 @@ The narrow replaceable interfaces are:
 | `RelativeStemPairer` | `pair(split_file, midi_root, hand_root) -> list[FilePair]`. |
 | `EagerSongReader` | `read(pair, midi_loader, hand_loader) -> Song`; the loader exposes it as `.reader` for realtime. |
 | `MidoNoteReader` | `read(path) -> tuple[Note,...]`. |
-| `InitializerChordMerger` | `merge(notes) -> tuple[Chord,...]`; every chord includes its absolute `duration` and `float32[200]` `quantized_dur`. |
+| `InitializerChordMerger` | `merge(notes) -> tuple[Chord,...]`; every chord includes its absolute `duration` and optionally song-scaled `float32[200]` `quantized_dur`. |
 | `CanonicalNpzReader` | `read(path) -> HandSequence`. |
 | `WiLoRCoordinateConverter` | `(raw_arrays, detection_index) -> float32[21,3]` canonical hand. |
 | Hand transform | `(pose, presence) -> pose` with unchanged shape and absent slots zero. |

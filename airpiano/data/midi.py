@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import math
+import random
 from collections import defaultdict, deque
+from collections.abc import Sequence
 from pathlib import Path
 
 import mido
@@ -78,10 +80,19 @@ class MidoNoteReader:
 
 
 class InitializerChordMerger:
-    """Group notes using an inclusive initializer-anchored onset tolerance."""
+    """Group notes and optionally scale duration encodings once per song."""
 
-    def __init__(self, tolerance_seconds: float = 0.05):
+    def __init__(
+        self,
+        tolerance_seconds: float = 0.05,
+        duration_scale_range: Sequence[float] | None = None,
+    ):
         self.tolerance_seconds = float(tolerance_seconds)
+        if duration_scale_range is None:
+            self.duration_scale_range = None
+        else:
+            minimum, maximum = duration_scale_range
+            self.duration_scale_range = (float(minimum), float(maximum))
 
     def merge(self, notes: tuple[Note, ...]) -> tuple[Chord, ...]:
         groups: list[tuple[Note, ...]] = []
@@ -102,6 +113,11 @@ class InitializerChordMerger:
             groups.append(notes[start:stop])
             start = stop
 
+        duration_scale = (
+            1.0
+            if self.duration_scale_range is None
+            else random.uniform(*self.duration_scale_range)
+        )
         chords = []
         for index, group in enumerate(groups):
             onset = group[0].onset
@@ -110,7 +126,7 @@ class InitializerChordMerger:
             else:
                 duration = max(note.offset for note in group) - onset
             quantized_dur = quantize_duration_seconds(
-                torch.tensor(duration, dtype=torch.float64)
+                torch.tensor(duration * duration_scale, dtype=torch.float64)
             )
             chords.append(
                 Chord(

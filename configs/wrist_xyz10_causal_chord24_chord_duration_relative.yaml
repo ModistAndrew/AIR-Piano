@@ -1,0 +1,11 @@
+defaults:
+  - wrist_xyz10_causal_chord24_chord_duration
+  - _self_
+
+output:
+  project_name: wrist_xyz10_causal_chord24_chord_duration_relative
+
+dataset:
+  midi_loader:
+    chord_merger:
+      duration_scale_range: [0.5, 2.0]

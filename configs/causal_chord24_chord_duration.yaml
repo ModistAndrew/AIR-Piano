@@ -1,0 +1,9 @@
+defaults:
+  - causal_chord24
+  - _self_
+
+output:
+  project_name: causal_chord24_chord_duration
+
+model:
+  include_chord_duration: true

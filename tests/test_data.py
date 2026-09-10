@@ -8,6 +8,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
 import mido
 import numpy as np
@@ -271,6 +272,34 @@ class MidiTest(unittest.TestCase):
         torch.testing.assert_close(
             torch.stack([chord.quantized_dur for chord in chords]),
             quantize_duration_seconds(torch.tensor([1.0, 0.7])),
+        )
+
+    def test_chord_merger_scales_all_duration_encodings_once_per_song(
+        self,
+    ) -> None:
+        notes = (
+            _note(0, 0.0, 0.4, 60),
+            _note(1, 1.0, 1.2, 64),
+            _note(2, 3.0, 3.5, 67),
+        )
+        merger = InitializerChordMerger(
+            tolerance_seconds=0.05,
+            duration_scale_range=(0.5, 2.0),
+        )
+
+        with patch(
+            "airpiano.data.midi.random.uniform", return_value=1.5
+        ) as uniform:
+            chords = merger.merge(notes)
+
+        uniform.assert_called_once_with(0.5, 2.0)
+        torch.testing.assert_close(
+            torch.tensor([chord.duration for chord in chords]),
+            torch.tensor([1.0, 2.0, 0.5]),
+        )
+        torch.testing.assert_close(
+            torch.stack([chord.quantized_dur for chord in chords]),
+            quantize_duration_seconds(torch.tensor([1.5, 3.0, 0.75])),
         )
 
 

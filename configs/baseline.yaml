@@ -72,6 +72,7 @@ dataset:
     chord_merger:
       _target_: airpiano.data.midi.InitializerChordMerger
       tolerance_seconds: 0.05
+      duration_scale_range: null
   hand_loader:
     _target_: airpiano.data.hands.HandLoader
     reader:

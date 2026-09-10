@@ -356,6 +356,35 @@ class TrainTest(unittest.TestCase):
         self.assertTrue(bool(config.model.include_chord_duration))
         self.assertEqual(slicer.mode, "frame")
 
+    def test_relative_duration_config_combines_selected_ablations(self) -> None:
+        config_directory = Path(__file__).parents[1] / "configs"
+        with initialize_config_dir(
+            version_base=None, config_dir=str(config_directory.resolve())
+        ):
+            config = compose(
+                config_name=(
+                    "wrist_xyz10_causal_chord24_chord_duration_relative"
+                )
+            )
+
+        components = data.build_data_components(config)
+        merger = components["midi_loader"].chord_merger
+        slicer = components["slicer"]
+        self.assertEqual(
+            str(config.output.dir),
+            "outputs/wrist_xyz10_causal_chord24_chord_duration_relative",
+        )
+        self.assertEqual(merger.duration_scale_range, (0.5, 2.0))
+        self.assertTrue(bool(config.model.include_chord_duration))
+        self.assertTrue(bool(config.model.causal_frame_attention))
+        self.assertEqual(slicer.mode, "chord")
+        self.assertEqual(slicer.segment_frames, 24)
+        self.assertEqual(slicer.stride_frames, 12)
+        self.assertEqual(
+            components["hand_loader"].transform.scale,
+            (10.0, 10.0, 10.0),
+        )
+
     @staticmethod
     def _config(output: Path):
         return OmegaConf.create(
