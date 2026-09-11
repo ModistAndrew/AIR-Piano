@@ -22,6 +22,7 @@ from airpiano.preprocessing.canonical import (
     WiLoRToCanonical,
     raw_cache_has_markers,
 )
+from airpiano.preprocessing.wilor.cache import VideoDecodingError
 
 
 def _chunk_arrays(frame_start: int, frame_end: int, detections: list[list[tuple]]) -> dict:
@@ -205,6 +206,59 @@ class PreprocessingTest(unittest.TestCase):
             self.assertEqual(
                 calls,
                 [(video.resolve(), root / "raw" / record_id, True)],
+            )
+
+    def test_pipeline_skips_video_decoding_errors_and_continues(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            split = root / "split.txt"
+            split.write_text("subject/broken\nsubject/valid\n", encoding="utf-8")
+            video_root = root / "video"
+            for name in ("broken", "valid"):
+                video = video_root / "subject" / f"{name}.mp4"
+                video.parent.mkdir(parents=True, exist_ok=True)
+                video.touch()
+            converted: list[str] = []
+
+            class VideoToRagged:
+                def run(self, video_path, output_dir, overwrite=False):
+                    record = Path(video_path).stem
+                    if record == "broken":
+                        raise VideoDecodingError("video decoding ended early")
+                    converted.append(record)
+                    return Path(output_dir)
+
+            config = OmegaConf.create(
+                {
+                    "data": {
+                        "video_root": str(video_root),
+                        "raw_wilor_root": str(root / "raw"),
+                        "hand_root": str(root / "canonical"),
+                    },
+                    "preprocess": {
+                        "task": "video_to_ragged",
+                        "split_files": [str(split)],
+                        "overwrite": False,
+                        "video_to_ragged": {"_target_": "example.Video"},
+                    },
+                }
+            )
+            printed = io.StringIO()
+            with (
+                patch.object(pipeline, "instantiate", return_value=VideoToRagged()),
+                redirect_stdout(printed),
+            ):
+                pipeline.preprocess(config)
+
+            self.assertEqual(converted, ["valid"])
+            report = printed.getvalue()
+            self.assertIn(
+                "[preprocess skipped] subject/broken: video decoding ended early",
+                report,
+            )
+            self.assertIn(
+                "completed_or_reused=1 missing=0 rejected=0 skipped=1",
+                report,
             )
 
     def test_wilor_to_canonical_selects_stable_hands_and_resamples(self) -> None:

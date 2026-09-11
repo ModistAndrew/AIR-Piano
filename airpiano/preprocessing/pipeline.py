@@ -30,11 +30,12 @@ def preprocess(cfg: DictConfig) -> None:
 
     # Construct only the implementation needed by the selected task. This
     # keeps canonical-only training preparation independent of the WiLoR stack.
-    video_to_ragged = (
-        instantiate(cfg.preprocess.video_to_ragged)
-        if task in {"video_to_ragged", "all"}
-        else None
-    )
+    if task in {"video_to_ragged", "all"}:
+        from airpiano.preprocessing.wilor.cache import VideoDecodingError
+
+        video_to_ragged = instantiate(cfg.preprocess.video_to_ragged)
+    else:
+        video_to_ragged = None
     ragged_to_canonical = (
         instantiate(cfg.preprocess.ragged_to_canonical)
         if task in {"ragged_to_canonical", "all"}
@@ -43,6 +44,7 @@ def preprocess(cfg: DictConfig) -> None:
 
     missing: list[str] = []
     rejected: list[str] = []
+    skipped: list[str] = []
     converted = 0
     for ordinal, record_id in enumerate(records, 1):
         video_path = video_root / f"{record_id}.mp4"
@@ -56,11 +58,17 @@ def preprocess(cfg: DictConfig) -> None:
                 missing.append(message)
                 print(f"[preprocess missing] {message}", flush=True)
                 continue
-            video_to_ragged.run(
-                video_path=video_path,
-                output_dir=raw_dir,
-                overwrite=overwrite,
-            )
+            try:
+                video_to_ragged.run(
+                    video_path=video_path,
+                    output_dir=raw_dir,
+                    overwrite=overwrite,
+                )
+            except VideoDecodingError as error:
+                message = f"{record_id}: {error}"
+                skipped.append(message)
+                print(f"[preprocess skipped] {message}", flush=True)
+                continue
 
         if ragged_to_canonical is not None:
             # Trust an existing canonical result before consulting retained raw
@@ -93,6 +101,6 @@ def preprocess(cfg: DictConfig) -> None:
     print(
         f"preprocess complete: requested={len(records)} "
         f"completed_or_reused={converted} missing={len(missing)} "
-        f"rejected={len(rejected)}",
+        f"rejected={len(rejected)} skipped={len(skipped)}",
         flush=True,
     )

@@ -25,6 +25,10 @@ SCHEMA_VERSION = "airpiano-wilor-ragged-v1"
 FIRST_DUE_SAMPLING_POLICY = "first_due"
 
 
+class VideoDecodingError(RuntimeError):
+    """Raised when a video cannot be decoded through its expected duration."""
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -590,7 +594,7 @@ def process_video(
     )
     tolerance = max(2, math.ceil(expected_frames * 0.002))
     if expected_frames > 0 and frame_index < expected_frames - tolerance:
-        raise RuntimeError(
+        raise VideoDecodingError(
             f"video decoding ended early: decoded {frame_index} frames, "
             f"expected approximately {expected_frames} (tolerance {tolerance})"
         )
