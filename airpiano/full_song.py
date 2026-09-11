@@ -72,10 +72,10 @@ def infer_full_song(
 
         if chord_start >= final_chord_start:
             continue
-        leading_peaks = history_probability[
-            :, :advance_after_chords
+        trailing_peaks = history_probability[
+            :, -advance_after_chords:
         ].amax(dim=0)
-        if bool((leading_peaks >= alignment_threshold).all()):
+        if bool((trailing_peaks >= alignment_threshold).any()):
             # Local slot one becomes the beginning chord after advancing once.
             predicted_start = int(torch.argmax(history_probability[:, 1]))
             history_start += predicted_start

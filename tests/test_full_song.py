@@ -83,11 +83,13 @@ class _StreamingModel(nn.Module):
         logits[:, :, 0] = 2.0
         if len(chord_pitches) > 1:
             logits[:, :, 1] = frame_ids.to(logits.dtype)
+        if len(chord_pitches) > 2:
+            logits[:, :, 2] = 2.0
         return logits
 
 
 class FullSongControllerTest(unittest.TestCase):
-    def test_streams_prefixes_shifts_once_and_commits_rows(self) -> None:
+    def test_any_trailing_peak_shifts_and_commits_rows(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "song.npz"
             model = _StreamingModel(include_chord_duration=True)
@@ -104,7 +106,7 @@ class FullSongControllerTest(unittest.TestCase):
                 torch.device("cpu"),
                 output,
                 bf16=False,
-                alignment_threshold=0.5,
+                alignment_threshold=0.6,
                 advance_after_chords=2,
             )
 

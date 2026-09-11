@@ -11,7 +11,9 @@ from typing import Mapping
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SPLIT_NAMES = ("train", "valid", "test")
 EXPECTED_FULL_SPLIT_COUNTS = {"train": 963, "valid": 101, "test": 13}
+EXPECTED_EXTENDED_SPLIT_COUNTS = {"train": 1951, "valid": 101, "test": 13}
 DEFAULT_FULL_SPLIT_ROOT = PROJECT_ROOT / "assets/splits/full"
+DEFAULT_EXTENDED_SPLIT_ROOT = PROJECT_ROOT / "assets/splits/extended"
 DEFAULT_PIANOMOTION_SPLIT_ROOT = PROJECT_ROOT / "assets/splits/pianomotion10m"
 DEFAULT_PIANOVAM_SPLIT_ROOT = PROJECT_ROOT / "assets/splits/pianovam"
 DEFAULT_VIEW_ROOT = Path("/storage2/jinxuan/data/AirPianoFull")
@@ -25,20 +27,37 @@ DEFAULT_PIANOVAM_HAND_ROOT = Path(
 )
 
 
-def read_splits(split_root: Path) -> dict[str, list[str]]:
+def read_records(path: Path) -> list[str]:
     """Read path-like record stems without hiding duplicate entries."""
+
+    records = []
+    with path.open("r", encoding="utf-8-sig") as handle:
+        for raw_line in handle:
+            line = raw_line.strip()
+            if line and not line.startswith("#"):
+                records.append(Path(line).as_posix())
+    return records
+
+
+def read_splits(split_root: Path) -> dict[str, list[str]]:
+    """Read each standard split under a root."""
 
     result: dict[str, list[str]] = {}
     for split_name in SPLIT_NAMES:
         path = split_root / f"{split_name}.txt"
-        records = []
-        with path.open("r", encoding="utf-8-sig") as handle:
-            for raw_line in handle:
-                line = raw_line.strip()
-                if line and not line.startswith("#"):
-                    records.append(Path(line).as_posix())
-        result[split_name] = records
+        result[split_name] = read_records(path)
     return result
+
+
+def expected_split_counts(split_root: Path) -> Mapping[str, int] | None:
+    """Return count validation for a known combined split root."""
+
+    resolved = split_root.resolve()
+    if resolved == DEFAULT_FULL_SPLIT_ROOT.resolve():
+        return EXPECTED_FULL_SPLIT_COUNTS
+    if resolved == DEFAULT_EXTENDED_SPLIT_ROOT.resolve():
+        return EXPECTED_EXTENDED_SPLIT_COUNTS
+    return None
 
 
 def unique_records(
@@ -93,6 +112,8 @@ def create_data_view(
     pianomotion_hand_root: Path,
     pianovam_midi_root: Path,
     pianovam_hand_root: Path,
+    pianomotion_extra_splits: tuple[Path, ...] = (),
+    view_hand_root: Path | None = None,
     expected_split_counts: Mapping[str, int] | None = None,
 ) -> dict[str, int]:
     """Create safe, idempotent MIDI and canonical-hand symlink trees."""
@@ -117,6 +138,8 @@ def create_data_view(
     pianomotion_records = set(
         unique_records(read_splits(pianomotion_split_root), pianomotion_split_root)
     )
+    for split_path in pianomotion_extra_splits:
+        pianomotion_records.update(read_records(split_path))
     pianovam_records = set(
         unique_records(read_splits(pianovam_split_root), pianovam_split_root)
     )
@@ -128,7 +151,7 @@ def create_data_view(
         )
 
     midi_view = view_root / "midi"
-    hand_view = view_root / "airpiano_wilor_2p5d_30fps"
+    hand_view = view_hand_root or view_root / "airpiano_wilor_2p5d_30fps"
     links: list[tuple[Path, Path, str]] = []
     counts = {"pianomotion": 0, "pianovam": 0}
     for record_id in records:
@@ -200,6 +223,19 @@ def main() -> None:
     )
     parser.add_argument("--view-root", type=Path, default=DEFAULT_VIEW_ROOT)
     parser.add_argument(
+        "--view-hand-root",
+        type=Path,
+        default=None,
+        help="destination hand tree (defaults inside --view-root)",
+    )
+    parser.add_argument(
+        "--pianomotion-extra-split",
+        type=Path,
+        action="append",
+        default=[],
+        help="additional PianoMotion record manifest; may be repeated",
+    )
+    parser.add_argument(
         "--pianomotion-midi-root",
         type=Path,
         default=DEFAULT_PIANOMOTION_MIDI_ROOT,
@@ -226,7 +262,9 @@ def main() -> None:
         pianomotion_hand_root=args.pianomotion_hand_root,
         pianovam_midi_root=args.pianovam_midi_root,
         pianovam_hand_root=args.pianovam_hand_root,
-        expected_split_counts=EXPECTED_FULL_SPLIT_COUNTS,
+        pianomotion_extra_splits=tuple(args.pianomotion_extra_split),
+        view_hand_root=args.view_hand_root,
+        expected_split_counts=expected_split_counts(args.full_split_root),
     )
     print("full data view ready:")
     for name, value in summary.items():

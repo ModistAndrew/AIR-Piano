@@ -85,6 +85,57 @@ class FullDataViewTest(unittest.TestCase):
 
             self.assertEqual(create_data_view(**roots), summary)
 
+    def test_adds_extra_pianomotion_records_to_an_alternate_hand_view(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            roots = self._fixture(root)
+            extra_split = root / "test_full.txt"
+            extra_split.write_text("bonus/song\n", encoding="utf-8")
+            self._write_splits(
+                roots["full_split_root"],
+                {
+                    "train": ["artist/song", "take-a", "bonus/song"],
+                    "valid": [],
+                    "test": [],
+                },
+            )
+            (roots["pianomotion_midi_root"] / "bonus").mkdir()
+            (roots["pianomotion_midi_root"] / "bonus/song.mid").touch()
+            alternate_hand_root = root / "view/wrist-hands"
+
+            summary = create_data_view(
+                **roots,
+                pianomotion_extra_splits=(extra_split,),
+                view_hand_root=alternate_hand_root,
+            )
+
+            self.assertEqual(summary["records"], 3)
+            self.assertEqual(summary["pianomotion"], 2)
+            self.assertEqual(summary["pianovam"], 1)
+            extra_hand = alternate_hand_root / "bonus/song.npz"
+            self.assertTrue(extra_hand.is_symlink())
+            self.assertFalse(extra_hand.exists())
+            self.assertEqual(
+                create_data_view(
+                    **roots,
+                    pianomotion_extra_splits=(extra_split,),
+                    view_hand_root=alternate_hand_root,
+                ),
+                summary,
+            )
+
+    def test_expected_split_counts_are_enforced(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            roots = self._fixture(Path(directory))
+
+            with self.assertRaisesRegex(ValueError, "unexpected full split counts"):
+                create_data_view(
+                    **roots,
+                    expected_split_counts={"train": 3, "valid": 0, "test": 0},
+                )
+
     def test_duplicate_and_ambiguous_records_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

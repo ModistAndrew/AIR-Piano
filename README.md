@@ -58,6 +58,8 @@ The loss remains fixed in code.
 | `configs/smoothed.yaml` | Lowest-wrist selection, presence filtering, short-gap filling, and pose smoothing preset. |
 | `configs/pianovam.yaml` | PianoVAM-only 30 Hz configuration inheriting the baseline. |
 | `configs/full.yaml` | Combined PianoMotion/PianoVAM training and evaluation configuration. |
+| `configs/causal_chord24_extended.yaml` | Causal 24-chord ablation using the extended combined training split. |
+| `configs/wrist_xyz10_causal_chord24_extended.yaml` | Wrist-relative causal 24-chord ablation using the extended combined training split. |
 | `configs/wrist_xyz10.yaml` | Wrist-relative local-XYZ ×10 ablation inheriting the baseline. |
 | `configs/chord_duration.yaml` | Duration-conditioned chord-token ablation inheriting the baseline. |
 | `configs/causal_chord24.yaml` | Causal frame-attention and 24-chord slicing ablation inheriting the baseline. |
@@ -69,6 +71,7 @@ The loss remains fixed in code.
 | `assets/splits/pianomotion10m/` | Ignored, locally generated train, validation, and test record stems used by the baseline. |
 | `assets/splits/pianovam/` | Ignored, locally generated PianoVAM train, validation, and test record stems. |
 | `assets/splits/full/` | Combined train split plus PianoMotion validation and test stems. |
+| `assets/splits/extended/` | Expanded combined train split with the same validation and test stems. |
 | `third_party/WiLoR/` | Full vendored snapshot of the official WiLoR source tree. |
 | `assets/wilor/` | Ignored, locally copied WiLoR, detector, and MANO binary assets. |
 | `airpiano/preprocessing/pipeline.py` | Config-owned offline record traversal and preprocessing orchestration. |
@@ -407,6 +410,42 @@ conda run -n v2n python run.py --config-name full stage=test
 With every canonical file present, the expected pairing summaries are
 963/101/13 for train/valid/test. Until then, the configured loader preserves
 its normal skip-and-report behavior.
+
+### Extended combined training view
+
+The extended split keeps the combined validation and held-out test lists
+unchanged while expanding training to 1,951 records. It appends PianoMotion's
+`test_full.txt` records other than the 13 held-out test records, followed by
+PianoVAM test and validation, to the existing combined training list.
+
+Add the extended standard-hand records to the existing combined symlink view:
+
+```bash
+conda run -n v2n python scripts/create_full_data_view.py \
+  --full-split-root assets/splits/extended \
+  --pianomotion-extra-split assets/splits/pianomotion10m/test_full.txt
+```
+
+Create the parallel wrist-relative hand tree in that same view with:
+
+```bash
+conda run -n v2n python scripts/create_full_data_view.py \
+  --full-split-root assets/splits/extended \
+  --pianomotion-extra-split assets/splits/pianomotion10m/test_full.txt \
+  --view-hand-root /storage2/jinxuan/data/AirPianoFull/airpiano_wilor_wrist_xyz_30fps \
+  --pianomotion-hand-root /storage2/jinxuan/data/PianoMotion10M/airpiano_wilor_wrist_xyz_30fps \
+  --pianovam-hand-root /storage2/jinxuan/data/PianoVAM_v1/airpiano_wilor_wrist_xyz_30fps
+```
+
+The builder creates dangling hand symlinks for canonical caches that are not
+ready and reports their count; it does not generate those caches. Train the two
+extended ablations with:
+
+```bash
+conda run -n v2n python run.py --config-name causal_chord24_extended stage=train
+conda run -n v2n python run.py \
+  --config-name wrist_xyz10_causal_chord24_extended stage=train
+```
 
 ## PianoMotion postprocessed-data migration
 
@@ -1283,12 +1322,12 @@ conda run -n v2n python run.py --config-name causal_chord24 \
 
 For every arriving video frame, the controller forwards only the current frame
 history against the active 24-chord window and permanently commits the newest
-probability row. Once the leading 12 chords have each reached the inclusive
-`0.2` running-peak threshold, the score window advances by one on the next
-frame. Its history then begins at the earliest predicted peak of the new first
-chord. After the final score window is reached, it remains active through the
-end of the video. Override `full_song.alignment_threshold` or
-`full_song.advance_after_chords` to change the trigger.
+probability row. Once any of the trailing 12 chords reaches the inclusive `0.2`
+running-peak threshold, the score window advances by one on the next frame. Its
+history then begins at the earliest predicted peak of the new first chord. After
+the final score window is reached, it remains active through the end of the
+video. Override `full_song.alignment_threshold` or
+`full_song.advance_after_chords` to change the trailing trigger width.
 
 Outputs are written directly under `full_song.output_dir`, which defaults to
 `${output.dir}/full_song`, one NPZ per input basename, with a weighted aggregate
@@ -1479,8 +1518,8 @@ loss intentionally remains fixed in code.
 | `full_song.checkpoint` | `${output.dir}/checkpoints/last.pt` | Causal AirPiano checkpoint loaded once for the stage. |
 | `full_song.output_dir` | `${output.dir}/full_song` | Full-song inference artifact and aggregate loss directory. |
 | `full_song.overwrite` | `false` | Raw and canonical preprocessing reuse policy. |
-| `full_song.alignment_threshold` | `0.2` | Inclusive running-peak confidence required by leading chords. |
-| `full_song.advance_after_chords` | slicer stride | Leading aligned chord count required to advance one position. |
+| `full_song.alignment_threshold` | `0.2` | Inclusive running-peak confidence required by any trailing trigger chord. |
+| `full_song.advance_after_chords` | slicer stride | Number of trailing chord slots checked to trigger advancement. |
 | `visualize.root` | `${output.dir}/inference/test` | Filesystem tree recursively scanned for NPZs and receiving adjacent PNG files. |
 | `sonify.root` | `${output.dir}/inference/test` | Filesystem tree recursively scanned for NPZs and receiving adjacent predicted `.mid` and ground-truth `.gt.mid` sidecars. |
 | `sonify.midi_root` | `${data.midi_root}` | Root used with the artifact `record_id` to locate source MIDI. |

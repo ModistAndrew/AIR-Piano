@@ -343,6 +343,59 @@ class TrainTest(unittest.TestCase):
             "outputs/causal_chord24/full_song",
         )
 
+    def test_extended_configs_preserve_their_ablation_behavior(self) -> None:
+        config_directory = Path(__file__).parents[1] / "configs"
+        config_names = (
+            "causal_chord24_extended",
+            "wrist_xyz10_causal_chord24_extended",
+        )
+        with initialize_config_dir(
+            version_base=None, config_dir=str(config_directory.resolve())
+        ):
+            configurations = {
+                name: compose(config_name=name) for name in config_names
+            }
+
+        root = "/storage2/jinxuan/data/AirPianoFull"
+        expected_splits = {
+            "train": "assets/splits/extended/train.txt",
+            "valid": "assets/splits/extended/valid.txt",
+            "test": "assets/splits/extended/test.txt",
+        }
+        expected_hand_roots = {
+            "causal_chord24_extended": (
+                f"{root}/airpiano_wilor_2p5d_30fps"
+            ),
+            "wrist_xyz10_causal_chord24_extended": (
+                f"{root}/airpiano_wilor_wrist_xyz_30fps"
+            ),
+        }
+        expected_scales = {
+            "causal_chord24_extended": (1.0, 1.0, 10.0),
+            "wrist_xyz10_causal_chord24_extended": (10.0, 10.0, 10.0),
+        }
+        for name, config in configurations.items():
+            components = data.build_data_components(config)
+            slicer = components["slicer"]
+            self.assertEqual(str(config.output.dir), f"outputs/{name}")
+            self.assertEqual(str(config.wandb.name), name)
+            self.assertEqual(str(config.data.root), root)
+            self.assertEqual(str(config.data.processed_root), root)
+            self.assertEqual(str(config.data.midi_root), f"{root}/midi")
+            self.assertEqual(str(config.data.hand_root), expected_hand_roots[name])
+            self.assertEqual(
+                {key: str(value) for key, value in config.data.splits.items()},
+                expected_splits,
+            )
+            self.assertTrue(bool(config.model.causal_frame_attention))
+            self.assertEqual(slicer.mode, "chord")
+            self.assertEqual(slicer.segment_frames, 24)
+            self.assertEqual(slicer.stride_frames, 12)
+            self.assertEqual(
+                components["hand_loader"].transform.scale,
+                expected_scales[name],
+            )
+
     def test_chord_duration_config_enables_duration_ablation(self) -> None:
         config_directory = Path(__file__).parents[1] / "configs"
         with initialize_config_dir(
