@@ -1205,6 +1205,24 @@ Both paths are relative to `outputs/baseline/` unless given as absolute paths.
 The stage writes `test_loss.json` beside its per-slice NPZ files and does not
 open a W&B run.
 
+### SKY-Piano motion conversion
+
+Convert the downloaded imputed SKY-Piano marker CSVs directly to the
+unscaled canonical representation used by the `wrist_xyz10` presets:
+
+```bash
+conda run -n v2n python scripts/convert_skypiano_motion.py
+```
+
+By default, this reads `assets/sky_piano/motion_hand/*_imputed.csv` and writes
+matching NPZs below
+`assets/sky_piano/airpiano_wilor_wrist_xyz_30fps/`. It maps the 21 markers per
+hand into WiLoR/OpenPose joint order, subtracts each wrist, converts millimeters
+to meters, and rotates the SKY coordinates 180 degrees around Y to match the
+PianoMotion top-camera convention. Existing outputs are reused; pass
+`--overwrite` to replace them. The configured `HandLoader` still applies the
+online factor of 10.
+
 ### Realtime batch
 
 Place synchronized pairs in the configured root's `video/` and `midi/`
@@ -1232,8 +1250,10 @@ conda run -n v2n python run.py stage=realtime \
 With the baseline config, outputs for this example are written below
 `outputs/baseline/realtime/performance.v2/`. Video or MIDI files without a
 matching counterpart are reported and skipped. Only direct files inside the
-two modality directories are scanned. WiLoR, canonical, and dataset components
-are constructed once and reused across the sorted pairs. Override
+two modality directories are scanned. Canonicalization is attempted first, so
+an existing canonical file or ragged cache avoids constructing WiLoR. If the
+ragged input is missing, realtime runs video-to-ragged and retries
+canonicalization. Components are reused across the sorted pairs. Override
 `realtime.output_dir` to select another inference destination.
 
 Select a different root or checkpoint as needed:

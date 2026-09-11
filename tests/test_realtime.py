@@ -8,6 +8,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import mido
@@ -60,6 +61,65 @@ class RealtimeTest(unittest.TestCase):
             instantiate.assert_not_called()
             build_components.assert_not_called()
 
+    def test_existing_canonical_does_not_construct_video_preprocessor(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "video").mkdir()
+            (root / "midi").mkdir()
+            (root / "canonical").mkdir()
+            (root / "video/take.mp4").touch()
+            (root / "midi/take.mid").touch()
+            canonical_path = root / "canonical/take.npz"
+            canonical_path.touch()
+            song = object()
+            components = {
+                "file_loader": SimpleNamespace(
+                    reader=SimpleNamespace(read=lambda *args: song)
+                ),
+                "midi_loader": object(),
+                "hand_loader": object(),
+            }
+            config = OmegaConf.create(
+                {
+                    "data": {
+                        "raw_wilor_root": "/unused/raw",
+                        "hand_root": "/unused/canonical",
+                    },
+                    "preprocess": {
+                        "video_to_ragged": {"_target_": "example.Video"},
+                        "ragged_to_canonical": {
+                            "_target_": "example.Canonical"
+                        },
+                    },
+                }
+            )
+
+            canonical_calls = []
+
+            class Canonicalizer:
+                def run(self, raw_record_dir, output_path, overwrite=False):
+                    canonical_calls.append(Path(output_path))
+                    return canonical_path
+
+            canonicalizer = Canonicalizer()
+            with patch.object(
+                realtime_stage, "instantiate", return_value=canonicalizer
+            ) as instantiate:
+                rows = list(
+                    realtime_stage.iter_realtime_songs(
+                        config,
+                        root,
+                        overwrite=False,
+                        components=components,
+                    )
+                )
+
+            instantiate.assert_called_once_with(
+                config.preprocess.ragged_to_canonical
+            )
+            self.assertEqual(canonical_calls, [canonical_path])
+            self.assertEqual(rows, [(1, 1, song, components)])
+
     def test_composes_preprocessors_and_dumps_renderable_artifact(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -105,11 +165,15 @@ class RealtimeTest(unittest.TestCase):
                         Path(output_dir), bundle / "wilor" / record_id
                     )
                     test_case.assertTrue(overwrite)
+                    Path(output_dir).mkdir(parents=True, exist_ok=True)
+                    (Path(output_dir) / "manifest.json").touch()
                     run_order.append(("video", record_id))
                     return Path(output_dir)
 
             class CanonicalWiLoR:
                 def run(self, raw_record_dir, output_path, overwrite=False):
+                    if not (Path(raw_record_dir) / "manifest.json").is_file():
+                        raise FileNotFoundError(raw_record_dir)
                     output = Path(output_path)
                     record_id = output.name[: -len(".npz")]
                     test_case.assertEqual(
@@ -176,8 +240,8 @@ class RealtimeTest(unittest.TestCase):
             self.assertEqual(
                 targets,
                 [
-                    "airpiano.preprocessing.video.VideoToWiLoR",
                     "airpiano.preprocessing.canonical.WiLoRToCanonical",
+                    "airpiano.preprocessing.video.VideoToWiLoR",
                 ],
             )
             self.assertEqual(

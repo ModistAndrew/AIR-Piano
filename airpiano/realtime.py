@@ -51,8 +51,9 @@ def iter_realtime_songs(
     raw_root = root / resolve_path(cfg.data.raw_wilor_root).name
     canonical_root = root / resolve_path(cfg.data.hand_root).name
 
-    # Components are shared across records so the lazy WiLoR models load once.
-    video_to_ragged = instantiate(cfg.preprocess.video_to_ragged)
+    # The expensive WiLoR component is constructed only after canonicalization
+    # shows that an existing canonical or ragged cache cannot be reused.
+    video_to_ragged = None
     ragged_to_canonical = instantiate(cfg.preprocess.ragged_to_canonical)
     components = components or data.build_data_components(cfg)
     for index, record_id in enumerate(record_ids, 1):
@@ -62,12 +63,21 @@ def iter_realtime_songs(
         )
         raw_dir = raw_root / record_id
         canonical_path = canonical_root / f"{record_id}.npz"
-        video_to_ragged.run(videos[record_id], raw_dir, overwrite)
-        ragged_to_canonical.run(
-            raw_record_dir=raw_dir,
-            output_path=canonical_path,
-            overwrite=overwrite,
-        )
+        try:
+            ragged_to_canonical.run(
+                raw_record_dir=raw_dir,
+                output_path=canonical_path,
+                overwrite=overwrite,
+            )
+        except FileNotFoundError:
+            if video_to_ragged is None:
+                video_to_ragged = instantiate(cfg.preprocess.video_to_ragged)
+            video_to_ragged.run(videos[record_id], raw_dir, overwrite)
+            ragged_to_canonical.run(
+                raw_record_dir=raw_dir,
+                output_path=canonical_path,
+                overwrite=overwrite,
+            )
         pair = data.FilePair(
             record_id=record_id,
             midi_path=midis[record_id],

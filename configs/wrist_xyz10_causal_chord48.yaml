@@ -1,0 +1,11 @@
+defaults:
+  - wrist_xyz10_causal_chord24
+  - _self_
+
+output:
+  project_name: wrist_xyz10_causal_chord48
+
+dataset:
+  slicer:
+    segment_frames: 48
+    stride_frames: 24
