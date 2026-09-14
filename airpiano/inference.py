@@ -135,6 +135,7 @@ def load_model_checkpoint(
             "_target_": "airpiano.model.transformer.AirPianoTransformer",
             "causal_frame_attention": False,
             "include_chord_duration": False,
+            "zero_hand_input": False,
         },
         checkpoint_config.get("model", {}),
     )

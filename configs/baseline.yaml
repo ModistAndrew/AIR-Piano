@@ -59,6 +59,7 @@ preprocess:
       z_source: wrist_relative_3d
 
 dataset:
+  random_hand_shift_seconds: 0.0
   file_loader:
     _target_: airpiano.data.files.FileLoader
     pairer:
@@ -88,10 +89,13 @@ dataset:
     segment_frames: 210
     stride_frames: 105
     chord_count: 128
+    end_padding_seconds: 0.0
+    hand_context_chords: 0
   target_generator:
     _target_: airpiano.data.targets.TargetGenerator
     event_generator:
       _target_: airpiano.data.targets.ChordOnsetEvents
+      delay_seconds: 0.0
     softener:
       _target_: airpiano.data.targets.TriangularSoftener
       radius_seconds: 0.2
@@ -100,6 +104,7 @@ model:
   _target_: airpiano.model.transformer.AirPianoTransformer
   causal_frame_attention: false
   include_chord_duration: false
+  zero_hand_input: false
 
 train:
   epochs: 20

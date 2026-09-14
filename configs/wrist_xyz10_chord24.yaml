@@ -1,0 +1,9 @@
+defaults:
+  - wrist_xyz10_causal_chord24
+  - _self_
+
+output:
+  project_name: wrist_xyz10_chord24
+
+model:
+  causal_frame_attention: false

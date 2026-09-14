@@ -17,7 +17,11 @@ class AirPianoTransformerTest(unittest.TestCase):
     def test_fixed_api_shapes_padding_and_all_padded_samples(self) -> None:
         self.assertEqual(
             tuple(inspect.signature(AirPianoTransformer).parameters),
-            ("causal_frame_attention", "include_chord_duration"),
+            (
+                "causal_frame_attention",
+                "include_chord_duration",
+                "zero_hand_input",
+            ),
         )
         model = AirPianoTransformer().eval()
         hands = torch.randn(2, 3, 2, 21, 3)
@@ -104,6 +108,35 @@ class AirPianoTransformerTest(unittest.TestCase):
 
         torch.testing.assert_close(actual, expected, rtol=0.0, atol=0.0)
         self.assertTrue(bool((actual != 0.0).all()))
+
+    def test_zero_hand_input_ignores_coordinates_and_presence(self) -> None:
+        torch.manual_seed(8)
+        model = AirPianoTransformer(zero_hand_input=True).eval()
+        hands = torch.randn(1, 3, 2, 21, 3)
+        presence = torch.ones(1, 3, 2, dtype=torch.bool)
+        altered_hands = torch.randn_like(hands) * 10_000.0
+        altered_presence = torch.zeros_like(presence)
+        chords = torch.zeros(1, 2, 328)
+        chords[0, 0, 60] = 1.0
+        chords[0, 1, 64] = 1.0
+        chords[:, :, 128] = 1.0
+        frame_mask = torch.ones(1, 3, dtype=torch.bool)
+        chord_mask = torch.ones(1, 2, dtype=torch.bool)
+
+        with torch.no_grad():
+            expected = model(
+                hands, presence, chords, frame_mask, chord_mask
+            )
+            actual = model(
+                altered_hands,
+                altered_presence,
+                chords,
+                frame_mask,
+                chord_mask,
+            )
+
+        self.assertTrue(model.zero_hand_input)
+        torch.testing.assert_close(actual, expected, rtol=0.0, atol=0.0)
 
     def test_causal_attention_prevents_future_frames_changing_prefix(self) -> None:
         torch.manual_seed(9)

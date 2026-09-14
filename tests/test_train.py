@@ -95,6 +95,14 @@ class TrainTest(unittest.TestCase):
         self.assertEqual(components["slicer"].mode, "frame")
         self.assertFalse(bool(config.model.causal_frame_attention))
         self.assertFalse(bool(config.model.include_chord_duration))
+        self.assertFalse(bool(config.model.zero_hand_input))
+        self.assertEqual(float(config.dataset.random_hand_shift_seconds), 0.0)
+        self.assertEqual(components["slicer"].end_padding_seconds, 0.0)
+        self.assertEqual(components["slicer"].hand_context_chords, 0)
+        self.assertEqual(
+            components["target_generator"].event_generator.delay_seconds,
+            0.0,
+        )
         self.assertEqual(str(config.wandb.project), "air_piano")
         self.assertEqual(
             str(config.test.checkpoint),
@@ -343,6 +351,33 @@ class TrainTest(unittest.TestCase):
             "outputs/causal_chord24/full_song",
         )
 
+    def test_wrist_chord24_random_hand_shift_config(self) -> None:
+        config_directory = Path(__file__).parents[1] / "configs"
+        name = "wrist_xyz10_chord24_random_hand_shift2s"
+        with initialize_config_dir(
+            version_base=None, config_dir=str(config_directory.resolve())
+        ):
+            config = compose(config_name=name)
+
+        components = data.build_data_components(config)
+        slicer = components["slicer"]
+        self.assertEqual(str(config.output.dir), f"outputs/{name}")
+        self.assertEqual(str(config.wandb.name), name)
+        self.assertEqual(
+            str(config.test.checkpoint),
+            f"outputs/{name}/checkpoints/last.pt",
+        )
+        self.assertEqual(str(config.test.output_dir), f"outputs/{name}/test")
+        self.assertFalse(bool(config.model.causal_frame_attention))
+        self.assertEqual(float(config.dataset.random_hand_shift_seconds), 2.0)
+        self.assertEqual(slicer.mode, "chord")
+        self.assertEqual(slicer.segment_frames, 24)
+        self.assertEqual(slicer.stride_frames, 12)
+        self.assertEqual(
+            components["hand_loader"].transform.scale,
+            (10.0, 10.0, 10.0),
+        )
+
     def test_extended_configs_preserve_their_ablation_behavior(self) -> None:
         config_directory = Path(__file__).parents[1] / "configs"
         config_names = (
@@ -395,6 +430,131 @@ class TrainTest(unittest.TestCase):
                 components["hand_loader"].transform.scale,
                 expected_scales[name],
             )
+
+    def test_wrist_chord_zero_hand_and_delayed_target_configs(self) -> None:
+        config_directory = Path(__file__).parents[1] / "configs"
+        names = (
+            "wrist_xyz10_causal_chord24_zero_hand",
+            "wrist_xyz10_causal_chord24_target_delay1s",
+        )
+        with initialize_config_dir(
+            version_base=None, config_dir=str(config_directory.resolve())
+        ):
+            zero_hand, delayed = [
+                compose(config_name=name) for name in names
+            ]
+
+        for name, config in zip(names, (zero_hand, delayed), strict=True):
+            components = data.build_data_components(config)
+            self.assertEqual(str(config.output.dir), f"outputs/{name}")
+            self.assertEqual(str(config.wandb.name), name)
+            self.assertEqual(
+                str(config.test.checkpoint),
+                f"outputs/{name}/checkpoints/last.pt",
+            )
+            self.assertEqual(str(config.test.output_dir), f"outputs/{name}/test")
+            self.assertEqual(
+                str(config.realtime.output_dir),
+                f"outputs/{name}/realtime",
+            )
+            self.assertEqual(
+                str(config.full_song.output_dir),
+                f"outputs/{name}/full_song",
+            )
+            self.assertTrue(bool(config.model.causal_frame_attention))
+            self.assertEqual(components["slicer"].mode, "chord")
+            self.assertEqual(components["slicer"].segment_frames, 24)
+            self.assertEqual(components["slicer"].stride_frames, 12)
+            self.assertEqual(
+                components["hand_loader"].transform.scale,
+                (10.0, 10.0, 10.0),
+            )
+
+        self.assertTrue(bool(zero_hand.model.zero_hand_input))
+        self.assertEqual(
+            data.build_data_components(zero_hand)["slicer"].end_padding_seconds,
+            0.0,
+        )
+        delayed_components = data.build_data_components(delayed)
+        self.assertFalse(bool(delayed.model.zero_hand_input))
+        self.assertEqual(float(delayed.target_delay_seconds), 1.0)
+        self.assertEqual(
+            delayed_components["slicer"].end_padding_seconds,
+            1.0,
+        )
+        self.assertEqual(
+            delayed_components[
+                "target_generator"
+            ].event_generator.delay_seconds,
+            1.0,
+        )
+
+    def test_wrist_chord_stride1_config_changes_only_window_hop(self) -> None:
+        config_directory = Path(__file__).parents[1] / "configs"
+        name = "wrist_xyz10_causal_chord24_stride1"
+        with initialize_config_dir(
+            version_base=None, config_dir=str(config_directory.resolve())
+        ):
+            config = compose(config_name=name)
+
+        components = data.build_data_components(config)
+        slicer = components["slicer"]
+        self.assertEqual(str(config.output.dir), f"outputs/{name}")
+        self.assertEqual(str(config.wandb.name), name)
+        self.assertEqual(
+            str(config.test.checkpoint),
+            f"outputs/{name}/checkpoints/last.pt",
+        )
+        self.assertEqual(str(config.test.output_dir), f"outputs/{name}/test")
+        self.assertTrue(bool(config.model.causal_frame_attention))
+        self.assertFalse(bool(config.model.zero_hand_input))
+        self.assertEqual(slicer.mode, "chord")
+        self.assertEqual(slicer.segment_frames, 24)
+        self.assertEqual(slicer.stride_frames, 1)
+        self.assertEqual(int(config.full_song.advance_after_chords), 12)
+        self.assertEqual(int(config.train.epochs), 20)
+        self.assertEqual(
+            components["hand_loader"].transform.scale,
+            (10.0, 10.0, 10.0),
+        )
+        self.assertEqual(
+            components["target_generator"].event_generator.delay_seconds,
+            0.0,
+        )
+
+    def test_wrist_chord_hand_context1_config_expands_only_hands(self) -> None:
+        config_directory = Path(__file__).parents[1] / "configs"
+        name = "wrist_xyz10_causal_chord24_hand_context1"
+        with initialize_config_dir(
+            version_base=None, config_dir=str(config_directory.resolve())
+        ):
+            config = compose(config_name=name)
+
+        components = data.build_data_components(config)
+        slicer = components["slicer"]
+        self.assertEqual(str(config.output.dir), f"outputs/{name}")
+        self.assertEqual(str(config.wandb.name), name)
+        self.assertEqual(
+            str(config.test.checkpoint),
+            f"outputs/{name}/checkpoints/last.pt",
+        )
+        self.assertEqual(str(config.test.output_dir), f"outputs/{name}/test")
+        self.assertTrue(bool(config.model.causal_frame_attention))
+        self.assertFalse(bool(config.model.zero_hand_input))
+        self.assertEqual(slicer.mode, "chord")
+        self.assertEqual(slicer.segment_frames, 24)
+        self.assertEqual(slicer.stride_frames, 12)
+        self.assertEqual(slicer.hand_context_chords, 1)
+        self.assertEqual(slicer.end_padding_seconds, 0.0)
+        self.assertEqual(int(config.full_song.advance_after_chords), 12)
+        self.assertEqual(
+            components["hand_loader"].transform.scale,
+            (10.0, 10.0, 10.0),
+        )
+        self.assertEqual(
+            components["target_generator"].event_generator.delay_seconds,
+            0.0,
+        )
 
     def test_chord_duration_config_enables_duration_ablation(self) -> None:
         config_directory = Path(__file__).parents[1] / "configs"
@@ -453,6 +613,7 @@ class TrainTest(unittest.TestCase):
                 "model": {
                     "causal_frame_attention": False,
                     "include_chord_duration": False,
+                    "zero_hand_input": False,
                 },
                 "data": {"splits": {}, "midi_root": ".", "hand_root": "."},
                 "train": {
@@ -535,6 +696,9 @@ class TrainTest(unittest.TestCase):
             )
             self.assertFalse(
                 checkpoint["config"]["model"]["include_chord_duration"]
+            )
+            self.assertFalse(
+                checkpoint["config"]["model"]["zero_hand_input"]
             )
             self.assertFalse((output / "inference" / "test").exists())
 

@@ -1,0 +1,10 @@
+defaults:
+  - wrist_xyz10_causal_chord24
+  - _self_
+
+output:
+  project_name: wrist_xyz10_causal_chord24_hand_context1
+
+dataset:
+  slicer:
+    hand_context_chords: 1

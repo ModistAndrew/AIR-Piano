@@ -13,6 +13,7 @@ from unittest.mock import patch
 import mido
 import numpy as np
 import torch
+from omegaconf import OmegaConf
 
 from airpiano.data import (
     CANONICAL_HAND_SCHEMA,
@@ -35,6 +36,7 @@ from airpiano.data import (
     RelativeStemPairer,
     TargetGenerator,
     TriangularSoftener,
+    build_dataset,
     collate_alignment_batch,
 )
 from airpiano.data.midi import quantize_duration_seconds
@@ -502,6 +504,70 @@ class SlicingAndTargetTest(unittest.TestCase):
         self.assertNotIn("chord_mask", window)
         torch.testing.assert_close(window["hands"], song.hands[10:21])
 
+    def test_chord_mode_adds_neighbor_onsets_only_to_hand_bounds(self) -> None:
+        chords = tuple(
+            _chord(index, (_note(index, onset, onset + 0.1, 60 + index),))
+            for index, onset in enumerate((0.2, 0.5, 1.0, 1.4, 2.0, 2.5))
+        )
+        song = _song(chords, frame_count=40, fps=10.0)
+        slicer = FutureChordSlicer(
+            mode="chord",
+            fps=10.0,
+            segment_frames=3,
+            stride_frames=2,
+            hand_context_chords=1,
+        )
+
+        self.assertEqual(
+            slicer.windows(song),
+            (
+                (0, 15, (0, 1, 2)),
+                (5, 26, (2, 3, 4)),
+                (10, 40, (3, 4, 5)),
+            ),
+        )
+        dataset = AlignmentDataset(
+            [song],
+            slicer,
+            TargetGenerator(ChordOnsetEvents(), TriangularSoftener(0.2)),
+        )
+        middle = dataset[1]
+        self.assertEqual(tuple(middle["hands"].shape), (21, 2, 21, 3))
+        self.assertEqual(middle["chord_ids"].tolist(), [2, 3, 4])
+        self.assertEqual(tuple(middle["target"].shape), (21, 3))
+        torch.testing.assert_close(middle["hands"], song.hands[5:26])
+
+        short_song = _song(chords, frame_count=24, fps=10.0)
+        self.assertEqual(
+            slicer.windows(short_song)[1],
+            (5, 24, (2, 3, 4)),
+        )
+
+    def test_chord_mode_end_padding_preserves_starts_and_clamps_stops(self) -> None:
+        chords = tuple(
+            _chord(index, (_note(index, onset, onset + 0.1, 60 + index),))
+            for index, onset in enumerate((0.2, 0.5, 1.0, 1.4, 2.0, 2.5))
+        )
+        song = _song(chords, frame_count=40, fps=10.0)
+        slicer = FutureChordSlicer(
+            mode="chord",
+            fps=10.0,
+            segment_frames=3,
+            stride_frames=2,
+            end_padding_seconds=1.0,
+        )
+
+        self.assertEqual(
+            slicer.windows(song),
+            (
+                (0, 21, (0, 1, 2)),
+                (10, 31, (2, 3, 4)),
+                (14, 40, (3, 4, 5)),
+            ),
+        )
+        short_song = _song(chords, frame_count=11, fps=10.0)
+        self.assertEqual(slicer.windows(short_song)[0], (0, 11, (0, 1, 2)))
+
     def test_chord_mode_keeps_real_chords_and_one_frame_windows(self) -> None:
         chords = tuple(
             _chord(index, (_note(index, onset, onset + 0.1, 60 + index),))
@@ -640,6 +706,113 @@ class SlicingAndTargetTest(unittest.TestCase):
             0,
         )
 
+    def test_random_hand_shift_resamples_each_access_and_clamps(self) -> None:
+        chords = tuple(
+            _chord(index, (_note(index, onset, onset + 0.1, 60 + index),))
+            for index, onset in enumerate((0.2, 0.5, 1.0, 1.4, 2.0, 2.5))
+        )
+        song = _song(chords, frame_count=40, fps=10.0)
+        dataset = AlignmentDataset(
+            [song],
+            FutureChordSlicer(
+                mode="chord",
+                fps=10.0,
+                segment_frames=3,
+                stride_frames=2,
+            ),
+            TargetGenerator(ChordOnsetEvents(), TriangularSoftener(0.2)),
+            random_hand_shift_seconds=2.0,
+        )
+
+        with patch(
+            "airpiano.data.dataset.random.randint",
+            side_effect=(2, -3, -5, 7, -20, 20),
+        ):
+            cropped = dataset[1]
+            expanded = dataset[1]
+            clamped = dataset[1]
+
+        self.assertEqual(cropped["frame_start"], 12)
+        torch.testing.assert_close(cropped["hands"], song.hands[12:18])
+        self.assertEqual(tuple(cropped["target"].shape), (6, 3))
+        self.assertEqual(cropped["target"][2, 1].item(), 1.0)
+        self.assertEqual(expanded["frame_start"], 5)
+        torch.testing.assert_close(expanded["hands"], song.hands[5:28])
+        self.assertEqual(expanded["target"][5, 0].item(), 1.0)
+        self.assertEqual(clamped["frame_start"], 0)
+        torch.testing.assert_close(clamped["hands"], song.hands)
+        for sample in (cropped, expanded, clamped):
+            self.assertEqual(sample["chord_ids"].tolist(), [2, 3, 4])
+
+    def test_random_hand_shift_resamples_crossed_bounds(self) -> None:
+        chords = tuple(
+            _chord(index, (_note(index, onset, onset + 0.1, 60 + index),))
+            for index, onset in enumerate((0.2, 0.5, 1.0, 1.4, 2.0, 2.5))
+        )
+        song = _song(chords, frame_count=40, fps=10.0)
+        dataset = AlignmentDataset(
+            [song],
+            FutureChordSlicer(
+                mode="chord",
+                fps=10.0,
+                segment_frames=3,
+                stride_frames=2,
+            ),
+            TargetGenerator(ChordOnsetEvents(), TriangularSoftener(0.2)),
+            random_hand_shift_seconds=2.0,
+        )
+
+        with patch(
+            "airpiano.data.dataset.random.randint",
+            side_effect=(20, -20, -2, 3),
+        ) as randint:
+            sample = dataset[1]
+
+        self.assertEqual(randint.call_count, 4)
+        self.assertEqual(sample["frame_start"], 8)
+        torch.testing.assert_close(sample["hands"], song.hands[8:24])
+
+    def test_build_dataset_enables_random_hand_shift_only_for_train(self) -> None:
+        chords = (_chord(0, (_note(0, 0.1, 0.2, 60),)),)
+        song = _song(chords, frame_count=10, fps=10.0)
+
+        class StaticFileLoader:
+            def load(self, **kwargs):
+                del kwargs
+                return (song,)
+
+        config = OmegaConf.create(
+            {
+                "data": {
+                    "splits": {
+                        "train": "train.txt",
+                        "valid": "valid.txt",
+                        "test": "test.txt",
+                    },
+                    "midi_root": "midi",
+                    "hand_root": "hands",
+                },
+                "dataset": {"random_hand_shift_seconds": 2.0},
+            }
+        )
+        components = {
+            "file_loader": StaticFileLoader(),
+            "midi_loader": object(),
+            "hand_loader": object(),
+            "slicer": FutureChordSlicer(fps=10.0),
+            "target_generator": TargetGenerator(
+                ChordOnsetEvents(), TriangularSoftener(0.2)
+            ),
+        }
+
+        train_dataset = build_dataset(config, "train", components=components)
+        self.assertEqual(train_dataset.random_hand_shift_seconds, 2.0)
+        self.assertEqual(train_dataset.max_random_hand_shift_frames, 20)
+        for split in ("valid", "test"):
+            dataset = build_dataset(config, split, components=components)
+            self.assertEqual(dataset.random_hand_shift_seconds, 0.0)
+            self.assertEqual(dataset.max_random_hand_shift_frames, 0)
+
     def test_target_uses_global_times_and_preserves_outer_soft_tail(self) -> None:
         chords = (
             _chord(0, (_note(0, 1.1, 1.2, 60),)),
@@ -658,6 +831,24 @@ class SlicingAndTargetTest(unittest.TestCase):
             target[:, 0], torch.tensor([0.5, 1.0, 0.5]), atol=1e-6, rtol=0
         )
         self.assertGreater(target[-1, 1].item(), 0.0)
+
+    def test_target_delay_moves_onset_peak_later(self) -> None:
+        chord = _chord(0, (_note(0, 1.0, 1.1, 60),))
+        generator = TargetGenerator(
+            ChordOnsetEvents(delay_seconds=1.0),
+            TriangularSoftener(radius_seconds=0.2),
+        )
+
+        target = generator.generate(
+            (chord,),
+            frame_start=20,
+            frame_count=21,
+            fps=20.0,
+        )
+
+        self.assertEqual(generator.event_generator.delay_seconds, 1.0)
+        self.assertEqual(int(target[:, 0].argmax()), 20)
+        self.assertEqual(target[20, 0].item(), 1.0)
 
 
 if __name__ == "__main__":

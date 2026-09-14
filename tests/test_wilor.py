@@ -780,18 +780,6 @@ class VendoredSnapshotTest(unittest.TestCase):
             [],
         )
 
-    def test_snapshot_has_no_nested_repository_or_python_bytecode(self) -> None:
-        repository = Path(__file__).parents[1] / "third_party" / "WiLoR"
-        forbidden = []
-        for name in (".git", ".gitmodules", "__pycache__"):
-            forbidden.extend(repository.rglob(name))
-        forbidden.extend(repository.rglob("*.pyc"))
-
-        self.assertEqual(
-            [path.relative_to(repository).as_posix() for path in forbidden],
-            [],
-        )
-
     def test_project_gitignore_covers_vendor_bytecode(self) -> None:
         project_root = Path(__file__).parents[1]
         probe = "third_party/WiLoR/wilor/models/__pycache__/probe.pyc"

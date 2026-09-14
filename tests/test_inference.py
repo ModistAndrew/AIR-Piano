@@ -47,10 +47,12 @@ class _TinyModel(nn.Module):
         self,
         causal_frame_attention: bool = False,
         include_chord_duration: bool = False,
+        zero_hand_input: bool = False,
     ) -> None:
         super().__init__()
         self.causal_frame_attention = causal_frame_attention
         self.include_chord_duration = include_chord_duration
+        self.zero_hand_input = zero_hand_input
         self.bias = nn.Parameter(torch.tensor(0.0))
 
     def forward(self, hands, hand_presence, chords, frame_mask, chord_mask):
@@ -64,6 +66,7 @@ class TestInferenceTest(unittest.TestCase):
             root = Path(directory)
             causal = root / "causal.pt"
             duration = root / "duration.pt"
+            zero_hand = root / "zero_hand.pt"
             legacy = root / "legacy.pt"
             torch.save(
                 {
@@ -83,6 +86,13 @@ class TestInferenceTest(unittest.TestCase):
                 },
                 duration,
             )
+            torch.save(
+                {
+                    "model": _TinyModel().state_dict(),
+                    "config": {"model": {"zero_hand_input": True}},
+                },
+                zero_hand,
+            )
             torch.save({"model": _TinyModel().state_dict()}, legacy)
 
             def instantiate_model(config):
@@ -93,6 +103,7 @@ class TestInferenceTest(unittest.TestCase):
                     include_chord_duration=bool(
                         config.include_chord_duration
                     ),
+                    zero_hand_input=bool(config.zero_hand_input),
                 )
 
             with patch.object(
@@ -106,14 +117,19 @@ class TestInferenceTest(unittest.TestCase):
                 duration_model = inference_stage.load_model_checkpoint(
                     duration, torch.device("cpu")
                 )
+                zero_hand_model = inference_stage.load_model_checkpoint(
+                    zero_hand, torch.device("cpu")
+                )
                 legacy_model = inference_stage.load_model_checkpoint(
                     legacy, torch.device("cpu")
                 )
 
             self.assertTrue(causal_model.causal_frame_attention)
             self.assertTrue(duration_model.include_chord_duration)
+            self.assertTrue(zero_hand_model.zero_hand_input)
             self.assertFalse(legacy_model.causal_frame_attention)
             self.assertFalse(legacy_model.include_chord_duration)
+            self.assertFalse(legacy_model.zero_hand_input)
 
     def test_uses_configured_checkpoint_and_dumps_test_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

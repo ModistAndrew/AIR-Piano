@@ -44,8 +44,9 @@ visibility after preprocessing the complete recording.
 
 Deliberate non-goals include pluggable model architectures, alternate losses,
 note-level tokens, distributed training, checkpoint resume, video downloading, and
-compatibility with V2N checkpoints. The model exposes causal frame-attention
-and chord-duration switches and is constructed through a Hydra `_target_`.
+compatibility with V2N checkpoints. The model exposes causal frame-attention,
+chord-duration, and zero-hand-input switches and is constructed through a Hydra
+`_target_`.
 The loss remains fixed in code.
 
 ## Repository map
@@ -63,6 +64,11 @@ The loss remains fixed in code.
 | `configs/wrist_xyz10.yaml` | Wrist-relative local-XYZ ×10 ablation inheriting the baseline. |
 | `configs/chord_duration.yaml` | Duration-conditioned chord-token ablation inheriting the baseline. |
 | `configs/causal_chord24.yaml` | Causal frame-attention and 24-chord slicing ablation inheriting the baseline. |
+| `configs/wrist_xyz10_chord24_random_hand_shift2s.yaml` | Non-causal wrist-relative 24-chord ablation with independently jittered training hand-window edges. |
+| `configs/wrist_xyz10_causal_chord24_zero_hand.yaml` | Wrist-relative causal 24-chord ablation with all hand features zeroed. |
+| `configs/wrist_xyz10_causal_chord24_target_delay1s.yaml` | Wrist-relative causal 24-chord ablation with targets delayed by one second. |
+| `configs/wrist_xyz10_causal_chord24_stride1.yaml` | Wrist-relative causal 24-chord ablation with a one-chord window stride. |
+| `configs/wrist_xyz10_causal_chord24_hand_context1.yaml` | Wrist-relative causal 24-chord ablation with neighboring-onset hand context. |
 | `configs/wrist_xyz10_causal_chord24_chord_duration_relative.yaml` | Wrist-relative, causal 24-chord model with song-scaled duration tokens. |
 | `scripts/convert_legacy_splits.py` | One-time conversion of the original PianoMotion split lists to generalized record stems. |
 | `scripts/convert_pianovam_splits.py` | Generate AirPiano splits from PianoVAM's canonical v1.1 metadata. |
@@ -856,8 +862,9 @@ offset `[0.5,0.5,0]` and scale `[1,1,10]`; `wrist_xyz10` uses zero offset and
 scale `[10,10,10]`. `FileLoader` eagerly loads every paired song.
 `AlignmentDataset` precomputes frame bounds and chord selection indices, omits
 windows without real frames or chord candidates, then slices real tensors and
-generates targets in `__getitem__`. Padding and masks are added only when a
-batch is collated.
+generates targets in `__getitem__`. An optional training-only hand-window shift
+independently jitters the two precomputed frame bounds while retaining the same
+chord selection. Padding and masks are added only when a batch is collated.
 
 One baseline item is:
 
@@ -900,12 +907,17 @@ tokens and `chord_count` is ignored. Token windows retain the exact
 right-aligned tail. The first score window starts at song frame 0; other
 windows start at the frame at or before their first chord onset. The final
 score window ends at song end; other windows include the first sampled frame
-at or after their last chord onset.
+at or after their last chord onset plus the configured end padding. End padding
+defaults to zero. `hand_context_chords` can move these hand-frame boundaries to
+earlier and later neighboring chord onsets without adding those neighbors to
+the model's chord tokens or targets.
 
-Targets use global frame times and chord initializer onsets:
+Targets use global frame times and chord initializer onsets plus the configured
+event delay, which defaults to zero:
 
 ```text
-target[t,c] = max(0, 1 - abs(global_frame_time[t] - chord_onset[c]) / 0.2)
+target[t,c] = max(0, 1 - abs(global_frame_time[t]
+                              - (chord_onset[c] + delay)) / 0.2)
 ```
 
 The collator pads both axes to the batch maxima, creates `frame_mask` and
@@ -932,11 +944,15 @@ and four frame self/cross-attention blocks feed 32-wide pairwise projections.
 The score bias starts from positive prior `0.0055`.
 Absent hand coordinates are zeroed, presence remains an input feature, padded
 attention is protected from NaNs, and padded logits are zero. When
+`model.zero_hand_input=true`, all 126 coordinates and both presence bits are
+replaced by zero before hand embedding; frame masks and temporal positional
+encoding remain active. When
 `model.causal_frame_attention=true`, frame self-attention at time `t` sees only
 frames through `t`; chord encoding and frame-to-chord attention still see all
-selected chord tokens. The checkpoint's saved causal and chord-duration
-settings control inference. Older checkpoints default to non-causal,
-pitch-only operation; they cannot initialize a duration-conditioned model.
+selected chord tokens. The checkpoint's saved model settings, including
+zero-hand-input mode, control inference. Older checkpoints default to
+non-causal, pitch-only operation with hand input enabled; they cannot initialize
+a duration-conditioned model.
 
 `masked_bce_loss` is ordinary `BCEWithLogitsLoss` over:
 
@@ -1179,6 +1195,95 @@ hand cache and writes all outputs under `outputs/causal_chord24/`:
 conda run -n v2n python run.py --config-name causal_chord24 stage=train
 conda run -n v2n python run.py --config-name causal_chord24 stage=test
 ```
+
+### Random hand-window shift ablation
+
+`wrist_xyz10_chord24_random_hand_shift2s` inherits the non-causal
+`wrist_xyz10_chord24` preset. Each time a training item is read, its left and
+right hand-window edges receive independent integer offsets sampled uniformly
+from `[-60, 60]` frames (plus or minus two seconds at 30 Hz). Shifted bounds
+are clamped to the real song, and crossed or empty bounds are resampled. The 24
+selected chord tokens remain unchanged, while hands, targets, and `frame_start`
+use the shifted interval. Validation, test, and realtime windows remain
+unshifted for comparable evaluation:
+
+```bash
+conda run -n v2n python run.py \
+  --config-name wrist_xyz10_chord24_random_hand_shift2s stage=train
+conda run -n v2n python run.py \
+  --config-name wrist_xyz10_chord24_random_hand_shift2s stage=test
+```
+
+The preset reuses the wrist-relative canonical cache and writes under
+`outputs/wrist_xyz10_chord24_random_hand_shift2s/`.
+
+### Wrist-relative causal diagnostic ablations
+
+These presets inherit `wrist_xyz10_causal_chord24`, including its
+wrist-relative cache, causal frame attention, and 24-chord windows with stride
+12. The first zeros all hand coordinates and presence bits so predictions
+depend on chord tokens, frame position, and masks:
+
+```bash
+conda run -n v2n python run.py \
+  --config-name wrist_xyz10_causal_chord24_zero_hand stage=train
+conda run -n v2n python run.py \
+  --config-name wrist_xyz10_causal_chord24_zero_hand stage=test
+```
+
+The second delays every target onset by `1.0` second. It retains each chord
+window's original start for causal history and extends non-final window ends by
+the same duration, clamped to the real song. Test, realtime, full-song,
+visualization, and prediction MIDI outputs retain the delayed timeline:
+
+```bash
+conda run -n v2n python run.py \
+  --config-name wrist_xyz10_causal_chord24_target_delay1s stage=train
+conda run -n v2n python run.py \
+  --config-name wrist_xyz10_causal_chord24_target_delay1s stage=test
+```
+
+Outputs are written below directories matching the two config names under
+`outputs/`. Neither preset requires a new canonical hand cache.
+
+### Stride-1 chord-window ablation
+
+This preset also inherits `wrist_xyz10_causal_chord24`, but changes the
+training and test chord-window stride from 12 tokens to 1 while keeping the
+window width at 24. For long songs this produces roughly 12 times as many
+highly overlapping windows and optimizer updates because the 20-epoch training
+schedule is unchanged. The full-song trailing trigger remains at 12 chords so
+its controller behavior is not part of the ablation:
+
+```bash
+conda run -n v2n python run.py \
+  --config-name wrist_xyz10_causal_chord24_stride1 stage=train
+conda run -n v2n python run.py \
+  --config-name wrist_xyz10_causal_chord24_stride1 stage=test
+```
+
+The preset reuses the existing wrist-relative canonical hand cache and writes
+under `outputs/wrist_xyz10_causal_chord24_stride1/`.
+
+### Neighbor-onset hand-window ablation
+
+This preset keeps the base 24 chord tokens and stride 12, but expands only the
+corresponding hand window by one neighboring chord onset on each side. A middle
+window starts at the onset preceding its first selected chord and includes the
+first sampled frame at or after the onset following its last selected chord.
+At score boundaries it instead uses song frame zero or the real song end. The
+neighboring chords remain context only and receive neither chord tokens nor
+target columns:
+
+```bash
+conda run -n v2n python run.py \
+  --config-name wrist_xyz10_causal_chord24_hand_context1 stage=train
+conda run -n v2n python run.py \
+  --config-name wrist_xyz10_causal_chord24_hand_context1 stage=test
+```
+
+The preset reuses the wrist-relative canonical cache and writes under
+`outputs/wrist_xyz10_causal_chord24_hand_context1/`.
 
 ### Chord-duration ablation
 
@@ -1482,8 +1587,8 @@ the process into an output directory.
 | `InitializerChordMerger.tolerance_seconds` | Initializer-relative grouping at `0.05`, with absolute chord durations assigned after grouping. |
 | `CanonicalNpzReader` | Direct trusted canonical array loading. |
 | `OffsetScaleTransform` | Apply configured per-axis offset and scale, then restore absent slots to zero. |
-| `FutureChordSlicer` | Frame mode: 30 Hz, 210 frames, stride 105, fixed 128 future-extending candidates. Every chord token contains pitch and duration features. |
-| `ChordOnsetEvents` | One event at each chord initializer onset. |
+| `FutureChordSlicer` | Frame mode: 30 Hz, 210 frames, stride 105, fixed 128 future-extending candidates. Chord mode can add end padding or neighboring-onset hand context without changing chord tokens. Every chord token contains pitch and duration features. |
+| `ChordOnsetEvents` | One event at each chord initializer onset plus `delay_seconds`. |
 | `TriangularSoftener.radius_seconds` | Continuous target radius `0.2`. |
 
 Each `_target_` is a replaceable seam, but its parent-facing contract must stay
@@ -1502,8 +1607,10 @@ loss intentionally remains fixed in code.
 | `max_grad_norm` | `1.0` | Update-time global norm clipping. |
 | `warmup_fraction` | `0.05` | Linear warmup fraction before cosine decay. |
 | `bf16` | `true` | CUDA BF16 autocast. |
+| `dataset.random_hand_shift_seconds` | `0.0` | Maximum signed shift independently sampled for each training hand-window edge; validation and inference remain unshifted. |
 | `model._target_` | `airpiano.model.transformer.AirPianoTransformer` | Configured alignment model instantiated for training and restored from checkpoints. |
 | `model.include_chord_duration` | `false` | Consume the packed 200-bin duration suffix through a separate embedding. |
+| `model.zero_hand_input` | `false` | Replace all coordinates and hand-presence features with zero before embedding. |
 | `wandb.project` | `air_piano` | Required online project. |
 | `wandb.name` | `${output.project_name}` | Run name shared with the local output directory. |
 | `wandb.entity` | `null` | Optional team/entity. |

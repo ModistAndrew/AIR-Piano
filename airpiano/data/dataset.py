@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import random
 from collections.abc import Sequence
 from typing import Any
 
@@ -25,10 +26,17 @@ class AlignmentDataset(Dataset):
         songs: Sequence[Song],
         slicer: FutureChordSlicer,
         target_generator: TargetGenerator,
+        random_hand_shift_seconds: float = 0.0,
     ):
+        if random_hand_shift_seconds < 0.0:
+            raise ValueError("random_hand_shift_seconds must be non-negative")
         self.songs = tuple(songs)
         self.slicer = slicer
         self.target_generator = target_generator
+        self.random_hand_shift_seconds = float(random_hand_shift_seconds)
+        self.max_random_hand_shift_frames = round(
+            self.random_hand_shift_seconds * self.slicer.fps
+        )
         samples: list[tuple[int, int, int, tuple[int, ...]]] = []
         for song_index, song in enumerate(self.songs):
             for frame_start, frame_stop, positions in self.slicer.windows(song):
@@ -40,11 +48,38 @@ class AlignmentDataset(Dataset):
     def __len__(self) -> int:
         return len(self.samples)
 
+    def _randomize_hand_frame_bounds(
+        self,
+        frame_start: int,
+        frame_stop: int,
+        frame_count: int,
+    ) -> tuple[int, int]:
+        if self.max_random_hand_shift_frames == 0:
+            return frame_start, frame_stop
+
+        shift = self.max_random_hand_shift_frames
+        while True:
+            shifted_start = max(
+                0,
+                min(frame_start + random.randint(-shift, shift), frame_count),
+            )
+            shifted_stop = max(
+                0,
+                min(frame_stop + random.randint(-shift, shift), frame_count),
+            )
+            if shifted_stop > shifted_start:
+                return shifted_start, shifted_stop
+
     def __getitem__(self, index: int) -> dict[str, Any]:
         song_index, frame_start, frame_stop, chord_positions = self.samples[
             int(index)
         ]
         song = self.songs[song_index]
+        frame_start, frame_stop = self._randomize_hand_frame_bounds(
+            frame_start,
+            frame_stop,
+            len(song.hands),
+        )
         window = self.slicer.slice(
             song,
             frame_start,
@@ -150,6 +185,11 @@ def build_dataset(
         songs=songs,
         slicer=components["slicer"],
         target_generator=components["target_generator"],
+        random_hand_shift_seconds=(
+            float(cfg.dataset.random_hand_shift_seconds)
+            if split == "train"
+            else 0.0
+        ),
     )
 
 

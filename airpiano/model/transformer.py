@@ -30,10 +30,12 @@ class AirPianoTransformer(nn.Module):
         self,
         causal_frame_attention: bool = False,
         include_chord_duration: bool = False,
+        zero_hand_input: bool = False,
     ) -> None:
         super().__init__()
         self.causal_frame_attention = bool(causal_frame_attention)
         self.include_chord_duration = bool(include_chord_duration)
+        self.zero_hand_input = bool(zero_hand_input)
         self.hand_embedding = nn.Sequential(
             nn.Linear(128, MODEL_DIM),
             nn.GELU(),
@@ -98,21 +100,29 @@ class AirPianoTransformer(nn.Module):
     ) -> torch.Tensor:
         """Return alignment logits with shape ``[B,T,C]``.
 
-        ``hand_presence`` zeros an absent hand's coordinates and contributes two
-        explicit embedding features. It is not a frame mask: ``frame_mask``
-        alone marks padded time steps for attention and supervision.
+        Unless ``zero_hand_input`` is enabled, ``hand_presence`` zeros an
+        absent hand's coordinates and contributes two explicit embedding
+        features. It is not a frame mask: ``frame_mask`` alone marks padded
+        time steps for attention and supervision.
         """
 
         batch_size, frame_count = hands.shape[:2]
         chord_count = chords.shape[1]
 
         hand_dtype = self.hand_embedding[0].weight.dtype
-        presence = hand_presence.to(dtype=hand_dtype)
-        masked_hands = hands.to(dtype=hand_dtype) * presence[..., None, None]
-        hand_features = torch.cat(
-            (masked_hands.flatten(start_dim=2), presence),
-            dim=-1,
-        )
+        if self.zero_hand_input:
+            hand_features = torch.zeros(
+                (batch_size, frame_count, self.hand_embedding[0].in_features),
+                dtype=hand_dtype,
+                device=hands.device,
+            )
+        else:
+            presence = hand_presence.to(dtype=hand_dtype)
+            masked_hands = hands.to(dtype=hand_dtype) * presence[..., None, None]
+            hand_features = torch.cat(
+                (masked_hands.flatten(start_dim=2), presence),
+                dim=-1,
+            )
         frames = self.hand_embedding(hand_features)
         frames = frames + sinusoidal_encoding(
             frame_count,
