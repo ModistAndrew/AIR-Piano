@@ -139,6 +139,7 @@ sonify:
   root: ${test.output_dir}
   midi_root: ${data.midi_root}
   threshold: 0.2
+  chord_tolerance_seconds: ${dataset.midi_loader.chord_merger.tolerance_seconds}
   duration_seconds: 1.0
   velocity: 64
 

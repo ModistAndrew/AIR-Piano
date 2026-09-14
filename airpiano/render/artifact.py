@@ -15,7 +15,8 @@ class InferenceArtifact:
     """Arrays needed by both renderers.
 
     Probability and target have shape ``[frames, chord_slots]``. The two
-    one-dimensional masks identify real frames and populated chord slots.
+    one-dimensional masks identify real frames and populated chord slots, and
+    chord IDs map populated slots back to the source score.
     """
 
     probability: np.ndarray
@@ -23,6 +24,7 @@ class InferenceArtifact:
     frame_mask: np.ndarray
     chord_mask: np.ndarray
     chord_pitches: np.ndarray
+    chord_ids: np.ndarray
     fps: float
     record_id: str
     frame_start: int
@@ -45,6 +47,7 @@ def load_artifact(input_path: str | Path) -> InferenceArtifact:
             frame_mask=payload["frame_mask"].copy(),
             chord_mask=payload["chord_mask"].copy(),
             chord_pitches=payload["chord_pitches"].copy(),
+            chord_ids=payload["chord_ids"].copy(),
             fps=float(payload["fps"]),
             record_id=str(payload["record_id"]),
             frame_start=int(payload["frame_start"]),

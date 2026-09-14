@@ -103,6 +103,10 @@ class TrainTest(unittest.TestCase):
             components["target_generator"].event_generator.delay_seconds,
             0.0,
         )
+        self.assertEqual(
+            float(config.sonify.chord_tolerance_seconds),
+            components["midi_loader"].chord_merger.tolerance_seconds,
+        )
         self.assertEqual(str(config.wandb.project), "air_piano")
         self.assertEqual(
             str(config.test.checkpoint),

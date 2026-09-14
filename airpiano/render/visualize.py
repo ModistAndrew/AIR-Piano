@@ -1,4 +1,4 @@
-"""Draw aligned prediction and target heatmaps from an inference artifact."""
+"""Draw aligned prediction, target, and residual heatmaps from an artifact."""
 
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ def visualize(cfg: DictConfig) -> None:
 
 
 def visualize_artifact(input_path: str | Path, output_path: str | Path) -> Path:
-    """Render prediction and target with a shared zero-to-one color scale."""
+    """Render prediction, target, and their signed difference as heatmaps."""
 
     artifact = load_artifact(input_path)
 
@@ -42,27 +42,40 @@ def visualize_artifact(input_path: str | Path, output_path: str | Path) -> Path:
     support = artifact.support.T
     prediction = np.ma.masked_where(~support, artifact.probability.T)
     target = np.ma.masked_where(~support, artifact.target.T)
+    delta = np.ma.masked_where(
+        ~support,
+        artifact.probability.T - artifact.target.T,
+    )
     colormap = matplotlib.colormaps["magma"].with_extremes(bad="#d5d8dc")
+    delta_colormap = matplotlib.colormaps["coolwarm"].with_extremes(bad="#d5d8dc")
     width = max(8.0, min(18.0, artifact.probability.shape[0] / 15.0))
     figure, axes = plt.subplots(
-        2,
+        3,
         1,
-        figsize=(width, 10.0),
+        figsize=(width, 15.0),
         sharex=True,
         constrained_layout=True,
     )
-    for axis, values, title in (
-        (axes[0], prediction, "Prediction probability"),
-        (axes[1], target, "Alignment target"),
+    for axis, values, title, cmap, vmin, vmax in (
+        (axes[0], prediction, "Prediction probability", colormap, 0.0, 1.0),
+        (axes[1], target, "Alignment target", colormap, 0.0, 1.0),
+        (
+            axes[2],
+            delta,
+            "Prediction − target",
+            delta_colormap,
+            -1.0,
+            1.0,
+        ),
     ):
         image = axis.imshow(
             values,
             aspect="auto",
             interpolation="nearest",
             origin="lower",
-            cmap=colormap,
-            vmin=0.0,
-            vmax=1.0,
+            cmap=cmap,
+            vmin=vmin,
+            vmax=vmax,
         )
         axis.set_title(title)
         axis.set_ylabel("Chord slot")
@@ -70,9 +83,9 @@ def visualize_artifact(input_path: str | Path, output_path: str | Path) -> Path:
 
     frames = artifact.probability.shape[0]
     ticks = np.linspace(0, frames - 1, min(9, frames), dtype=int)
-    axes[1].set_xticks(ticks)
-    axes[1].set_xticklabels([f"{frame / artifact.fps:.2f}" for frame in ticks])
-    axes[1].set_xlabel("Time in slice (seconds)")
+    axes[2].set_xticks(ticks)
+    axes[2].set_xticklabels([f"{frame / artifact.fps:.2f}" for frame in ticks])
+    axes[2].set_xlabel("Time in slice (seconds)")
 
     output = resolve_path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)

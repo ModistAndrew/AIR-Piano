@@ -35,8 +35,9 @@ The supported stages are:
   video/MIDI pairs.
 - `full-song`: realtime-style preprocessing followed by frame-causal,
   dynamically windowed inference into one artifact per song.
-- `visualize`: prediction and target heatmaps for every direct inference NPZ.
-- `sonify`: prediction and ground-truth MIDI for every direct inference NPZ.
+- `visualize`: prediction, target, and residual heatmaps for every direct
+  inference NPZ.
+- `sonify`: prediction and ground-truth MIDI per NPZ plus final onset summaries.
 
 `realtime` and `full-song` are end-to-end file wrappers, not webcam or
 latency-bounded streaming services. Full-song inference simulates online frame
@@ -117,7 +118,14 @@ from airpiano.model.transformer import AirPianoTransformer
 from airpiano.model.loss import masked_bce_loss
 from airpiano.render.artifact import load_artifact
 from airpiano.render.visualize import visualize, visualize_artifact
-from airpiano.render.sonify import sonify, sonify_artifact, sonify_ground_truth
+from airpiano.render.sonify import (
+    calculate_onset_deltas,
+    plot_onset_delta_summary,
+    sonify,
+    sonify_artifact,
+    sonify_ground_truth,
+    write_onset_delta_summary,
+)
 ```
 
 ## Environment setup
@@ -979,6 +987,8 @@ outputs/baseline/
 │       ├── *.png
 │       ├── *.mid
 │       ├── *.gt.mid
+│       ├── onset_delta_summary.json
+│       ├── onset_delta_summary.png
 │       └── test_loss.json
 ├── logs/
 │   └── wandb/
@@ -1005,6 +1015,8 @@ use the same layout as their offline datasets:
     ├── *.png
     ├── *.mid
     ├── *.gt.mid
+    ├── onset_delta_summary.json
+    ├── onset_delta_summary.png
     └── full_song_loss.json
 ```
 
@@ -1453,6 +1465,8 @@ For an input named `test.npz`, all derived files are written beside it:
 outputs/baseline/inference/test/test.png
 outputs/baseline/inference/test/test.mid
 outputs/baseline/inference/test/test.gt.mid
+outputs/baseline/inference/test/onset_delta_summary.json
+outputs/baseline/inference/test/onset_delta_summary.png
 ```
 
 NPZ files are processed recursively in sorted order. Dotted basenames and
@@ -1469,8 +1483,10 @@ conda run -n v2n python run.py stage=sonify \
 ```
 
 Visualization draws probability and target heatmaps with shared `[0,1]`
-scaling. Sonification selects each valid chord's earliest maximum frame and
-emits all active pitches when that maximum is at least the threshold. Notes are
+scaling, followed by a signed `prediction - target` residual heatmap with a
+zero-centered `[-1,1]` scale. Sonification selects each valid chord's earliest
+maximum frame and emits all active pitches when that maximum is at least the
+threshold. Notes are
 one second at velocity 64 by default. It also resolves
 `<sonify.midi_root>/<record_id>.mid` and writes the source notes beginning in
 the real, unpadded slice. Ground-truth pitch, velocity, and duration are
@@ -1479,6 +1495,22 @@ Notes already active before the slice are omitted. Both outputs use one track
 at 120 BPM; pedals, programs, channels, source tempo events, and other MIDI
 metadata are not preserved. Timing is slice-relative and overlapping slices
 are not merged.
+
+Sonification also matches artifact source IDs to source-MIDI chords and keeps
+each valid chord's timing calculation in memory. Onsets use the absolute source
+clock. The signed delta is `predicted_onset_seconds - real_onset_seconds`, so a
+positive value is late. Chords below the inclusive threshold count as misses
+and do not contribute a delta. The configured chord tolerance must match the one
+used to build the artifact.
+
+After processing every artifact, sonification writes only the final onset
+metrics: `onset_delta_summary.json` and `onset_delta_summary.png` at
+`sonify.root`. They group all chunk observations by relative `chord_id`, so a
+chord-24 configuration has at most IDs 0 through 23. The JSON reports
+observation, detected, and missed counts plus the mean signed and absolute
+deltas over detected observations; an ID that is never detected has null means.
+The PNG contains aligned bar charts of mean absolute delta seconds and missing
+prediction count by relative chord ID.
 
 For realtime artifacts, point the artifact root at the parent of the per-record
 directories and the MIDI root at the runtime input directory:
@@ -1628,9 +1660,10 @@ loss intentionally remains fixed in code.
 | `full_song.alignment_threshold` | `0.2` | Inclusive running-peak confidence required by any trailing trigger chord. |
 | `full_song.advance_after_chords` | slicer stride | Number of trailing chord slots checked to trigger advancement. |
 | `visualize.root` | `${output.dir}/inference/test` | Filesystem tree recursively scanned for NPZs and receiving adjacent PNG files. |
-| `sonify.root` | `${output.dir}/inference/test` | Filesystem tree recursively scanned for NPZs and receiving adjacent predicted `.mid` and ground-truth `.gt.mid` sidecars. |
+| `sonify.root` | `${output.dir}/inference/test` | Filesystem tree recursively scanned for NPZs and receiving adjacent MIDI sidecars plus final onset-delta JSON and PNG summaries. |
 | `sonify.midi_root` | `${data.midi_root}` | Root used with the artifact `record_id` to locate source MIDI. |
 | `sonify.threshold` | `0.2` | Inclusive chord peak threshold. |
+| `sonify.chord_tolerance_seconds` | Dataset chord tolerance | Source-MIDI grouping tolerance used to recover exact onsets by global chord ID. |
 | `sonify.duration_seconds` | `1.0` | Fixed output-note duration. |
 | `sonify.velocity` | `64` | Fixed note-on velocity. |
 
