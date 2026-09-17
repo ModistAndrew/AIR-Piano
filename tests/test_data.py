@@ -596,6 +596,42 @@ class SlicingAndTargetTest(unittest.TestCase):
         self.assertNotIn("chord_mask", window)
         torch.testing.assert_close(window["hands"], song.hands[10:21])
 
+    def test_last_chord_dataset_crops_pre_onset_frames(self) -> None:
+        chords = tuple(
+            _chord(index, (_note(index, onset, onset + 0.1, 60 + index),))
+            for index, onset in enumerate((0.21, 0.55, 1.04))
+        )
+        song = _song(chords, frame_count=20, fps=10.0)
+        slicer = FutureChordSlicer(
+            mode="chord",
+            fps=10.0,
+            segment_frames=2,
+            stride_frames=1,
+            crop_before_first_chord=True,
+        )
+
+        self.assertEqual(
+            slicer.windows(song),
+            (
+                (3, 7, (0, 1)),
+                (6, 20, (1, 2)),
+            ),
+        )
+        dataset = AlignmentDataset(
+            [song],
+            slicer,
+            TargetGenerator(
+                ChordOnsetEvents(),
+                TriangularSoftener(0.2),
+                target_mode="last_chord",
+            ),
+        )
+        first, second = dataset[0], dataset[1]
+        self.assertEqual(first["frame_start"], 3)
+        self.assertEqual(second["frame_start"], 6)
+        for sample in (first, second):
+            self.assertTrue(bool((sample["target"].sum(dim=-1) == 1).all()))
+
     def test_chord_mode_adds_neighbor_onsets_only_to_hand_bounds(self) -> None:
         chords = tuple(
             _chord(index, (_note(index, onset, onset + 0.1, 60 + index),))
@@ -941,6 +977,40 @@ class SlicingAndTargetTest(unittest.TestCase):
         self.assertEqual(generator.event_generator.delay_seconds, 1.0)
         self.assertEqual(int(target[:, 0].argmax()), 20)
         self.assertEqual(target[20, 0].item(), 1.0)
+
+    def test_last_chord_target_is_zero_before_onset_then_one_hot(self) -> None:
+        chords = (
+            _chord(0, (_note(0, 0.2, 0.3, 60),)),
+            _chord(1, (_note(1, 0.5, 0.6, 64),)),
+        )
+        generator = TargetGenerator(
+            ChordOnsetEvents(),
+            TriangularSoftener(radius_seconds=0.2),
+            target_mode="last_chord",
+        )
+
+        target = generator.generate(
+            chords,
+            frame_start=0,
+            frame_count=8,
+            fps=10.0,
+        )
+
+        torch.testing.assert_close(
+            target,
+            torch.tensor(
+                [
+                    [0.0, 0.0],
+                    [0.0, 0.0],
+                    [1.0, 0.0],
+                    [1.0, 0.0],
+                    [1.0, 0.0],
+                    [0.0, 1.0],
+                    [0.0, 1.0],
+                    [0.0, 1.0],
+                ]
+            ),
+        )
 
 
 if __name__ == "__main__":

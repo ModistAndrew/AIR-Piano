@@ -1,4 +1,4 @@
-"""Chord-event extraction and continuous alignment targets."""
+"""Chord-event extraction and frame-to-chord alignment targets."""
 
 from __future__ import annotations
 
@@ -34,15 +34,19 @@ class TriangularSoftener:
 
 
 class TargetGenerator:
-    """Generate a frame-by-chord target on the global frame clock."""
+    """Generate onset or last-played targets on the global frame clock."""
 
     def __init__(
         self,
         event_generator: ChordOnsetEvents,
         softener: TriangularSoftener,
+        target_mode: str = "onset",
     ):
+        if target_mode not in {"onset", "last_chord"}:
+            raise ValueError(f"unsupported target mode: {target_mode}")
         self.event_generator = event_generator
         self.softener = softener
+        self.target_mode = target_mode
 
     def generate(
         self,
@@ -61,6 +65,20 @@ class TargetGenerator:
             )
             / float(fps)
         )
-        return self.softener.soften(
-            frame_times, self.event_generator.times(chords)
-        ).to(torch.float32)
+        event_times = self.event_generator.times(chords)
+        if self.target_mode == "onset":
+            return self.softener.soften(frame_times, event_times).to(
+                torch.float32
+            )
+
+        target = torch.zeros((frame_count, len(chords)), dtype=torch.float32)
+        if not chords:
+            return target
+        chord_indices = torch.searchsorted(
+            event_times, frame_times, right=True
+        ) - 1
+        assigned = chord_indices >= 0
+        target[
+            torch.arange(frame_count)[assigned], chord_indices[assigned]
+        ] = 1.0
+        return target

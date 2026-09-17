@@ -181,6 +181,79 @@ class FullSongControllerTest(unittest.TestCase):
             with np.load(output, allow_pickle=False) as artifact:
                 self.assertTrue(bool((artifact["probability"] > 0.0).all()))
 
+    def test_cross_entropy_keeps_pre_onset_frames_and_uses_softmax(self) -> None:
+        base = _song(3)
+        chords = tuple(
+            Chord(
+                chord.id,
+                (
+                    Note(
+                        chord.notes[0].id,
+                        onset,
+                        onset + 0.1,
+                        chord.notes[0].pitch,
+                        chord.notes[0].velocity,
+                    ),
+                ),
+                chord.duration,
+                chord.quantized_dur,
+            )
+            for chord, onset in zip(
+                base.chords, (0.15, 0.35, 0.45), strict=True
+            )
+        )
+        song = Song(
+            record_id=base.record_id,
+            notes=tuple(note for chord in chords for note in chord.notes),
+            chords=chords,
+            hands=base.hands,
+            presence=base.presence,
+            fps=base.fps,
+        )
+        slicer = FutureChordSlicer(
+            mode="chord",
+            fps=10.0,
+            segment_frames=4,
+            stride_frames=2,
+            crop_before_first_chord=True,
+        )
+        target_generator = TargetGenerator(
+            ChordOnsetEvents(),
+            TriangularSoftener(0.1),
+            target_mode="last_chord",
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "softmax.npz"
+            model = _StreamingModel()
+            loss, loss_weight, shifts = full_song_stage.infer_full_song(
+                model,
+                song,
+                slicer,
+                target_generator,
+                torch.device("cpu"),
+                output,
+                bf16=False,
+                alignment_threshold=2.0,
+                advance_after_chords=2,
+                alignment_loss="cross_entropy",
+            )
+
+            self.assertEqual(loss_weight, 4)
+            self.assertEqual(shifts, 0)
+            self.assertGreaterEqual(loss, 0.0)
+            self.assertEqual(model.calls[0][0], [0])
+            with np.load(output, allow_pickle=False) as artifact:
+                self.assertEqual(int(artifact["frame_start"]), 0)
+                self.assertEqual(artifact["probability"].shape, (6, 3))
+                np.testing.assert_allclose(
+                    artifact["probability"].sum(axis=-1), 1.0, atol=1e-6
+                )
+                np.testing.assert_array_equal(
+                    artifact["target"].sum(axis=-1),
+                    [0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+                )
+
     def test_rejects_frame_mode_and_noncausal_checkpoint(self) -> None:
         song = _song(3)
         with tempfile.TemporaryDirectory() as directory:

@@ -9,7 +9,12 @@ import unittest
 import torch
 import torch.nn.functional as F
 
-from airpiano.model.loss import masked_bce_loss
+from airpiano.model.loss import (
+    alignment_probability_loss,
+    alignment_probabilities,
+    masked_bce_loss,
+    masked_cross_entropy_loss,
+)
 from airpiano.model.transformer import AirPianoTransformer
 
 
@@ -232,6 +237,98 @@ class MaskedBceLossTest(unittest.TestCase):
                 torch.zeros(1, 2, dtype=torch.bool),
                 torch.ones(1, 3, dtype=torch.bool),
             )
+
+
+class MaskedCrossEntropyLossTest(unittest.TestCase):
+    def test_masks_padded_frames_and_chords(self) -> None:
+        logits = torch.tensor(
+            [[[2.0, -1.0, 8.0], [0.5, 3.0, -8.0]]],
+            requires_grad=True,
+        )
+        target = torch.tensor(
+            [[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]]
+        )
+        frame_mask = torch.tensor([[True, False]])
+        chord_mask = torch.tensor([[True, True, False]])
+
+        actual = masked_cross_entropy_loss(
+            logits, target, frame_mask, chord_mask
+        )
+        expected = F.cross_entropy(
+            logits[0, :1, :2], torch.tensor([0])
+        )
+        torch.testing.assert_close(actual, expected)
+
+        actual.backward()
+        self.assertGreater(float(logits.grad[0, 0, :2].abs().sum()), 0.0)
+        self.assertEqual(float(logits.grad[0, 0, 2]), 0.0)
+        self.assertEqual(float(logits.grad[0, 1].abs().sum()), 0.0)
+
+    def test_softmax_normalizes_only_real_chords(self) -> None:
+        logits = torch.tensor(
+            [[[2.0, -1.0, 8.0], [0.5, 3.0, -8.0]]]
+        )
+        chord_mask = torch.tensor([[True, True, False]])
+
+        probability = alignment_probabilities(
+            logits, chord_mask, "cross_entropy"
+        )
+
+        torch.testing.assert_close(
+            probability[..., :2].sum(dim=-1), torch.ones(1, 2)
+        )
+        self.assertEqual(torch.count_nonzero(probability[..., 2]).item(), 0)
+
+    def test_ignores_real_frames_without_a_target(self) -> None:
+        logits = torch.tensor(
+            [[[2.0, -1.0], [0.5, 3.0]]], requires_grad=True
+        )
+        target = torch.tensor([[[1.0, 0.0], [0.0, 0.0]]])
+        frame_mask = torch.ones(1, 2, dtype=torch.bool)
+        chord_mask = torch.ones(1, 2, dtype=torch.bool)
+
+        actual = masked_cross_entropy_loss(
+            logits, target, frame_mask, chord_mask
+        )
+        expected = F.cross_entropy(logits[0, :1], torch.tensor([0]))
+        torch.testing.assert_close(actual, expected)
+
+        actual.backward()
+        self.assertEqual(float(logits.grad[0, 1].abs().sum()), 0.0)
+
+    def test_rejects_a_batch_without_target_frames(self) -> None:
+        with self.assertRaisesRegex(ValueError, "at least one target frame"):
+            masked_cross_entropy_loss(
+                torch.zeros(1, 2, 3),
+                torch.zeros(1, 2, 3),
+                torch.ones(1, 2, dtype=torch.bool),
+                torch.ones(1, 3, dtype=torch.bool),
+            )
+
+    def test_probability_loss_supports_bce_and_cross_entropy(self) -> None:
+        probability = torch.tensor(
+            [[0.8, 0.2], [0.4, 0.6], [0.5, 0.5]]
+        )
+        target = torch.tensor(
+            [[1.0, 0.0], [0.0, 1.0], [0.0, 0.0]]
+        )
+
+        bce, bce_weight = alignment_probability_loss(
+            probability, target, "bce"
+        )
+        cross_entropy, cross_entropy_weight = alignment_probability_loss(
+            probability, target, "cross_entropy"
+        )
+
+        torch.testing.assert_close(
+            bce, F.binary_cross_entropy(probability, target)
+        )
+        self.assertEqual(bce_weight, 6)
+        torch.testing.assert_close(
+            cross_entropy,
+            -torch.log(torch.tensor([0.8, 0.6])).mean(),
+        )
+        self.assertEqual(cross_entropy_weight, 2)
 
 
 if __name__ == "__main__":

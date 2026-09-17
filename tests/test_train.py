@@ -40,6 +40,13 @@ class _TinyDataset(Dataset):
         }
 
 
+class _CategoricalTinyDataset(_TinyDataset):
+    def __getitem__(self, index: int):
+        sample = super().__getitem__(index)
+        sample["target"] = torch.tensor([[1.0, 0.0], [0.0, 1.0]])
+        return sample
+
+
 class _TinyModel(nn.Module):
     def __init__(
         self,
@@ -497,6 +504,30 @@ class TrainTest(unittest.TestCase):
                 expected_scales[name],
             )
 
+    def test_extended_last_chord_softmax_config(self) -> None:
+        config_directory = Path(__file__).parents[1] / "configs"
+        name = "wrist_xyz10_causal_chord24_extended_last_chord_softmax"
+        with initialize_config_dir(
+            version_base=None, config_dir=str(config_directory.resolve())
+        ):
+            config = compose(config_name=name)
+
+        components = data.build_data_components(config)
+        self.assertEqual(str(config.output.dir), f"outputs/{name}")
+        self.assertEqual(str(config.wandb.name), name)
+        self.assertEqual(str(config.alignment_loss), "cross_entropy")
+        self.assertEqual(
+            components["target_generator"].target_mode, "last_chord"
+        )
+        self.assertTrue(components["slicer"].crop_before_first_chord)
+        self.assertTrue(bool(config.model.causal_frame_attention))
+        self.assertEqual(components["slicer"].mode, "chord")
+        self.assertEqual(components["slicer"].segment_frames, 24)
+        self.assertEqual(components["slicer"].stride_frames, 12)
+        self.assertEqual(
+            str(config.data.root), "/storage2/jinxuan/data/AirPianoFull"
+        )
+
     def test_wrist_chord_zero_hand_and_delayed_target_configs(self) -> None:
         config_directory = Path(__file__).parents[1] / "configs"
         names = (
@@ -814,6 +845,25 @@ class TrainTest(unittest.TestCase):
                 checkpoint["config"]["model"]["zero_hand_input"]
             )
             self.assertFalse((output / "inference" / "test").exists())
+
+    def test_evaluate_supports_cross_entropy(self) -> None:
+        loader = data.make_loader(
+            _CategoricalTinyDataset(),
+            batch_size=2,
+            shuffle=False,
+            seed=1,
+            device=torch.device("cpu"),
+        )
+
+        loss = train.evaluate(
+            _TinyModel(),
+            loader,
+            torch.device("cpu"),
+            bf16=False,
+            alignment_loss="cross_entropy",
+        )
+
+        self.assertAlmostEqual(loss, float(torch.log(torch.tensor(2.0))))
 
 
 if __name__ == "__main__":

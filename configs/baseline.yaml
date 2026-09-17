@@ -4,6 +4,7 @@ defaults:
 stage: [train,test,visualize,sonify]
 device: cuda:1
 seed: 42
+alignment_loss: bce
 
 output:
   root: outputs
@@ -92,6 +93,7 @@ dataset:
     chord_count: 128
     end_padding_seconds: 0.0
     hand_context_chords: 0
+    crop_before_first_chord: false
   target_generator:
     _target_: airpiano.data.targets.TargetGenerator
     event_generator:
@@ -100,6 +102,7 @@ dataset:
     softener:
       _target_: airpiano.data.targets.TriangularSoftener
       radius_seconds: 0.2
+    target_mode: onset
 
 model:
   _target_: airpiano.model.transformer.AirPianoTransformer

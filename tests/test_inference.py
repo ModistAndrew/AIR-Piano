@@ -42,6 +42,13 @@ class _TinyDataset(Dataset):
         }
 
 
+class _TinyCategoricalDataset(_TinyDataset):
+    def __getitem__(self, index: int):
+        sample = super().__getitem__(index)
+        sample["target"] = torch.tensor([[1.0, 0.0], [0.0, 1.0]])
+        return sample
+
+
 class _TinyModel(nn.Module):
     def __init__(
         self,
@@ -184,6 +191,35 @@ class TestInferenceTest(unittest.TestCase):
                 self.assertEqual(artifact["probability"].shape, (2, 2))
                 self.assertEqual(artifact["chord_pitches"].shape, (2, 128))
                 self.assertEqual(artifact["chord_pitches"].dtype, np.bool_)
+
+    def test_cross_entropy_inference_writes_softmax_probabilities(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            loader = data.make_loader(
+                _TinyCategoricalDataset(),
+                batch_size=2,
+                shuffle=False,
+                seed=1,
+                device=torch.device("cpu"),
+            )
+
+            loss = inference_stage.dump_inference(
+                _TinyModel(),
+                loader,
+                torch.device("cpu"),
+                output,
+                bf16=False,
+                alignment_loss="cross_entropy",
+            )
+
+            self.assertAlmostEqual(loss, float(np.log(2.0)), places=6)
+            artifacts = sorted(output.glob("*.npz"))
+            self.assertEqual(len(artifacts), 2)
+            with np.load(artifacts[0], allow_pickle=False) as artifact:
+                np.testing.assert_allclose(
+                    artifact["probability"].sum(axis=-1), 1.0
+                )
+                np.testing.assert_allclose(artifact["probability"], 0.5)
 
 
 if __name__ == "__main__":

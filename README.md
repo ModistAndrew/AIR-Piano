@@ -43,12 +43,12 @@ The supported stages are:
 latency-bounded streaming services. Full-song inference simulates online frame
 visibility after preprocessing the complete recording.
 
-Deliberate non-goals include pluggable model architectures, alternate losses,
-note-level tokens, distributed training, checkpoint resume, video downloading, and
+Deliberate non-goals include pluggable model architectures, note-level tokens,
+distributed training, checkpoint resume, video downloading, and
 compatibility with V2N checkpoints. The model exposes causal frame-attention,
 chord-duration, and zero-hand-input switches and is constructed through a Hydra
 `_target_`.
-The loss remains fixed in code.
+The alignment loss is selected by `alignment_loss`; BCE remains the default.
 
 ## Repository map
 
@@ -63,6 +63,7 @@ The loss remains fixed in code.
 | `configs/causal_chord24_extended.yaml` | Causal 24-chord ablation using the extended combined training split. |
 | `configs/causal_chord24_extended_chord_duration_mean_normalized.yaml` | Duration-conditioned causal 24-chord extended-data ablation with deterministic song-mean duration normalization. |
 | `configs/wrist_xyz10_causal_chord24_extended.yaml` | Wrist-relative causal 24-chord ablation using the extended combined training split. |
+| `configs/wrist_xyz10_causal_chord24_extended_last_chord_softmax.yaml` | Extended wrist-relative causal ablation with persistent last-chord targets and categorical softmax. |
 | `configs/wrist_xyz10_causal_chord24_extended_wrist_delta.yaml` | Extended wrist-relative causal ablation with camera-space wrist deltas in joint zero. |
 | `configs/wrist_xyz10.yaml` | Wrist-relative local-XYZ ×10 ablation inheriting the baseline. |
 | `configs/chord_duration.yaml` | Duration-conditioned chord-token ablation inheriting the baseline. |
@@ -950,7 +951,7 @@ The collator pads both axes to the batch maxima, creates `frame_mask` and
 `chord_mask`, uses `-1` for padded chord IDs, and leaves padded target cells
 zero. Missing hands do not remove frames, targets, or loss positions.
 
-### Fixed model and criterion
+### Fixed model and alignment objectives
 
 `AirPianoTransformer` takes:
 
@@ -986,9 +987,14 @@ a duration-conditioned model.
 frame_mask[:, :, None] & chord_mask[:, None, :]
 ```
 
-It rejects a batch with no valid cell. Model architecture and criterion are
-fixed in code. Existing AirPiano checkpoints remain compatible after the module
-split; V2N checkpoints do not.
+It rejects a batch with no valid cell. When
+`alignment_loss=cross_entropy`, the loss instead selects the one-hot target's
+class index for every real frame with an active target, masks padded chord
+logits, and averages categorical cross-entropy over those frames. Zero-target
+frames remain model inputs without contributing to the loss. Inference uses
+sigmoid for BCE and softmax over real chord slots for cross-entropy. Existing
+AirPiano checkpoints remain compatible after the module split; V2N checkpoints
+do not.
 
 ### Fixed local output trees
 
@@ -1102,7 +1108,7 @@ Each slice NPZ contains:
 | `record_id` | Unicode scalar root-relative stem. |
 | `frame_start` | `int64` scalar. |
 | `fps` | `float64` scalar. |
-| `loss` | `float64` scalar per-item BCE. |
+| `loss` | `float64` scalar per-item configured alignment loss. |
 
 `T` and `C` are the padded maxima of the item's inference batch; the masks
 identify the real slice extents. With a one-item batch they are the real frame
@@ -1291,6 +1297,36 @@ hand cache and writes all outputs under `outputs/causal_chord24/`:
 conda run -n v2n python run.py --config-name causal_chord24 stage=train
 conda run -n v2n python run.py --config-name causal_chord24 stage=test
 ```
+
+### Last-played-chord softmax ablation
+
+`wrist_xyz10_causal_chord24_extended_last_chord_softmax` inherits the extended
+wrist-relative causal 24-chord preset. It replaces the triangular onset target
+with one hard target per target-bearing frame: a chord becomes active at its
+initializer onset, remains active until the next chord onset, and the final
+chord remains active through the slice end. Direct target generation returns
+zero before the first supplied onset. Windowed datasets crop each slice to the
+first sampled frame at or after its first selected chord onset, ensuring every
+windowed target row contains exactly one class. Full-song inference retains its
+original complete frame history and does not apply the dataset crop.
+
+The model architecture is unchanged. Training uses categorical cross-entropy
+over the 24 chord slots, test and realtime artifacts contain softmax
+probabilities, and full-song inference retains the original complete frame
+history and moving-window controller rather than applying the dataset crop:
+
+```bash
+conda run -n v2n python run.py \
+  --config-name wrist_xyz10_causal_chord24_extended_last_chord_softmax \
+  stage=train
+conda run -n v2n python run.py \
+  --config-name wrist_xyz10_causal_chord24_extended_last_chord_softmax \
+  stage=test
+```
+
+Outputs are written under
+`outputs/wrist_xyz10_causal_chord24_extended_last_chord_softmax/`. Existing
+visualization and sonification behavior is unchanged.
 
 ### Random hand-window shift ablation
 

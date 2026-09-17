@@ -26,6 +26,7 @@ class FutureChordSlicer:
         mode: str = "frame",
         end_padding_seconds: float = 0.0,
         hand_context_chords: int = 0,
+        crop_before_first_chord: bool = False,
     ):
         if mode not in {"frame", "chord"}:
             raise ValueError(f"unsupported slicing mode: {mode}")
@@ -36,6 +37,7 @@ class FutureChordSlicer:
         self.chord_count = int(chord_count)
         self.end_padding_seconds = float(end_padding_seconds)
         self.hand_context_chords = int(hand_context_chords)
+        self.crop_before_first_chord = bool(crop_before_first_chord)
 
     def starts(self, item_count: int) -> tuple[int, ...]:
         """Return regular starts plus the exact right-aligned final start."""
@@ -98,13 +100,18 @@ class FutureChordSlicer:
             len(song.chords) - 1,
             last_position + self.hand_context_chords,
         )
-        frame_start = (
-            0
-            if first_position == 0
-            else math.floor(
-                song.chords[context_start_position].onset * self.fps
+        if self.crop_before_first_chord:
+            frame_start = math.ceil(
+                song.chords[first_position].onset * self.fps
             )
-        )
+        else:
+            frame_start = (
+                0
+                if first_position == 0
+                else math.floor(
+                    song.chords[context_start_position].onset * self.fps
+                )
+            )
         frame_stop = (
             frame_count
             if last_position == len(song.chords) - 1

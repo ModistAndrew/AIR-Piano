@@ -7,12 +7,16 @@ from typing import Any
 
 import numpy as np
 import torch
-import torch.nn.functional as F
 from hydra.utils import instantiate
 from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import DataLoader
 
 from . import data
+from .model.loss import (
+    alignment_loss_count,
+    alignment_probabilities,
+    masked_alignment_loss,
+)
 from .model.transformer import AirPianoTransformer
 from .train import _autocast, _forward, _tensor_to_device
 from .utils import (
@@ -71,8 +75,9 @@ def dump_inference(
     output_dir: Path,
     *,
     bf16: bool,
+    alignment_loss: str = "bce",
 ) -> float:
-    """Write one self-contained NPZ per slice and return aggregate BCE."""
+    """Write one NPZ per slice and return the aggregate configured loss."""
 
     model.eval()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -84,22 +89,29 @@ def dump_inference(
         chord_mask_device = _tensor_to_device(batch["chord_mask"], device)
         with _autocast(device, bf16):
             logits = _forward(model, batch, device)
-        probabilities = torch.sigmoid(logits.float())
+        probabilities = alignment_probabilities(
+            logits, chord_mask_device, alignment_loss
+        )
 
         for index in range(logits.shape[0]):
-            valid = (
-                frame_mask_device[index, :, None]
-                & chord_mask_device[index, None, :]
+            item_frame_mask = frame_mask_device[index : index + 1]
+            item_chord_mask = chord_mask_device[index : index + 1]
+            count = alignment_loss_count(
+                target_device[index : index + 1],
+                item_frame_mask,
+                item_chord_mask,
+                alignment_loss,
             )
-            count = int(valid.sum())
             if count:
-                element_loss = F.binary_cross_entropy_with_logits(
-                    logits[index].float(),
-                    target_device[index].float(),
-                    reduction="none",
+                item_loss_tensor = masked_alignment_loss(
+                    logits[index : index + 1],
+                    target_device[index : index + 1],
+                    item_frame_mask,
+                    item_chord_mask,
+                    alignment_loss,
                 )
-                item_loss = float(element_loss[valid].mean())
-                total_loss += float(element_loss[valid].sum())
+                item_loss = float(item_loss_tensor)
+                total_loss += item_loss * count
                 total_valid += count
             else:
                 item_loss = float("nan")
@@ -167,6 +179,7 @@ def infer_dataset(
         device,
         resolve_path(output_dir),
         bf16=bool(cfg.train.bf16),
+        alignment_loss=str(cfg.get("alignment_loss", "bce")),
     )
 
 

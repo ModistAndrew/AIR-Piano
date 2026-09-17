@@ -5,11 +5,11 @@ from __future__ import annotations
 from pathlib import Path
 
 import torch
-import torch.nn.functional as F
 from omegaconf import DictConfig
 
 from . import data
 from .inference import load_model_checkpoint, write_inference_artifact
+from .model.loss import alignment_probabilities, alignment_probability_loss
 from .model.transformer import AirPianoTransformer
 from .realtime import iter_realtime_songs
 from .train import _autocast, _forward
@@ -28,8 +28,9 @@ def infer_full_song(
     bf16: bool,
     alignment_threshold: float,
     advance_after_chords: int,
+    alignment_loss: str = "bce",
 ) -> tuple[float, int, int]:
-    """Infer one song online and return loss, cell count, and shift count."""
+    """Infer one song online and return loss, loss weight, and shift count."""
 
     model.eval()
 
@@ -67,7 +68,11 @@ def infer_full_song(
         }
         with _autocast(device, bf16):
             logits = _forward(model, batch, device)
-        history_probability = torch.sigmoid(logits[0].float()).cpu()
+        history_probability = alignment_probabilities(
+            logits,
+            batch["chord_mask"].to(device),
+            alignment_loss,
+        )[0].cpu()
         probability[frame_index, chord_start:chord_stop] = history_probability[-1]
 
         if chord_start >= final_chord_start:
@@ -88,12 +93,10 @@ def infer_full_song(
         frame_count=frame_count,
         fps=slicer.fps,
     )
-    cell_count = probability.numel()
-    loss = (
-        float(F.binary_cross_entropy(probability, target))
-        if cell_count
-        else float("nan")
+    loss_tensor, loss_weight = alignment_probability_loss(
+        probability, target, alignment_loss
     )
+    loss = float(loss_tensor)
     write_inference_artifact(
         output_path,
         probability=probability.numpy(),
@@ -107,7 +110,7 @@ def infer_full_song(
         fps=song.fps,
         loss=loss,
     )
-    return loss, cell_count, shift_count
+    return loss, loss_weight, shift_count
 
 
 def full_song(cfg: DictConfig) -> None:
@@ -122,8 +125,9 @@ def full_song(cfg: DictConfig) -> None:
     target_generator = components["target_generator"]
     model = load_model_checkpoint(checkpoint, device)
     advance_after_chords = int(cfg.full_song.advance_after_chords)
+    alignment_loss = str(cfg.get("alignment_loss", "bce"))
     total_loss = 0.0
-    total_cells = 0
+    total_weight = 0
     for index, record_count, song, _ in iter_realtime_songs(
         cfg,
         root,
@@ -136,7 +140,7 @@ def full_song(cfg: DictConfig) -> None:
             f"({len(song.hands)} frames, {len(song.chords)} chords)",
             flush=True,
         )
-        loss, cell_count, shift_count = infer_full_song(
+        loss, loss_weight, shift_count = infer_full_song(
             model,
             song,
             slicer,
@@ -146,18 +150,19 @@ def full_song(cfg: DictConfig) -> None:
             bf16=bool(cfg.train.bf16),
             alignment_threshold=float(cfg.full_song.alignment_threshold),
             advance_after_chords=advance_after_chords,
+            alignment_loss=alignment_loss,
         )
-        if cell_count:
-            total_loss += loss * cell_count
-            total_cells += cell_count
+        if loss_weight:
+            total_loss += loss * loss_weight
+            total_weight += loss_weight
         print(
             f"full-song {index}/{record_count}: {song.record_id} "
             f"loss={loss:.8f} shifts={shift_count}",
             flush=True,
         )
 
-    if total_cells:
-        aggregate_loss = total_loss / total_cells
+    if total_weight:
+        aggregate_loss = total_loss / total_weight
         write_json(
             output_dir / "full_song_loss.json",
             {"full_song_loss": aggregate_loss},

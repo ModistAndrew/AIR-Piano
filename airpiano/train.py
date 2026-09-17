@@ -14,7 +14,7 @@ from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import DataLoader
 
 from . import data
-from .model.loss import masked_bce_loss
+from .model.loss import alignment_loss_count, masked_alignment_loss
 from .model.transformer import AirPianoTransformer
 from .utils import resolve_path
 
@@ -58,8 +58,9 @@ def evaluate(
     device: torch.device,
     *,
     bf16: bool,
+    alignment_loss: str = "bce",
 ) -> float:
-    """Return BCE weighted by the number of valid frame/chord cells."""
+    """Return the configured loss weighted by its valid target units."""
 
     model.eval()
     loss_sum = 0.0
@@ -68,12 +69,18 @@ def evaluate(
         target = _tensor_to_device(batch["target"], device)
         frame_mask = _tensor_to_device(batch["frame_mask"], device)
         chord_mask = _tensor_to_device(batch["chord_mask"], device)
-        valid_count = int(
-            (frame_mask.unsqueeze(-1) & chord_mask.unsqueeze(1)).sum()
+        valid_count = alignment_loss_count(
+            target, frame_mask, chord_mask, alignment_loss
         )
         with _autocast(device, bf16):
             logits = _forward(model, batch, device)
-            loss = masked_bce_loss(logits, target, frame_mask, chord_mask)
+            loss = masked_alignment_loss(
+                logits,
+                target,
+                frame_mask,
+                chord_mask,
+                alignment_loss,
+            )
         loss_sum += float(loss) * valid_count
         valid_sum += valid_count
     return loss_sum / valid_sum
@@ -138,6 +145,7 @@ def train(cfg: DictConfig) -> None:
     best_loss = float("inf")
     global_step = 0
     bf16 = bool(cfg.train.bf16)
+    alignment_loss = str(cfg.get("alignment_loss", "bce"))
     try:
         for epoch in range(epochs):
             model.train()
@@ -158,7 +166,13 @@ def train(cfg: DictConfig) -> None:
                 )
                 with _autocast(device, bf16):
                     logits = _forward(model, batch, device)
-                    loss = masked_bce_loss(logits, target, frame_mask, chord_mask)
+                    loss = masked_alignment_loss(
+                        logits,
+                        target,
+                        frame_mask,
+                        chord_mask,
+                        alignment_loss,
+                    )
                 (loss / group_size).backward()
                 accumulated_loss += float(loss.detach())
                 accumulated_batches += 1
@@ -178,7 +192,13 @@ def train(cfg: DictConfig) -> None:
                     accumulated_loss = 0.0
                     accumulated_batches = 0
 
-            valid_loss = evaluate(model, valid_loader, device, bf16=bf16)
+            valid_loss = evaluate(
+                model,
+                valid_loader,
+                device,
+                bf16=bf16,
+                alignment_loss=alignment_loss,
+            )
             run.log({"valid/loss": valid_loss})
             print(
                 f"epoch {epoch + 1}/{epochs}: valid_loss={valid_loss:.8f}",
