@@ -21,7 +21,7 @@ DURATION_CLIP_SECONDS = 16.0
 
 
 def quantize_duration_seconds(duration_seconds: torch.Tensor) -> torch.Tensor:
-    """Return MIDI2ScoreTransformer duration one-hots for absolute seconds."""
+    """Return MIDI2ScoreTransformer one-hots for duration-like values."""
 
     denominator = math.log(
         DURATION_COEFFICIENT * DURATION_CLIP_SECONDS + 1.0
@@ -80,12 +80,13 @@ class MidoNoteReader:
 
 
 class InitializerChordMerger:
-    """Group notes and optionally scale duration encodings once per song."""
+    """Group notes and optionally transform duration encodings per song."""
 
     def __init__(
         self,
         tolerance_seconds: float = 0.05,
         duration_scale_range: Sequence[float] | None = None,
+        duration_normalization: str = "none",
     ):
         self.tolerance_seconds = float(tolerance_seconds)
         if duration_scale_range is None:
@@ -93,6 +94,19 @@ class InitializerChordMerger:
         else:
             minimum, maximum = duration_scale_range
             self.duration_scale_range = (float(minimum), float(maximum))
+        if duration_normalization not in {"none", "song_mean"}:
+            raise ValueError(
+                "duration_normalization must be 'none' or 'song_mean'"
+            )
+        if (
+            duration_normalization == "song_mean"
+            and self.duration_scale_range is not None
+        ):
+            raise ValueError(
+                "duration_scale_range cannot be combined with song_mean "
+                "duration normalization"
+            )
+        self.duration_normalization = duration_normalization
 
     def merge(self, notes: tuple[Note, ...]) -> tuple[Chord, ...]:
         groups: list[tuple[Note, ...]] = []
@@ -113,18 +127,27 @@ class InitializerChordMerger:
             groups.append(notes[start:stop])
             start = stop
 
-        duration_scale = (
-            1.0
-            if self.duration_scale_range is None
-            else random.uniform(*self.duration_scale_range)
-        )
-        chords = []
+        if not groups:
+            return ()
+
+        durations = []
         for index, group in enumerate(groups):
             onset = group[0].onset
             if index + 1 < len(groups):
                 duration = groups[index + 1][0].onset - onset
             else:
                 duration = max(note.offset for note in group) - onset
+            durations.append(duration)
+
+        if self.duration_normalization == "song_mean":
+            duration_scale = len(durations) / sum(durations)
+        elif self.duration_scale_range is not None:
+            duration_scale = random.uniform(*self.duration_scale_range)
+        else:
+            duration_scale = 1.0
+
+        chords = []
+        for index, (group, duration) in enumerate(zip(groups, durations)):
             quantized_dur = quantize_duration_seconds(
                 torch.tensor(duration * duration_scale, dtype=torch.float64)
             )

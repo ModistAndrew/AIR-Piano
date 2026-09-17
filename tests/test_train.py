@@ -602,6 +602,53 @@ class TrainTest(unittest.TestCase):
             (10.0, 10.0, 10.0),
         )
 
+    def test_mean_normalized_duration_config_uses_extended_baseline_data(
+        self,
+    ) -> None:
+        config_directory = Path(__file__).parents[1] / "configs"
+        name = "causal_chord24_extended_chord_duration_mean_normalized"
+        with initialize_config_dir(
+            version_base=None, config_dir=str(config_directory.resolve())
+        ):
+            config = compose(config_name=name)
+
+        components = data.build_data_components(config)
+        merger = components["midi_loader"].chord_merger
+        slicer = components["slicer"]
+        root = "/storage2/jinxuan/data/AirPianoFull"
+        self.assertEqual(str(config.output.dir), f"outputs/{name}")
+        self.assertEqual(str(config.wandb.name), name)
+        self.assertEqual(str(config.data.root), root)
+        self.assertEqual(str(config.data.processed_root), root)
+        self.assertEqual(str(config.data.midi_root), f"{root}/midi")
+        self.assertEqual(
+            str(config.data.hand_root),
+            f"{root}/airpiano_wilor_2p5d_30fps",
+        )
+        self.assertEqual(
+            {key: str(value) for key, value in config.data.splits.items()},
+            {
+                "train": "assets/splits/extended/train.txt",
+                "valid": "assets/splits/extended/valid.txt",
+                "test": "assets/splits/extended/test.txt",
+            },
+        )
+        self.assertTrue(bool(config.model.include_chord_duration))
+        self.assertTrue(bool(config.model.causal_frame_attention))
+        self.assertEqual(slicer.mode, "chord")
+        self.assertEqual(slicer.segment_frames, 24)
+        self.assertEqual(slicer.stride_frames, 12)
+        self.assertEqual(
+            components["hand_loader"].transform.offset,
+            (0.5, 0.5, 0.0),
+        )
+        self.assertEqual(
+            components["hand_loader"].transform.scale,
+            (1.0, 1.0, 10.0),
+        )
+        self.assertEqual(merger.duration_normalization, "song_mean")
+        self.assertIsNone(merger.duration_scale_range)
+
     @staticmethod
     def _config(output: Path):
         return OmegaConf.create(

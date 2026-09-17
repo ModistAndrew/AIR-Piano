@@ -61,6 +61,7 @@ The loss remains fixed in code.
 | `configs/pianovam.yaml` | PianoVAM-only 30 Hz configuration inheriting the baseline. |
 | `configs/full.yaml` | Combined PianoMotion/PianoVAM training and evaluation configuration. |
 | `configs/causal_chord24_extended.yaml` | Causal 24-chord ablation using the extended combined training split. |
+| `configs/causal_chord24_extended_chord_duration_mean_normalized.yaml` | Duration-conditioned causal 24-chord extended-data ablation with deterministic song-mean duration normalization. |
 | `configs/wrist_xyz10_causal_chord24_extended.yaml` | Wrist-relative causal 24-chord ablation using the extended combined training split. |
 | `configs/wrist_xyz10.yaml` | Wrist-relative local-XYZ ×10 ablation inheriting the baseline. |
 | `configs/chord_duration.yaml` | Duration-conditioned chord-token ablation inheriting the baseline. |
@@ -861,8 +862,9 @@ within 0.05 seconds of the initializer note; grouping is inclusive and
 initializer-anchored rather than transitive. Every resulting `Chord` stores its
 absolute duration and a precomputed `float32[200]` duration one-hot. The raw
 duration is time to the next chord onset, or time to the latest member release
-for the final chord. Configurations may apply one shared random multiplier to
-all durations in a song before quantization without changing the raw values.
+for the final chord. Configurations may apply one shared random multiplier or
+deterministic song-mean normalization to all durations before quantization
+without changing these raw values.
 
 `OffsetScaleTransform` applies configured per-axis `(pose - offset) * scale` to
 present slots while preserving exact zero absent slots. The baseline uses
@@ -897,18 +899,33 @@ multi-hot entry.
 
 During MIDI loading, every chord's duration is quantized using
 MIDI2ScoreTransformer's performance-MIDI mapping. By default the input is its
-absolute duration; when `duration_scale_range` is configured, one scale is
-sampled uniformly per song and applied to every duration before this mapping:
+absolute duration. When `duration_scale_range` is configured, one scale is
+sampled uniformly per song and applied to every duration. Alternatively,
+`duration_normalization: song_mean` deterministically replaces each raw chord
+duration `d_i` with its value in mean-chord-duration units:
+
+```text
+normalized_duration_i = d_i * chord_count / sum(raw_chord_durations)
+                      = d_i / mean(raw_chord_durations)
+```
+
+The final chord's sustain duration participates in both the sum and chord
+count. Consequently, the normalized durations have mean `1.0` before
+quantization and remain unchanged by uniformly scaling the timing of the whole
+song. Raw `Chord.duration` values remain in seconds. The selected duration is
+then mapped to a bin using:
 
 ```text
 bin = clamp(floor(200 * log(4 * duration_seconds + 1) / log(65)), 0, 199)
 ```
 
 The resulting one-hot is stored as `Chord.quantized_dur`; slicing only appends
-it to the 128 pitch bits. The optional common scale preserves within-song
-duration ratios while varying their absolute bins. Quantization happens before
-window selection, so the last chord in a slice does not incorrectly receive
-the final-chord rule.
+it to the 128 pitch bits. Both transformations preserve within-song duration
+ratios, while song-mean normalization removes global tempo scale
+deterministically. Values outside the mapping's representable range retain the
+existing clipping behavior. Quantization happens before window selection, so
+the normalization covers the full song and the last chord in a slice does not
+incorrectly receive the final-chord rule.
 
 With `mode=chord`, `segment_frames` and `stride_frames` instead count chord
 tokens and `chord_count` is ignored. Token windows retain the exact
@@ -1323,6 +1340,19 @@ conda run -n v2n python run.py \
   --config-name wrist_xyz10_causal_chord24_chord_duration_relative stage=test
 ```
 
+The extended-data variant below instead uses deterministic song-mean
+normalization. It inherits the standard hand coordinates, causal frame
+attention, and 24-chord windows with stride 12 from `causal_chord24_extended`,
+and writes to
+`outputs/causal_chord24_extended_chord_duration_mean_normalized/`:
+
+```bash
+conda run -n v2n python run.py \
+  --config-name causal_chord24_extended_chord_duration_mean_normalized stage=train
+conda run -n v2n python run.py \
+  --config-name causal_chord24_extended_chord_duration_mean_normalized stage=test
+```
+
 ### Train and validate
 
 ```bash
@@ -1617,6 +1647,7 @@ the process into an output directory.
 | `file_loader` / `RelativeStemPairer` | Pair `<stem>.mid` and `<stem>.npz`, report the intersection, then read full songs. |
 | `MidoNoteReader` | Tempo-aware physical note parsing. |
 | `InitializerChordMerger.tolerance_seconds` | Initializer-relative grouping at `0.05`, with absolute chord durations assigned after grouping. |
+| `InitializerChordMerger.duration_scale_range` / `duration_normalization` | Baseline `null` / `none`; optionally apply one random song scale or deterministic `song_mean` normalization before duration quantization. |
 | `CanonicalNpzReader` | Direct trusted canonical array loading. |
 | `OffsetScaleTransform` | Apply configured per-axis offset and scale, then restore absent slots to zero. |
 | `FutureChordSlicer` | Frame mode: 30 Hz, 210 frames, stride 105, fixed 128 future-extending candidates. Chord mode can add end padding or neighboring-onset hand context without changing chord tokens. Every chord token contains pitch and duration features. |
@@ -1684,7 +1715,7 @@ The narrow replaceable interfaces are:
 | `RelativeStemPairer` | `pair(split_file, midi_root, hand_root) -> list[FilePair]`. |
 | `EagerSongReader` | `read(pair, midi_loader, hand_loader) -> Song`; the loader exposes it as `.reader` for realtime. |
 | `MidoNoteReader` | `read(path) -> tuple[Note,...]`. |
-| `InitializerChordMerger` | `merge(notes) -> tuple[Chord,...]`; every chord includes its absolute `duration` and optionally song-scaled `float32[200]` `quantized_dur`. |
+| `InitializerChordMerger` | `merge(notes) -> tuple[Chord,...]`; every chord includes its absolute-seconds `duration` and a `float32[200]` `quantized_dur` that may encode absolute, randomly song-scaled, or song-mean-normalized duration. |
 | `CanonicalNpzReader` | `read(path) -> HandSequence`. |
 | `WiLoRCoordinateConverter` | `(raw_arrays, detection_index) -> float32[21,3]` canonical hand. |
 | Hand transform | `(pose, presence) -> pose` with unchanged shape and absent slots zero. |

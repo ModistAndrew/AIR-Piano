@@ -304,6 +304,98 @@ class MidiTest(unittest.TestCase):
             quantize_duration_seconds(torch.tensor([1.5, 3.0, 0.75])),
         )
 
+    def test_chord_merger_normalizes_durations_by_song_mean(self) -> None:
+        notes = (
+            _note(0, 0.0, 0.4, 60),
+            _note(1, 1.0, 1.2, 64),
+            _note(2, 3.0, 3.5, 67),
+        )
+        merger = InitializerChordMerger(duration_normalization="song_mean")
+
+        with patch(
+            "airpiano.data.midi.quantize_duration_seconds",
+            wraps=quantize_duration_seconds,
+        ) as quantize:
+            chords = merger.merge(notes)
+
+        normalized_durations = torch.stack(
+            [call.args[0] for call in quantize.call_args_list]
+        )
+        self.assertAlmostEqual(normalized_durations.mean().item(), 1.0)
+        torch.testing.assert_close(
+            normalized_durations,
+            torch.tensor(
+                [6.0 / 7.0, 12.0 / 7.0, 3.0 / 7.0], dtype=torch.float64
+            ),
+        )
+        torch.testing.assert_close(
+            torch.tensor([chord.duration for chord in chords]),
+            torch.tensor([1.0, 2.0, 0.5]),
+        )
+
+    def test_song_mean_duration_encoding_is_invariant_to_uniform_tempo(self) -> None:
+        notes = (
+            _note(0, 0.0, 0.4, 60),
+            _note(1, 1.0, 1.2, 64),
+            _note(2, 3.0, 3.5, 67),
+        )
+        tempo_scale = 2.5
+        scaled_notes = tuple(
+            _note(
+                note.id,
+                note.onset * tempo_scale,
+                note.offset * tempo_scale,
+                note.pitch,
+                note.velocity,
+            )
+            for note in notes
+        )
+        merger = InitializerChordMerger(duration_normalization="song_mean")
+
+        chords = merger.merge(notes)
+        scaled_chords = merger.merge(scaled_notes)
+
+        torch.testing.assert_close(
+            torch.stack([chord.quantized_dur for chord in scaled_chords]),
+            torch.stack([chord.quantized_dur for chord in chords]),
+        )
+        torch.testing.assert_close(
+            torch.tensor([chord.duration for chord in scaled_chords]),
+            tempo_scale * torch.tensor([chord.duration for chord in chords]),
+        )
+
+    def test_song_mean_duration_normalization_handles_empty_and_single_chord(
+        self,
+    ) -> None:
+        merger = InitializerChordMerger(duration_normalization="song_mean")
+
+        self.assertEqual(merger.merge(()), ())
+        chords = merger.merge((_note(0, 2.0, 2.4, 60),))
+
+        self.assertEqual(len(chords), 1)
+        self.assertAlmostEqual(chords[0].duration, 0.4)
+        torch.testing.assert_close(
+            chords[0].quantized_dur,
+            quantize_duration_seconds(torch.tensor(1.0)),
+        )
+
+    def test_chord_merger_rejects_scale_with_song_mean_normalization(self) -> None:
+        with self.assertRaisesRegex(
+            ValueError,
+            "duration_scale_range cannot be combined with song_mean",
+        ):
+            InitializerChordMerger(
+                duration_scale_range=(0.5, 2.0),
+                duration_normalization="song_mean",
+            )
+
+    def test_chord_merger_rejects_unknown_duration_normalization(self) -> None:
+        with self.assertRaisesRegex(
+            ValueError,
+            "duration_normalization must be 'none' or 'song_mean'",
+        ):
+            InitializerChordMerger(duration_normalization="median")
+
 
 class HandCacheTest(unittest.TestCase):
     def test_canonical_reader_and_configurable_transform(self) -> None:

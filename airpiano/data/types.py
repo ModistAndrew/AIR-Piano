@@ -30,7 +30,7 @@ class Note:
 
 @dataclass(frozen=True)
 class Chord:
-    """An onset group with raw duration and its possibly scaled encoding."""
+    """An onset group with raw duration and its optionally transformed encoding."""
 
     id: int
     notes: tuple[Note, ...]

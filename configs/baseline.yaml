@@ -1,7 +1,7 @@
 defaults:
   - _self_
 
-stage: train
+stage: [train,test,visualize,sonify]
 device: cuda:1
 seed: 42
 
@@ -74,6 +74,7 @@ dataset:
       _target_: airpiano.data.midi.InitializerChordMerger
       tolerance_seconds: 0.05
       duration_scale_range: null
+      duration_normalization: none
   hand_loader:
     _target_: airpiano.data.hands.HandLoader
     reader:
