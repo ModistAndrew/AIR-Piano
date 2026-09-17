@@ -20,6 +20,7 @@ from airpiano.preprocessing.canonical import (
     PianoMotion10MPostprocessor,
     WiLoRCoordinateConverter,
     WiLoRToCanonical,
+    WristDeltaPostprocessor,
     raw_cache_has_markers,
 )
 from airpiano.preprocessing.wilor.cache import VideoDecodingError
@@ -35,6 +36,7 @@ def _chunk_arrays(frame_start: int, frame_end: int, detections: list[list[tuple]
     handedness = np.asarray([item[0] for item in flat], dtype=np.uint8)
     keypoints_3d = np.zeros((count, 21, 3), dtype=np.float32)
     keypoints_2d = np.zeros((count, 21, 2), dtype=np.float32)
+    camera_translation = np.zeros((count, 3), dtype=np.float32)
     image_size = np.tile(np.asarray([100.0, 200.0], dtype=np.float32), (count, 1))
     for index, (_, _, x, y, z_base) in enumerate(flat):
         joint = np.arange(21, dtype=np.float32)
@@ -43,6 +45,7 @@ def _chunk_arrays(frame_start: int, frame_end: int, detections: list[list[tuple]
         keypoints_3d[index, :, 0] = x * 0.01 + joint * 0.01
         keypoints_3d[index, :, 1] = y * 0.01 + joint * 0.02
         keypoints_3d[index, :, 2] = z_base + joint * 0.01
+        camera_translation[index] = (x * 0.1, y * 0.1, z_base * 10.0)
     return {
         "frame_indices": np.arange(frame_start, frame_end, dtype=np.int64),
         "frame_timestamps_seconds": np.arange(
@@ -53,6 +56,7 @@ def _chunk_arrays(frame_start: int, frame_end: int, detections: list[list[tuple]
         "detector_confidence": confidence,
         "is_right": handedness,
         "pred_keypoints_3d": keypoints_3d,
+        "pred_cam_t_full": camera_translation,
         "pred_keypoints_2d_full": keypoints_2d,
         "image_size_wh": image_size,
     }
@@ -534,6 +538,80 @@ class PreprocessingTest(unittest.TestCase):
                 output_presence, [[True, True], [True, False]]
             )
             self.assertTrue(np.all(output_pose[1, 1] == 0.0))
+
+    def test_wrist_delta_postprocessor_handles_boundaries_and_gaps(self) -> None:
+        pose = np.full((5, 2, 21, 3), 7.0, dtype=np.float32)
+        pose[:, 0, 0] = np.asarray(
+            [[1, 2, 3], [2, 4, 6], [10, 20, 30], [20, 40, 60], [23, 46, 69]],
+            dtype=np.float32,
+        )
+        pose[:, 1, 0] = np.asarray(
+            [[5, 6, 7], [6, 8, 10], [9, 12, 15], [13, 17, 21], [20, 25, 30]],
+            dtype=np.float32,
+        )
+        presence = np.asarray(
+            [
+                [True, False],
+                [True, True],
+                [False, True],
+                [True, True],
+                [True, False],
+            ],
+            dtype=np.bool_,
+        )
+        original_pose = pose.copy()
+        original_presence = presence.copy()
+
+        processed_pose, processed_presence = WristDeltaPostprocessor()(
+            pose, presence, 30.0
+        )
+
+        np.testing.assert_array_equal(pose, original_pose)
+        np.testing.assert_array_equal(presence, original_presence)
+        np.testing.assert_array_equal(processed_presence, presence)
+        np.testing.assert_allclose(
+            processed_pose[:, 0, 0],
+            [[0, 0, 0], [1, 2, 3], [0, 0, 0], [0, 0, 0], [3, 6, 9]],
+        )
+        np.testing.assert_allclose(
+            processed_pose[:, 1, 0],
+            [[0, 0, 0], [0, 0, 0], [3, 4, 5], [4, 5, 6], [0, 0, 0]],
+        )
+        np.testing.assert_allclose(processed_pose[presence, 1:], 7.0)
+        self.assertTrue(np.all(processed_pose[~presence] == 0.0))
+        self.assertEqual(processed_pose.dtype, np.float32)
+        self.assertEqual(processed_presence.dtype, np.bool_)
+
+    def test_camera_wrist_delta_is_computed_after_resampling(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            raw = root / "raw"
+            output = root / "wrist_delta.npz"
+            _write_raw_cache(raw)
+
+            converter = WiLoRCoordinateConverter(
+                xy_source="wrist_relative_3d",
+                z_source="wrist_relative_3d",
+                wrist_source="camera_3d",
+            )
+            WiLoRToCanonical(
+                coordinates=converter,
+                postprocessor=WristDeltaPostprocessor(),
+            ).run(raw, output)
+
+            with np.load(output, allow_pickle=False) as payload:
+                pose = payload["pose"]
+                presence = payload["presence"]
+
+            np.testing.assert_array_equal(presence, [[True, True], [True, False]])
+            np.testing.assert_allclose(pose[0, :, 0], 0.0, atol=1e-6)
+            np.testing.assert_allclose(
+                pose[1, 0, 0], [2.2, 2.2, 22.0], atol=1e-5
+            )
+            np.testing.assert_allclose(
+                pose[:, 0, 1], [[0.01, 0.02, 0.01]] * 2, atol=1e-6
+            )
+            self.assertTrue(np.all(pose[1, 1] == 0.0))
 
     def test_wilor_to_canonical_supports_wrist_relative_xyz(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

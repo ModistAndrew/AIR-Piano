@@ -1,0 +1,16 @@
+defaults:
+  - wrist_xyz10_causal_chord24_extended
+  - _self_
+
+output:
+  project_name: wrist_xyz10_causal_chord24_extended_wrist_delta
+
+data:
+  hand_root: ${data.processed_root}/airpiano_wilor_wrist_xyz_delta_30fps
+
+preprocess:
+  ragged_to_canonical:
+    coordinates:
+      wrist_source: camera_3d
+    postprocessor:
+      _target_: airpiano.preprocessing.canonical.WristDeltaPostprocessor

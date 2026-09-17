@@ -66,15 +66,19 @@ class WiLoRCoordinateConverter:
     ``xy_source`` selects either full-image normalized coordinates or local
     joints relative to that hand's wrist. Depth remains local and
     wrist-relative in both currently supported representations.
+    ``wrist_source="camera_3d"`` replaces joint zero with the camera-space
+    wrist while leaving every other joint in the selected representation.
     """
 
     def __init__(
         self,
         xy_source: str = "normalized_2d",
         z_source: str = "wrist_relative_3d",
+        wrist_source: str = "converted",
     ) -> None:
         self.xy_source = xy_source
         self.z_source = z_source
+        self.wrist_source = wrist_source
 
     def __call__(
         self, arrays: Mapping[str, np.ndarray], detection: int
@@ -102,6 +106,14 @@ class WiLoRCoordinateConverter:
         converted = np.empty((21, 3), dtype=np.float32)
         converted[:, :2] = xy
         converted[:, 2] = wrist_relative[:, 2]
+        if self.wrist_source == "camera_3d":
+            converted[0] = (
+                joints_3d[0] + arrays["pred_cam_t_full"][detection]
+            )
+        elif self.wrist_source != "converted":
+            raise ValueError(
+                f"unknown WiLoR wrist source: {self.wrist_source}"
+            )
         return converted
 
 
@@ -135,6 +147,29 @@ class LowestWristHandSelector:
                 if confidence[winner] >= self.minimum_detector_confidence:
                     selected[frame, slot] = winner
         return selected
+
+
+class WristDeltaPostprocessor:
+    """Replace the camera-space wrist with its canonical-frame displacement."""
+
+    def __call__(
+        self,
+        pose: np.ndarray,
+        presence: np.ndarray,
+        fps: float,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        processed_pose = np.array(pose, copy=True)
+        processed_presence = np.array(presence, dtype=np.bool_, copy=True)
+        wrist_delta = np.zeros_like(processed_pose[:, :, 0])
+        valid_delta = processed_presence[1:] & processed_presence[:-1]
+        wrist_delta[1:] = np.where(
+            valid_delta[..., None],
+            processed_pose[1:, :, 0] - processed_pose[:-1, :, 0],
+            0.0,
+        )
+        processed_pose[:, :, 0] = wrist_delta
+        processed_pose[~processed_presence] = 0.0
+        return processed_pose, processed_presence
 
 
 class PianoMotion10MPostprocessor:
@@ -378,6 +413,7 @@ class WiLoRToCanonical:
                     "detector_confidence",
                     "is_right",
                     "pred_keypoints_3d",
+                    "pred_cam_t_full",
                     "pred_keypoints_2d_full",
                     "image_size_wh",
                 )}

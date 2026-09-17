@@ -210,6 +210,68 @@ class TrainTest(unittest.TestCase):
             components["hand_loader"].transform.scale, (10.0, 10.0, 10.0)
         )
 
+    def test_wrist_delta_configs_construct_camera_motion_ablation(self) -> None:
+        config_directory = Path(__file__).parents[1] / "configs"
+        config_names = (
+            "wrist_xyz10_wrist_delta",
+            "wrist_xyz10_wrist_delta_pianovam",
+            "wrist_xyz10_causal_chord24_extended_wrist_delta",
+        )
+        with initialize_config_dir(
+            version_base=None, config_dir=str(config_directory.resolve())
+        ):
+            configurations = {
+                name: compose(config_name=name) for name in config_names
+            }
+
+        for name, config in configurations.items():
+            components = data.build_data_components(config)
+            canonicalizer = instantiate(config.preprocess.ragged_to_canonical)
+            self.assertEqual(str(config.output.dir), f"outputs/{name}")
+            self.assertEqual(str(config.wandb.name), name)
+            self.assertTrue(
+                str(config.data.hand_root).endswith(
+                    "/airpiano_wilor_wrist_xyz_delta_30fps"
+                )
+            )
+            self.assertEqual(
+                canonicalizer.coordinates.xy_source, "wrist_relative_3d"
+            )
+            self.assertEqual(
+                canonicalizer.coordinates.z_source, "wrist_relative_3d"
+            )
+            self.assertEqual(
+                canonicalizer.coordinates.wrist_source, "camera_3d"
+            )
+            self.assertEqual(
+                type(canonicalizer.postprocessor).__name__,
+                "WristDeltaPostprocessor",
+            )
+            self.assertEqual(
+                components["hand_loader"].transform.scale,
+                (10.0, 10.0, 10.0),
+            )
+
+        extended = configurations[
+            "wrist_xyz10_causal_chord24_extended_wrist_delta"
+        ]
+        extended_components = data.build_data_components(extended)
+        self.assertEqual(
+            str(extended.data.root), "/storage2/jinxuan/data/AirPianoFull"
+        )
+        self.assertEqual(
+            {key: str(value) for key, value in extended.data.splits.items()},
+            {
+                "train": "assets/splits/extended/train.txt",
+                "valid": "assets/splits/extended/valid.txt",
+                "test": "assets/splits/extended/test.txt",
+            },
+        )
+        self.assertTrue(bool(extended.model.causal_frame_attention))
+        self.assertEqual(extended_components["slicer"].mode, "chord")
+        self.assertEqual(extended_components["slicer"].segment_frames, 24)
+        self.assertEqual(extended_components["slicer"].stride_frames, 12)
+
     def test_pianovam_config_keeps_baseline_behavior_at_30_fps(self) -> None:
         config_directory = Path(__file__).parents[1] / "configs"
         with initialize_config_dir(

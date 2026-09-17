@@ -63,6 +63,7 @@ The loss remains fixed in code.
 | `configs/causal_chord24_extended.yaml` | Causal 24-chord ablation using the extended combined training split. |
 | `configs/causal_chord24_extended_chord_duration_mean_normalized.yaml` | Duration-conditioned causal 24-chord extended-data ablation with deterministic song-mean duration normalization. |
 | `configs/wrist_xyz10_causal_chord24_extended.yaml` | Wrist-relative causal 24-chord ablation using the extended combined training split. |
+| `configs/wrist_xyz10_causal_chord24_extended_wrist_delta.yaml` | Extended wrist-relative causal ablation with camera-space wrist deltas in joint zero. |
 | `configs/wrist_xyz10.yaml` | Wrist-relative local-XYZ ×10 ablation inheriting the baseline. |
 | `configs/chord_duration.yaml` | Duration-conditioned chord-token ablation inheriting the baseline. |
 | `configs/causal_chord24.yaml` | Causal frame-attention and 24-chord slicing ablation inheriting the baseline. |
@@ -1214,6 +1215,72 @@ logs, inference, and rendering use `outputs/wrist_xyz10/`. The ×10 factor is an
 online hand transform, so later scale ablations can reuse the same canonical
 cache.
 
+### Camera-space wrist-delta ablation
+
+`wrist_xyz10_causal_chord24_extended_wrist_delta` keeps joints 1 through 20
+in the same wrist-relative local XYZ representation as `wrist_xyz10`. Joint
+zero instead stores the camera-space wrist displacement between adjacent
+canonical 30 Hz frames:
+
+```text
+delta[t] = (pred_keypoints_3d[t, wrist] + pred_cam_t_full[t])
+         - (pred_keypoints_3d[t-1, wrist] + pred_cam_t_full[t-1])
+```
+
+The first wrist delta is zero. A wrist delta is also zero unless that hand is
+present in both adjacent frames, preventing a reappearance after a gap from
+creating an artificial jump. Deltas are computed after resampling and receive
+the same online ×10 scale as every other XYZ coordinate. The resulting tensor
+shape and model architecture are unchanged, and no absolute wrist position is
+passed to the model.
+
+Check free space, then generate the separate PianoMotion cache. The explicit
+split override includes the `test_full.txt` records used by the extended
+training split:
+
+```bash
+df -h /storage2
+
+conda run -n v2n python run.py \
+  --config-name wrist_xyz10_wrist_delta \
+  stage=preprocess preprocess.task=ragged_to_canonical \
+  'preprocess.split_files=[assets/splits/pianomotion10m/train.txt,assets/splits/pianomotion10m/valid.txt,assets/splits/pianomotion10m/test_full.txt]'
+```
+
+Generate the PianoVAM cache from its three configured splits:
+
+```bash
+conda run -n v2n python run.py \
+  --config-name wrist_xyz10_wrist_delta_pianovam \
+  stage=preprocess preprocess.task=ragged_to_canonical
+```
+
+Create the corresponding symlink-only combined view:
+
+```bash
+conda run -n v2n python scripts/create_full_data_view.py \
+  --full-split-root assets/splits/extended \
+  --pianomotion-extra-split assets/splits/pianomotion10m/test_full.txt \
+  --view-hand-root /storage2/jinxuan/data/AirPianoFull/airpiano_wilor_wrist_xyz_delta_30fps \
+  --pianomotion-hand-root /storage2/jinxuan/data/PianoMotion10M/airpiano_wilor_wrist_xyz_delta_30fps \
+  --pianovam-hand-root /storage2/jinxuan/data/PianoVAM_v1/airpiano_wilor_wrist_xyz_delta_30fps
+```
+
+Train and evaluate only after the view reports no missing hand sources:
+
+```bash
+conda run -n v2n python run.py \
+  --config-name wrist_xyz10_causal_chord24_extended_wrist_delta stage=train
+conda run -n v2n python run.py \
+  --config-name wrist_xyz10_causal_chord24_extended_wrist_delta stage=test
+```
+
+The corpus caches live under
+`${data.processed_root}/airpiano_wilor_wrist_xyz_delta_30fps`; experiment
+artifacts use
+`outputs/wrist_xyz10_causal_chord24_extended_wrist_delta/`. Existing
+wrist-relative caches are not read or overwritten.
+
 ### Causal 24-chord ablation
 
 This combined ablation uses causal frame self-attention and slices the score
@@ -1620,6 +1687,7 @@ at `/storage2/jinxuan/data/AirPianoFull`, the symlink view created by
 | `coordinates._target_` | `airpiano.preprocessing.canonical.WiLoRCoordinateConverter` | Convert each selected raw detection into one canonical hand. |
 | `coordinates.xy_source` | `normalized_2d` | Use normalized full-image XY; `wrist_relative_3d` selects local XYZ relative to the wrist. |
 | `coordinates.z_source` | `wrist_relative_3d` | Local WiLoR depth relative to the selected hand's wrist. |
+| `coordinates.wrist_source` | `converted` | Keep the converted joint zero; `camera_3d` temporarily inserts the camera-space wrist for a canonical-rate postprocessor. |
 | `target_fps` | `30.0` | Canonical output rate. |
 
 The `lowest_v` preset changes only candidate selection: independently for each
