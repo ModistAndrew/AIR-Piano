@@ -180,6 +180,11 @@ def build_dataset(
         hand_root=resolve_path(cfg.data.hand_root),
         midi_loader=components["midi_loader"],
         hand_loader=components["hand_loader"],
+        beat_root=(
+            resolve_path(cfg.data.beat_root)
+            if cfg.data.get("beat_root") is not None
+            else None
+        ),
     )
     return AlignmentDataset(
         songs=songs,

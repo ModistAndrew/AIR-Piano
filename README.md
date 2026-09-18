@@ -63,6 +63,7 @@ The alignment loss is selected by `alignment_loss`; BCE remains the default.
 | `configs/causal_chord24_extended.yaml` | Causal 24-chord ablation using the extended combined training split. |
 | `configs/causal_chord24_extended_chord_duration_mean_normalized.yaml` | Duration-conditioned causal 24-chord extended-data ablation with deterministic song-mean duration normalization. |
 | `configs/wrist_xyz10_causal_chord24_extended.yaml` | Wrist-relative causal 24-chord ablation using the extended combined training split. |
+| `configs/wrist_xyz10_causal_chord24_extended_new.yaml` | Extended wrist-relative causal ablation with beat-grid chord-duration tokens. |
 | `configs/wrist_xyz10_causal_chord24_extended_last_chord_softmax.yaml` | Extended wrist-relative causal ablation with persistent last-chord targets and categorical softmax. |
 | `configs/wrist_xyz10_causal_chord24_extended_wrist_delta.yaml` | Extended wrist-relative causal ablation with camera-space wrist deltas in joint zero. |
 | `configs/wrist_xyz10.yaml` | Wrist-relative local-XYZ ×10 ablation inheriting the baseline. |
@@ -868,6 +869,16 @@ for the final chord. Configurations may apply one shared random multiplier or
 deterministic song-mean normalization to all durations before quantization
 without changing these raw values.
 
+With `MidoNoteReader.quantization=true`, the reader also consumes the paired
+beat text file's first column. Beat zero maps to tick zero and each following
+beat advances by `subdivision` ticks (12 by default); note endpoints snap to
+the nearest tick, with half-ties moving to the later tick. Times before or
+after the detected beat span extrapolate the first or last beat interval.
+Original MIDI seconds remain on every note for hand slicing and targets, while
+the added integer ticks control chord grouping and duration tokens. Missing
+beat files are reported and omitted during pairing; malformed present files
+raise normally.
+
 `OffsetScaleTransform` applies configured per-axis `(pose - offset) * scale` to
 present slots while preserving exact zero absent slots. The baseline uses
 offset `[0.5,0.5,0]` and scale `[1,1,10]`; `wrist_xyz10` uses zero offset and
@@ -928,6 +939,14 @@ deterministically. Values outside the mapping's representable range retain the
 existing clipping behavior. Quantization happens before window selection, so
 the normalization covers the full song and the last chord in a slice does not
 incorrectly receive the final-chord rule.
+
+Quantized notes instead use the integer gap to the next chord tick, with the
+final chord using its latest member-release tick. That value is clamped to
+`[0,199]` and used directly as a 200-way one-hot index, preserving the same
+328-value chord-token shape. The
+`wrist_xyz10_causal_chord24_extended_new` preset enables this representation,
+12 subdivisions per beat, and chord-duration conditioning. Its dataset beat
+root is `/storage/jinxuan/data/PianoMotion10M/beats`.
 
 With `mode=chord`, `segment_frames` and `stride_frames` instead count chord
 tokens and `chord_count` is ignored. Token windows retain the exact
@@ -1748,8 +1767,8 @@ the process into an output directory.
 
 | Field | Baseline behavior |
 | --- | --- |
-| `file_loader` / `RelativeStemPairer` | Pair `<stem>.mid` and `<stem>.npz`, report the intersection, then read full songs. |
-| `MidoNoteReader` | Tempo-aware physical note parsing. |
+| `file_loader` / `RelativeStemPairer` | Pair `<stem>.mid` and `<stem>.npz`, optionally require `<stem>.txt` beats, report the intersection, then read full songs. |
+| `MidoNoteReader` | Tempo-aware physical note parsing, with optional beat-grid tick quantization. |
 | `InitializerChordMerger.tolerance_seconds` | Initializer-relative grouping at `0.05`, with absolute chord durations assigned after grouping. |
 | `InitializerChordMerger.duration_scale_range` / `duration_normalization` | Baseline `null` / `none`; optionally apply one random song scale or deterministic `song_mean` normalization before duration quantization. |
 | `CanonicalNpzReader` | Direct trusted canonical array loading. |

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import random
+from bisect import bisect_left
 from collections import defaultdict, deque
 from collections.abc import Sequence
 from pathlib import Path
@@ -35,15 +36,71 @@ def quantize_duration_seconds(duration_seconds: torch.Tensor) -> torch.Tensor:
     return F.one_hot(bucket_indices, num_classes=DURATION_BINS).to(torch.float32)
 
 
+def quantize_duration_ticks(duration_ticks: torch.Tensor) -> torch.Tensor:
+    """Return direct one-hots for integer beat-grid durations."""
+
+    bucket_indices = duration_ticks.to(torch.long).clamp(0, DURATION_BINS - 1)
+    return F.one_hot(bucket_indices, num_classes=DURATION_BINS).to(torch.float32)
+
+
 class MidoNoteReader:
     """Read tempo-aware physical notes from a standard MIDI file.
 
     ``mido.MidiFile`` iteration merges tracks and converts delta times to
     seconds. Repeated notes on the same channel and pitch are paired FIFO;
-    sustain-pedal messages are deliberately ignored.
+    sustain-pedal messages are deliberately ignored. Optional beat-grid
+    quantization adds tick coordinates without replacing the seconds clock.
     """
 
-    def read(self, path: str | Path) -> tuple[Note, ...]:
+    def __init__(
+        self,
+        quantization: bool = False,
+        subdivision: int = 12,
+    ) -> None:
+        self.quantization = quantization
+        self.subdivision = subdivision
+
+    def _read_ticks(self, path: str | Path) -> tuple[float, ...]:
+        with Path(path).open("r", encoding="utf-8") as handle:
+            beats = tuple(
+                float(line.split()[0])
+                for line in handle
+                if line.strip()
+            )
+        return tuple(
+            start + (stop - start) * index / self.subdivision
+            for start, stop in zip(beats, beats[1:])
+            for index in range(self.subdivision)
+        ) + (beats[-1],)
+
+    @staticmethod
+    def _nearest_tick(time_seconds: float, ticks: tuple[float, ...]) -> int:
+        if time_seconds <= ticks[0]:
+            position = (time_seconds - ticks[0]) / (ticks[1] - ticks[0])
+            return math.floor(position + 0.5)
+        if time_seconds >= ticks[-1]:
+            position = (
+                len(ticks)
+                - 1
+                + (time_seconds - ticks[-1]) / (ticks[-1] - ticks[-2])
+            )
+            return math.floor(position + 0.5)
+
+        later = bisect_left(ticks, time_seconds)
+        earlier = later - 1
+        return (
+            earlier
+            if time_seconds - ticks[earlier] < ticks[later] - time_seconds
+            else later
+        )
+
+    def read(
+        self,
+        path: str | Path,
+        beat_path: str | Path | None = None,
+    ) -> tuple[Note, ...]:
+        ticks = self._read_ticks(beat_path) if self.quantization else None
+
         midi = mido.MidiFile(Path(path))
         active: dict[tuple[int, int], deque[tuple[float, int]]] = defaultdict(deque)
         parsed: list[tuple[float, float, int, int]] = []
@@ -67,20 +124,29 @@ class MidoNoteReader:
                 parsed.append((onset, time_seconds, pitch, onset_velocity))
 
         parsed.sort(key=lambda note: (note[0], note[2], note[1] - note[0]))
-        return tuple(
-            Note(
-                id=note_id,
-                onset=onset,
-                offset=offset,
-                pitch=pitch,
-                velocity=velocity,
+        notes = []
+        for note_id, (onset, offset, pitch, velocity) in enumerate(parsed):
+            onset_tick = None
+            offset_tick = None
+            if ticks is not None:
+                onset_tick = self._nearest_tick(onset, ticks)
+                offset_tick = self._nearest_tick(offset, ticks)
+            notes.append(
+                Note(
+                    id=note_id,
+                    onset=onset,
+                    offset=offset,
+                    pitch=pitch,
+                    velocity=velocity,
+                    onset_tick=onset_tick,
+                    offset_tick=offset_tick,
+                )
             )
-            for note_id, (onset, offset, pitch, velocity) in enumerate(parsed)
-        )
+        return tuple(notes)
 
 
 class InitializerChordMerger:
-    """Group notes and optionally transform duration encodings per song."""
+    """Group notes and encode seconds or beat-grid tick durations."""
 
     def __init__(
         self,
@@ -108,14 +174,27 @@ class InitializerChordMerger:
             )
         self.duration_normalization = duration_normalization
 
-    def merge(self, notes: tuple[Note, ...]) -> tuple[Chord, ...]:
+    def merge(
+        self,
+        notes: tuple[Note, ...],
+        quantization: bool = False,
+    ) -> tuple[Chord, ...]:
         groups: list[tuple[Note, ...]] = []
         start = 0
         while start < len(notes):
-            initializer = notes[start].onset
+            initializer = (
+                notes[start].onset_tick if quantization else notes[start].onset
+            )
             stop = start + 1
             while stop < len(notes):
-                onset = notes[stop].onset
+                onset = (
+                    notes[stop].onset_tick if quantization else notes[stop].onset
+                )
+                if quantization:
+                    if onset != initializer:
+                        break
+                    stop += 1
+                    continue
                 roundoff = 8.0 * max(
                     math.ulp(onset),
                     math.ulp(initializer),
@@ -130,7 +209,8 @@ class InitializerChordMerger:
         if not groups:
             return ()
 
-        durations = []
+        durations: list[float] = []
+        duration_ticks: list[int | None] = []
         for index, group in enumerate(groups):
             onset = group[0].onset
             if index + 1 < len(groups):
@@ -138,6 +218,16 @@ class InitializerChordMerger:
             else:
                 duration = max(note.offset for note in group) - onset
             durations.append(duration)
+
+            ticks = None
+            if quantization:
+                onset_tick = int(group[0].onset_tick)
+                if index + 1 < len(groups):
+                    next_tick = int(groups[index + 1][0].onset_tick)
+                    ticks = next_tick - onset_tick
+                else:
+                    ticks = max(int(note.offset_tick) for note in group) - onset_tick
+            duration_ticks.append(ticks)
 
         if self.duration_normalization == "song_mean":
             duration_scale = len(durations) / sum(durations)
@@ -147,15 +237,21 @@ class InitializerChordMerger:
             duration_scale = 1.0
 
         chords = []
-        for index, (group, duration) in enumerate(zip(groups, durations)):
-            quantized_dur = quantize_duration_seconds(
-                torch.tensor(duration * duration_scale, dtype=torch.float64)
-            )
+        for index, (group, duration, ticks) in enumerate(
+            zip(groups, durations, duration_ticks)
+        ):
+            if quantization:
+                quantized_dur = quantize_duration_ticks(torch.tensor(ticks))
+            else:
+                quantized_dur = quantize_duration_seconds(
+                    torch.tensor(duration * duration_scale, dtype=torch.float64)
+                )
             chords.append(
                 Chord(
                     id=index,
                     notes=group,
                     duration=duration,
+                    duration_ticks=ticks,
                     quantized_dur=quantized_dur,
                 )
             )
@@ -169,6 +265,19 @@ class MidiLoader:
         self.reader = reader
         self.chord_merger = chord_merger
 
-    def load(self, path: str | Path) -> MidiSequence:
-        notes = self.reader.read(path)
-        return MidiSequence(notes=notes, chords=self.chord_merger.merge(notes))
+    def load(
+        self,
+        path: str | Path,
+        beat_path: str | Path | None = None,
+    ) -> MidiSequence:
+        if beat_path is None:
+            notes = self.reader.read(path)
+        else:
+            notes = self.reader.read(path, beat_path)
+        return MidiSequence(
+            notes=notes,
+            chords=self.chord_merger.merge(
+                notes,
+                quantization=self.reader.quantization,
+            ),
+        )

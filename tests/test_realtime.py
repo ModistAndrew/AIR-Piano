@@ -120,6 +120,72 @@ class RealtimeTest(unittest.TestCase):
             self.assertEqual(canonical_calls, [canonical_path])
             self.assertEqual(rows, [(1, 1, song, components)])
 
+    def test_realtime_forwards_available_beat_files(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in ("video", "midi", "beats", "canonical"):
+                (root / name).mkdir()
+            for record_id in ("complete", "missing-beats"):
+                (root / "video" / f"{record_id}.mp4").touch()
+                (root / "midi" / f"{record_id}.mid").touch()
+            beat_path = root / "beats" / "complete.txt"
+            beat_path.touch()
+
+            pairs = []
+            song = object()
+
+            def read_pair(pair, midi_loader, hand_loader):
+                del midi_loader, hand_loader
+                pairs.append(pair)
+                return song
+
+            components = {
+                "file_loader": SimpleNamespace(
+                    reader=SimpleNamespace(read=read_pair)
+                ),
+                "midi_loader": object(),
+                "hand_loader": object(),
+            }
+            config = OmegaConf.create(
+                {
+                    "data": {
+                        "raw_wilor_root": "/unused/raw",
+                        "hand_root": "/unused/canonical",
+                    },
+                    "preprocess": {
+                        "video_to_ragged": {"_target_": "example.Video"},
+                        "ragged_to_canonical": {
+                            "_target_": "example.Canonical"
+                        },
+                    },
+                }
+            )
+            canonicalizer = SimpleNamespace(run=lambda *args, **kwargs: None)
+
+            with patch.object(
+                realtime_stage,
+                "instantiate",
+                return_value=canonicalizer,
+            ):
+                rows = list(
+                    realtime_stage.iter_realtime_songs(
+                        config,
+                        root,
+                        overwrite=False,
+                        components=components,
+                    )
+                )
+
+        self.assertEqual(
+            rows,
+            [(1, 2, song, components), (2, 2, song, components)],
+        )
+        self.assertEqual(len(pairs), 2)
+        self.assertEqual(pairs[0].record_id, "complete")
+        self.assertEqual(pairs[0].beat_path, beat_path)
+        self.assertEqual(pairs[1].record_id, "missing-beats")
+        self.assertIsNone(pairs[1].beat_path)
+
     def test_composes_preprocessors_and_dumps_renderable_artifact(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

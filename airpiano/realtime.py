@@ -26,6 +26,7 @@ def iter_realtime_songs(
 
     video_root = root / "video"
     midi_root = root / "midi"
+    beat_root = root / "beats"
     videos = {
         path.name[: -len(".mp4")]: path
         for path in video_root.glob("*.mp4")
@@ -34,6 +35,11 @@ def iter_realtime_songs(
     midis = {
         path.name[: -len(".mid")]: path
         for path in midi_root.glob("*.mid")
+        if path.is_file()
+    }
+    beats = {
+        path.name[: -len(".txt")]: path
+        for path in beat_root.glob("*.txt")
         if path.is_file()
     }
     for record_id in sorted(videos.keys() - midis.keys()):
@@ -82,6 +88,7 @@ def iter_realtime_songs(
             record_id=record_id,
             midi_path=midis[record_id],
             hand_path=canonical_path,
+            beat_path=beats.get(record_id),
         )
         song = components["file_loader"].reader.read(
             pair,

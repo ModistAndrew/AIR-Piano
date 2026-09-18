@@ -39,7 +39,7 @@ from airpiano.data import (
     build_dataset,
     collate_alignment_batch,
 )
-from airpiano.data.midi import quantize_duration_seconds
+from airpiano.data.midi import quantize_duration_seconds, quantize_duration_ticks
 
 
 def _note(
@@ -48,8 +48,18 @@ def _note(
     offset: float,
     pitch: int,
     velocity: int = 80,
+    onset_tick: int | None = None,
+    offset_tick: int | None = None,
 ) -> Note:
-    return Note(note_id, onset, offset, pitch, velocity)
+    return Note(
+        note_id,
+        onset,
+        offset,
+        pitch,
+        velocity,
+        onset_tick,
+        offset_tick,
+    )
 
 
 def _chord(
@@ -143,6 +153,38 @@ class PairingTest(unittest.TestCase):
                 "pairing summary: requested=4 paired=1 missing=3", report
             )
 
+    def test_pairer_requires_configured_beat_files(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            midi_root = root / "midi"
+            hand_root = root / "hands"
+            beat_root = root / "beats"
+            for modality_root, suffix in (
+                (midi_root, ".mid"),
+                (hand_root, ".npz"),
+            ):
+                modality_root.mkdir()
+                (modality_root / f"complete{suffix}").touch()
+                (modality_root / f"missing-beats{suffix}").touch()
+            beat_root.mkdir()
+            (beat_root / "complete.txt").touch()
+            split = root / "split.txt"
+            split.write_text("complete\nmissing-beats\n", encoding="utf-8")
+
+            printed = io.StringIO()
+            with redirect_stdout(printed):
+                pairs = RelativeStemPairer().pair(
+                    split,
+                    midi_root,
+                    hand_root,
+                    beat_root,
+                )
+
+        self.assertEqual([pair.record_id for pair in pairs], ["complete"])
+        self.assertEqual(pairs[0].beat_path, beat_root / "complete.txt")
+        self.assertIn("missing beats", printed.getvalue())
+        self.assertIn("paired=1 missing=1", printed.getvalue())
+
     def test_file_loader_exposes_reader_and_eagerly_composes_modalities(self) -> None:
         note = _note(0, 0.0, 0.2, 60)
         chord = _chord(0, (note,))
@@ -230,6 +272,76 @@ class MidiTest(unittest.TestCase):
         self.assertAlmostEqual(parsed[0].offset, 0.5)
         self.assertAlmostEqual(parsed[1].onset, 0.25)
         self.assertAlmostEqual(parsed[1].offset, 0.75)
+
+    def test_reader_quantizes_to_beat_ticks_and_preserves_seconds(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            midi_path = root / "notes.mid"
+            beat_path = root / "beats.txt"
+            beat_path.write_text(
+                "1.0\t4\n2.0\t1\n3.0\t2\n",
+                encoding="utf-8",
+            )
+            midi = mido.MidiFile(type=0, ticks_per_beat=1000)
+            track = mido.MidiTrack()
+            track.append(mido.MetaMessage("set_tempo", tempo=1_000_000, time=0))
+            track.append(mido.Message("note_on", note=60, velocity=70, time=500))
+            track.append(mido.Message("note_off", note=60, velocity=0, time=625))
+            track.append(mido.Message("note_on", note=62, velocity=71, time=250))
+            track.append(mido.Message("note_off", note=62, velocity=0, time=750))
+            track.append(mido.Message("note_on", note=64, velocity=72, time=750))
+            track.append(mido.Message("note_off", note=64, velocity=0, time=375))
+            midi.tracks.append(track)
+            midi.save(midi_path)
+
+            parsed = MidoNoteReader(quantization=True, subdivision=4).read(
+                midi_path,
+                beat_path,
+            )
+
+        self.assertEqual(
+            [(note.onset_tick, note.offset_tick) for note in parsed],
+            [(-2, 1), (2, 5), (8, 9)],
+        )
+        self.assertEqual([note.onset for note in parsed], [0.5, 1.375, 2.875])
+        self.assertEqual([note.offset for note in parsed], [1.125, 2.125, 3.25])
+
+    def test_chord_merger_uses_tick_groups_and_direct_tick_durations(self) -> None:
+        notes = (
+            _note(0, 0.0, 0.02, 60, onset_tick=0, offset_tick=0),
+            _note(1, 0.2, 0.3, 64, onset_tick=0, offset_tick=4),
+            _note(2, 0.21, 0.3, 67, onset_tick=3, offset_tick=3),
+            _note(3, 0.22, 20.0, 71, onset_tick=3, offset_tick=250),
+        )
+
+        chords = InitializerChordMerger(tolerance_seconds=0.05).merge(
+            notes,
+            quantization=True,
+        )
+
+        self.assertEqual(len(chords), 2)
+        self.assertEqual(
+            [[note.id for note in chord.notes] for chord in chords],
+            [[0, 1], [2, 3]],
+        )
+        self.assertAlmostEqual(chords[0].duration, 0.21)
+        self.assertAlmostEqual(chords[1].duration, 19.79)
+        self.assertEqual([chord.duration_ticks for chord in chords], [3, 247])
+        self.assertEqual(
+            [chord.quantized_dur.argmax().item() for chord in chords],
+            [3, 199],
+        )
+        torch.testing.assert_close(
+            chords[0].quantized_dur,
+            quantize_duration_ticks(torch.tensor(3)),
+        )
+
+        zero = InitializerChordMerger().merge(
+            (_note(0, 1.0, 1.01, 60, onset_tick=7, offset_tick=7),),
+            quantization=True,
+        )
+        self.assertEqual(zero[0].duration_ticks, 0)
+        self.assertEqual(zero[0].quantized_dur.argmax().item(), 0)
 
     def test_chord_merger_is_inclusive_and_initializer_anchored(self) -> None:
         notes = tuple(

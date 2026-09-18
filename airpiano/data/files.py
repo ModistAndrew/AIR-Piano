@@ -41,21 +41,30 @@ class RelativeStemPairer:
         split_file: str | Path,
         midi_root: str | Path,
         hand_root: str | Path,
+        beat_root: str | Path | None = None,
     ) -> list[FilePair]:
         split_path = Path(split_file)
         midi_directory = Path(midi_root)
         hand_directory = Path(hand_root)
+        beat_directory = Path(beat_root) if beat_root is not None else None
         pairs: list[FilePair] = []
         records = read_record_stems([split_path])
 
         for record_id in records:
             midi_path = midi_directory / f"{record_id}.mid"
             hand_path = hand_directory / f"{record_id}.npz"
+            beat_path = (
+                beat_directory / f"{record_id}.txt"
+                if beat_directory is not None
+                else None
+            )
             reasons: list[str] = []
             if not midi_path.is_file():
                 reasons.append(f"missing MIDI {midi_path}")
             if not hand_path.is_file():
                 reasons.append(f"missing hand cache {hand_path}")
+            if beat_path is not None and not beat_path.is_file():
+                reasons.append(f"missing beats {beat_path}")
             if reasons:
                 print(f"[data] skip {record_id}: {'; '.join(reasons)}")
                 continue
@@ -64,6 +73,7 @@ class RelativeStemPairer:
                     record_id=record_id,
                     midi_path=midi_path,
                     hand_path=hand_path,
+                    beat_path=beat_path,
                 )
             )
         print(
@@ -77,7 +87,10 @@ class EagerSongReader:
     """Load both modalities for one pair into a full in-memory song."""
 
     def read(self, pair: FilePair, midi_loader: Any, hand_loader: Any) -> Song:
-        midi = midi_loader.load(pair.midi_path)
+        if pair.beat_path is None:
+            midi = midi_loader.load(pair.midi_path)
+        else:
+            midi = midi_loader.load(pair.midi_path, pair.beat_path)
         hands = hand_loader.load(pair.hand_path)
         return Song(
             record_id=pair.record_id,
@@ -103,8 +116,17 @@ class FileLoader:
         hand_root: str | Path,
         midi_loader: Any,
         hand_loader: Any,
+        beat_root: str | Path | None = None,
     ) -> list[Song]:
-        pairs = self.pairer.pair(split_file, midi_root, hand_root)
+        if beat_root is None:
+            pairs = self.pairer.pair(split_file, midi_root, hand_root)
+        else:
+            pairs = self.pairer.pair(
+                split_file,
+                midi_root,
+                hand_root,
+                beat_root,
+            )
         return [
             self.reader.read(pair, midi_loader, hand_loader) for pair in pairs
         ]

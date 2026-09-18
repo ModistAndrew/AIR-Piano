@@ -10,32 +10,36 @@ import torch
 
 @dataclass(frozen=True)
 class FilePair:
-    """One MIDI file paired with one canonical hand cache."""
+    """One MIDI/hand pair with an optional beat grid."""
 
     record_id: str
     midi_path: Path
     hand_path: Path
+    beat_path: Path | None = None
 
 
 @dataclass(frozen=True)
 class Note:
-    """One physical MIDI note."""
+    """One physical MIDI note in seconds, with optional beat-grid ticks."""
 
     id: int
     onset: float
     offset: float
     pitch: int
     velocity: int
+    onset_tick: int | None = None
+    offset_tick: int | None = None
 
 
 @dataclass(frozen=True)
 class Chord:
-    """An onset group with raw duration and its optionally transformed encoding."""
+    """An onset group with raw seconds, optional ticks, and an encoding."""
 
     id: int
     notes: tuple[Note, ...]
     duration: float
     quantized_dur: torch.Tensor
+    duration_ticks: int | None = None
 
     @property
     def onset(self) -> float:

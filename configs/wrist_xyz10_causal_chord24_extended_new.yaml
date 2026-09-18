@@ -1,0 +1,14 @@
+defaults:
+  - wrist_xyz10_causal_chord24
+  - _self_
+
+output:
+  project_name: wrist_xyz10_causal_chord24_extended_new
+
+data:
+  root: /storage2/jinxuan/data/AirPianoFull
+  processed_root: ${data.root}
+  splits:
+    train: assets/splits/extended/train.txt
+    valid: assets/splits/extended/valid.txt
+    test: assets/splits/extended/test.txt

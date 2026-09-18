@@ -504,6 +504,35 @@ class TrainTest(unittest.TestCase):
                 expected_scales[name],
             )
 
+    def test_extended_new_config_enables_quantized_chord_duration(self) -> None:
+        config_directory = Path(__file__).parents[1] / "configs"
+        name = "wrist_xyz10_causal_chord24_extended_new"
+        with initialize_config_dir(
+            version_base=None, config_dir=str(config_directory.resolve())
+        ):
+            config = compose(config_name=name)
+
+        components = data.build_data_components(config)
+        reader = components["midi_loader"].reader
+        slicer = components["slicer"]
+        self.assertEqual(str(config.output.dir), f"outputs/{name}")
+        self.assertEqual(str(config.wandb.name), name)
+        self.assertEqual(
+            str(config.data.beat_root),
+            "/storage/jinxuan/data/PianoMotion10M/beats",
+        )
+        self.assertTrue(reader.quantization)
+        self.assertEqual(reader.subdivision, 12)
+        self.assertTrue(bool(config.model.include_chord_duration))
+        self.assertTrue(bool(config.model.causal_frame_attention))
+        self.assertEqual(slicer.mode, "chord")
+        self.assertEqual(slicer.segment_frames, 24)
+        self.assertEqual(slicer.stride_frames, 12)
+        self.assertEqual(
+            components["hand_loader"].transform.scale,
+            (10.0, 10.0, 10.0),
+        )
+
     def test_extended_last_chord_softmax_config(self) -> None:
         config_directory = Path(__file__).parents[1] / "configs"
         name = "wrist_xyz10_causal_chord24_extended_last_chord_softmax"
