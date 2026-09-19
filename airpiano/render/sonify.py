@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 from omegaconf import DictConfig
 
-from ..data.midi import InitializerChordMerger, MidoNoteReader
+from ..data.midi import MidoNoteReader
 from ..utils import resolve_path, write_json
 from .artifact import load_artifact
 
@@ -166,20 +166,24 @@ def calculate_onset_deltas(
     threshold: float = 0.2,
     chord_tolerance_seconds: float = 0.05,
 ) -> dict[str, object]:
-    """Calculate exact source-to-prediction deltas for every valid chord."""
+    """Calculate frame-level target-to-prediction deltas for valid chords."""
 
+    del midi_path, chord_tolerance_seconds
     artifact = load_artifact(input_path)
-    notes = MidoNoteReader().read(resolve_path(midi_path))
-    source_chords = InitializerChordMerger(
-        tolerance_seconds=chord_tolerance_seconds
-    ).merge(notes)
     valid_frames = np.flatnonzero(artifact.frame_mask)
     chords = []
 
     for chord_slot in np.flatnonzero(artifact.chord_mask):
         chord_slot = int(chord_slot)
         source_chord_id = int(artifact.chord_ids[chord_slot])
-        real_onset = float(source_chords[source_chord_id].onset)
+        target_frame = int(
+            valid_frames[
+                np.argmax(artifact.target[valid_frames, chord_slot])
+            ]
+        )
+        real_onset = (
+            artifact.frame_start + target_frame
+        ) / artifact.fps
         peak_frame, peak_score = _chord_peak(
             artifact.probability,
             valid_frames,

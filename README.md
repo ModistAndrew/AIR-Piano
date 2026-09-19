@@ -1817,7 +1817,7 @@ loss intentionally remains fixed in code.
 | `sonify.root` | `${output.dir}/inference/test` | Filesystem tree recursively scanned for NPZs and receiving adjacent MIDI sidecars plus final onset-delta JSON and PNG summaries. |
 | `sonify.midi_root` | `${data.midi_root}` | Root used with the artifact `record_id` to locate source MIDI. |
 | `sonify.threshold` | `0.2` | Inclusive chord peak threshold. |
-| `sonify.chord_tolerance_seconds` | Dataset chord tolerance | Source-MIDI grouping tolerance used to recover exact onsets by global chord ID. |
+| `sonify.chord_tolerance_seconds` | Dataset chord tolerance | Retained for call compatibility; onset reports use each NPZ target's peak frame. |
 | `sonify.duration_seconds` | `1.0` | Fixed output-note duration. |
 | `sonify.velocity` | `64` | Fixed note-on velocity. |
 

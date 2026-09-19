@@ -392,7 +392,7 @@ class RenderTest(unittest.TestCase):
             self.assertEqual(note_ons, [(0, 60, 64), (0, 64, 64)])
             self.assertEqual(note_offs, [(960, 60), (960, 64)])
 
-    def test_onset_deltas_use_source_chord_ids_and_mark_missed_chords(self) -> None:
+    def test_onset_deltas_use_target_peaks_and_mark_missed_chords(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             artifact = root / "result.npz"
@@ -402,42 +402,19 @@ class RenderTest(unittest.TestCase):
             probability[1, 0] = 0.5
             probability[2, 0] = 1.0
             probability[1, 1] = 0.49
+            target = np.zeros_like(probability)
+            target[1, 0] = 1.0
+            target[0, 1] = 1.0
             chord_ids = np.full(96, -1, dtype=np.int64)
             chord_ids[:2] = [1, 2]
             _write_artifact(
                 artifact,
                 probability=probability,
+                target=target,
                 chord_ids=chord_ids,
                 fps=np.asarray(10.0, dtype=np.float64),
                 frame_start=np.asarray(10, dtype=np.int64),
             )
-
-            events = [
-                (480, "note_on", 50, 50),
-                (576, "note_off", 50, 0),
-                (1008, "note_on", 60, 60),
-                (1032, "note_on", 64, 64),
-                (1104, "note_off", 60, 0),
-                (1128, "note_off", 64, 0),
-                (1200, "note_on", 67, 67),
-                (1296, "note_off", 67, 0),
-            ]
-            midi = mido.MidiFile(ticks_per_beat=480)
-            track = mido.MidiTrack()
-            midi.tracks.append(track)
-            track.append(mido.MetaMessage("set_tempo", tempo=500_000, time=0))
-            previous_tick = 0
-            for tick, message_type, pitch, velocity in events:
-                track.append(
-                    mido.Message(
-                        message_type,
-                        note=pitch,
-                        velocity=velocity,
-                        time=tick - previous_tick,
-                    )
-                )
-                previous_tick = tick
-            midi.save(source)
 
             report = calculate_onset_deltas(
                 artifact,
@@ -453,16 +430,16 @@ class RenderTest(unittest.TestCase):
             self.assertEqual(detected["source_chord_id"], 1)
             self.assertTrue(detected["detected"])
             self.assertAlmostEqual(detected["peak_probability"], 0.5)
-            self.assertAlmostEqual(detected["real_onset_seconds"], 1.05)
+            self.assertAlmostEqual(detected["real_onset_seconds"], 1.1)
             self.assertAlmostEqual(detected["predicted_onset_seconds"], 1.0)
-            self.assertAlmostEqual(detected["delta_seconds"], -0.05)
-            self.assertAlmostEqual(detected["absolute_delta_seconds"], 0.05)
+            self.assertAlmostEqual(detected["delta_seconds"], -0.1)
+            self.assertAlmostEqual(detected["absolute_delta_seconds"], 0.1)
 
             self.assertEqual(missed["chord_id"], 1)
             self.assertEqual(missed["source_chord_id"], 2)
             self.assertFalse(missed["detected"])
             self.assertAlmostEqual(missed["peak_probability"], 0.49)
-            self.assertAlmostEqual(missed["real_onset_seconds"], 1.25)
+            self.assertAlmostEqual(missed["real_onset_seconds"], 1.0)
             self.assertIsNone(missed["predicted_onset_seconds"])
             self.assertIsNone(missed["delta_seconds"])
             self.assertIsNone(missed["absolute_delta_seconds"])
