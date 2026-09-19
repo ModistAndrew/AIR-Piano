@@ -66,6 +66,7 @@ The alignment loss is selected by `alignment_loss`; BCE remains the default.
 | `configs/wrist_xyz10_causal_chord24_extended_new.yaml` | Extended wrist-relative causal ablation with beat-grid chord-duration tokens. |
 | `configs/wrist_xyz10_causal_chord24_extended_last_chord_softmax.yaml` | Extended wrist-relative causal ablation with persistent last-chord targets and categorical softmax. |
 | `configs/wrist_xyz10_causal_chord24_extended_wrist_delta.yaml` | Extended wrist-relative causal ablation with camera-space wrist deltas in joint zero. |
+| `configs/wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20.yaml` | Wrist-delta ablation with chord-bounded hand windows and a 20% fully-missing-hand frame limit. |
 | `configs/wrist_xyz10.yaml` | Wrist-relative local-XYZ ×10 ablation inheriting the baseline. |
 | `configs/chord_duration.yaml` | Duration-conditioned chord-token ablation inheriting the baseline. |
 | `configs/causal_chord24.yaml` | Causal frame-attention and 24-chord slicing ablation inheriting the baseline. |
@@ -422,9 +423,9 @@ its normal skip-and-report behavior.
 ### Extended combined training
 
 The extended split keeps the combined validation and held-out test lists
-unchanged while expanding training to 1,951 records. It appends PianoMotion's
-`test_full.txt` records other than the 13 held-out test records, followed by
-PianoVAM test and validation, to the existing combined training list.
+unchanged while expanding PianoMotion training to 1,852 records. It appends
+PianoMotion's `test_full.txt` records other than the 13 held-out test records
+to the existing PianoMotion training list. PianoVAM is excluded.
 
 All extended modalities are addressed directly by their dataset-prefixed
 record IDs under the shared roots. Train the two extended ablations with:
@@ -790,6 +791,14 @@ defaults to zero. `hand_context_chords` can move these hand-frame boundaries to
 earlier and later neighboring chord onsets without adding those neighbors to
 the model's chord tokens or targets.
 
+`crop_to_chord_bounds=true` instead starts each hand window at the first
+selected chord onset and ends it at the latest physical note offset in the
+last selected chord. These bounds take precedence over the legacy crop,
+context, and end-padding settings. `max_zero_hand_fraction` optionally removes
+windows whose fraction of frames with neither hand present is strictly greater
+than the configured value; frames with either hand present do not count as
+zero-hand frames.
+
 Targets use global frame times and chord initializer onsets plus the configured
 event delay, which defaults to zero:
 
@@ -1126,6 +1135,22 @@ The corpus caches live under
 artifacts use
 `outputs/wrist_xyz10_causal_chord24_extended_wrist_delta/`. Existing
 wrist-relative caches are not read or overwritten.
+
+The filtered ablation reuses the same cache and model settings, crops each hand
+window to its selected chords, and removes windows with more than 20% frames
+where neither hand is present:
+
+```bash
+conda run -n v2n python run.py \
+  --config-name wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20 \
+  stage=train
+conda run -n v2n python run.py \
+  --config-name wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20 \
+  stage=test
+```
+
+Its artifacts use
+`outputs/wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20/`.
 
 ### Causal 24-chord ablation
 
@@ -1592,7 +1617,9 @@ the process into an output directory.
 | `InitializerChordMerger.duration_scale_range` / `duration_normalization` | Baseline `null` / `none`; optionally apply one random song scale or deterministic `song_mean` normalization before duration quantization. |
 | `CanonicalNpzReader` | Direct trusted canonical array loading. |
 | `OffsetScaleTransform` | Apply configured per-axis offset and scale, then restore absent slots to zero. |
-| `FutureChordSlicer` | Frame mode: 30 Hz, 210 frames, stride 105, fixed 128 future-extending candidates. Chord mode can add end padding or neighboring-onset hand context without changing chord tokens. Every chord token contains pitch and duration features. |
+| `FutureChordSlicer` | Frame mode: 30 Hz, 210 frames, stride 105, fixed 128 future-extending candidates. Chord mode can add end padding, neighboring-onset context, or opt-in chord-bound cropping without changing chord tokens. Every chord token contains pitch and duration features. |
+| `FutureChordSlicer.crop_to_chord_bounds` | `false`; optionally crop chord-mode hand frames to the first selected onset and final selected chord's latest note offset. |
+| `FutureChordSlicer.max_zero_hand_fraction` | `null`; optionally reject windows whose fraction of frames with neither hand present exceeds the configured value. |
 | `ChordOnsetEvents` | One event at each chord initializer onset plus `delay_seconds`. |
 | `TriangularSoftener.radius_seconds` | Continuous target radius `0.2`. |
 

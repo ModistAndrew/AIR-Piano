@@ -94,6 +94,8 @@ dataset:
     end_padding_seconds: 0.0
     hand_context_chords: 0
     crop_before_first_chord: false
+    crop_to_chord_bounds: false
+    max_zero_hand_fraction: null
   target_generator:
     _target_: airpiano.data.targets.TargetGenerator
     event_generator:

@@ -27,9 +27,18 @@ class FutureChordSlicer:
         end_padding_seconds: float = 0.0,
         hand_context_chords: int = 0,
         crop_before_first_chord: bool = False,
+        crop_to_chord_bounds: bool = False,
+        max_zero_hand_fraction: float | None = None,
     ):
         if mode not in {"frame", "chord"}:
             raise ValueError(f"unsupported slicing mode: {mode}")
+        if (
+            max_zero_hand_fraction is not None
+            and not 0.0 <= max_zero_hand_fraction <= 1.0
+        ):
+            raise ValueError(
+                "max_zero_hand_fraction must be between zero and one"
+            )
         self.mode = mode
         self.fps = float(fps)
         self.segment_frames = int(segment_frames)
@@ -38,6 +47,12 @@ class FutureChordSlicer:
         self.end_padding_seconds = float(end_padding_seconds)
         self.hand_context_chords = int(hand_context_chords)
         self.crop_before_first_chord = bool(crop_before_first_chord)
+        self.crop_to_chord_bounds = bool(crop_to_chord_bounds)
+        self.max_zero_hand_fraction = (
+            None
+            if max_zero_hand_fraction is None
+            else float(max_zero_hand_fraction)
+        )
 
     def starts(self, item_count: int) -> tuple[int, ...]:
         """Return regular starts plus the exact right-aligned final start."""
@@ -93,6 +108,22 @@ class FutureChordSlicer:
         first_position = chord_positions[0]
         last_position = chord_positions[-1]
         frame_count = len(song.hands)
+        if self.crop_to_chord_bounds:
+            frame_start = math.ceil(
+                song.chords[first_position].onset * self.fps
+            )
+            frame_stop = math.ceil(
+                max(
+                    note.offset
+                    for note in song.chords[last_position].notes
+                )
+                * self.fps
+            )
+            return (
+                max(0, min(frame_start, frame_count)),
+                max(0, min(frame_stop, frame_count)),
+            )
+
         context_start_position = max(
             0, first_position - self.hand_context_chords
         )
@@ -129,6 +160,22 @@ class FutureChordSlicer:
             max(0, min(frame_stop, frame_count)),
         )
 
+    def _accepts_hand_window(
+        self,
+        song: Song,
+        frame_start: int,
+        frame_stop: int,
+    ) -> bool:
+        """Return whether a hand interval passes the optional absence gate."""
+
+        if self.max_zero_hand_fraction is None:
+            return True
+        zero_hand_frames = int(
+            (~song.presence[frame_start:frame_stop].any(dim=-1)).sum()
+        )
+        zero_hand_fraction = zero_hand_frames / (frame_stop - frame_start)
+        return zero_hand_fraction <= self.max_zero_hand_fraction
+
     def windows(
         self, song: Song
     ) -> tuple[tuple[int, int, tuple[int, ...]], ...]:
@@ -142,7 +189,11 @@ class FutureChordSlicer:
                     frame_start + self.segment_frames,
                     len(song.hands),
                 )
-                if positions and frame_stop > frame_start:
+                if (
+                    positions
+                    and frame_stop > frame_start
+                    and self._accepts_hand_window(song, frame_start, frame_stop)
+                ):
                     windows.append((frame_start, frame_stop, positions))
             return tuple(windows)
 
@@ -155,7 +206,9 @@ class FutureChordSlicer:
             )
             positions = tuple(range(chord_start, chord_stop))
             frame_start, frame_stop = self.chord_frame_bounds(song, positions)
-            if frame_stop > frame_start:
+            if frame_stop > frame_start and self._accepts_hand_window(
+                song, frame_start, frame_stop
+            ):
                 windows.append((frame_start, frame_stop, positions))
         return tuple(windows)
 

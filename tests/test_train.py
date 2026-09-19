@@ -122,6 +122,8 @@ class TrainTest(unittest.TestCase):
         self.assertEqual(float(config.dataset.random_hand_shift_seconds), 0.0)
         self.assertEqual(components["slicer"].end_padding_seconds, 0.0)
         self.assertEqual(components["slicer"].hand_context_chords, 0)
+        self.assertFalse(components["slicer"].crop_to_chord_bounds)
+        self.assertIsNone(components["slicer"].max_zero_hand_fraction)
         self.assertEqual(
             components["target_generator"].event_generator.delay_seconds,
             0.0,
@@ -239,6 +241,7 @@ class TrainTest(unittest.TestCase):
             "wrist_xyz10_wrist_delta",
             "wrist_xyz10_wrist_delta_pianovam",
             "wrist_xyz10_causal_chord24_extended_wrist_delta",
+            "wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20",
         )
         with initialize_config_dir(
             version_base=None, config_dir=str(config_directory.resolve())
@@ -294,6 +297,27 @@ class TrainTest(unittest.TestCase):
         self.assertEqual(extended_components["slicer"].mode, "chord")
         self.assertEqual(extended_components["slicer"].segment_frames, 24)
         self.assertEqual(extended_components["slicer"].stride_frames, 12)
+        self.assertFalse(extended_components["slicer"].crop_to_chord_bounds)
+        self.assertIsNone(
+            extended_components["slicer"].max_zero_hand_fraction
+        )
+
+        filtered = configurations[
+            "wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20"
+        ]
+        filtered_components = data.build_data_components(filtered)
+        filtered_slicer = filtered_components["slicer"]
+        self.assertEqual(str(filtered.data.root), str(extended.data.root))
+        self.assertEqual(
+            {key: str(value) for key, value in filtered.data.splits.items()},
+            {key: str(value) for key, value in extended.data.splits.items()},
+        )
+        self.assertTrue(bool(filtered.model.causal_frame_attention))
+        self.assertEqual(filtered_slicer.mode, "chord")
+        self.assertEqual(filtered_slicer.segment_frames, 24)
+        self.assertEqual(filtered_slicer.stride_frames, 12)
+        self.assertTrue(filtered_slicer.crop_to_chord_bounds)
+        self.assertEqual(filtered_slicer.max_zero_hand_fraction, 0.2)
 
     def test_pianovam_config_keeps_baseline_behavior_at_30_fps(self) -> None:
         config_directory = Path(__file__).parents[1] / "configs"

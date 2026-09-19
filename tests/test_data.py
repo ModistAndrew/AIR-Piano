@@ -587,7 +587,37 @@ class SlicingAndTargetTest(unittest.TestCase):
         self.assertEqual(slicer.starts(3), (0,))
         self.assertEqual(slicer.starts(11), (0, 3, 6, 7))
 
-    def test_slice_selects_overlaps_then_future_and_collapses_duplicate_pitch(self) -> None:
+    def test_zero_hand_fraction_must_be_between_zero_and_one(self) -> None:
+        for value in (-0.1, 1.1):
+            with self.subTest(value=value), self.assertRaisesRegex(
+                ValueError, "max_zero_hand_fraction"
+            ):
+                FutureChordSlicer(max_zero_hand_fraction=value)
+
+    def test_frame_mode_filters_only_fully_empty_frames_above_limit(self) -> None:
+        chords = (_chord(0, (_note(0, 0.0, 1.0, 60),)),)
+        presence = torch.ones((10, 2), dtype=torch.bool)
+        presence[0] = torch.tensor([True, False])
+        presence[1] = False
+        presence[5:7] = False
+        song = _song(
+            chords,
+            frame_count=10,
+            fps=10.0,
+            presence=presence,
+        )
+        slicer = FutureChordSlicer(
+            fps=10.0,
+            segment_frames=5,
+            stride_frames=5,
+            max_zero_hand_fraction=0.2,
+        )
+
+        self.assertEqual(slicer.windows(song), ((0, 5, (0,)),))
+
+    def test_slice_selects_overlaps_then_future_and_collapses_duplicate_pitch(
+        self,
+    ) -> None:
         chords = (
             _chord(0, (_note(0, 0.0, 0.2, 50),)),
             _chord(
@@ -707,6 +737,69 @@ class SlicingAndTargetTest(unittest.TestCase):
         self.assertNotIn("frame_mask", window)
         self.assertNotIn("chord_mask", window)
         torch.testing.assert_close(window["hands"], song.hands[10:21])
+
+    def test_chord_mode_can_crop_to_selected_chord_bounds(self) -> None:
+        chords = (
+            _chord(0, (_note(0, 0.21, 0.4, 60),)),
+            _chord(
+                1,
+                (
+                    _note(1, 0.55, 0.91, 61),
+                    _note(2, 0.57, 1.04, 62),
+                ),
+            ),
+            _chord(2, (_note(3, 1.21, 1.4, 63),)),
+            _chord(3, (_note(4, 1.55, 1.93, 64),)),
+        )
+        slicer = FutureChordSlicer(
+            mode="chord",
+            fps=10.0,
+            segment_frames=2,
+            stride_frames=2,
+            end_padding_seconds=3.0,
+            hand_context_chords=1,
+            crop_to_chord_bounds=True,
+        )
+
+        song = _song(chords, frame_count=30, fps=10.0)
+        self.assertEqual(
+            slicer.windows(song),
+            (
+                (3, 11, (0, 1)),
+                (13, 20, (2, 3)),
+            ),
+        )
+
+        short_song = _song(chords, frame_count=18, fps=10.0)
+        self.assertEqual(slicer.windows(short_song)[1], (13, 18, (2, 3)))
+
+    def test_zero_hand_filter_uses_cropped_chord_bounds(self) -> None:
+        chords = (
+            _chord(0, (_note(0, 0.21, 0.4, 60),)),
+            _chord(1, (_note(1, 0.55, 1.04, 61),)),
+        )
+        presence = torch.zeros((20, 2), dtype=torch.bool)
+        presence[3:11, 0] = True
+        slicer = FutureChordSlicer(
+            mode="chord",
+            fps=10.0,
+            segment_frames=2,
+            stride_frames=2,
+            crop_to_chord_bounds=True,
+            max_zero_hand_fraction=0.2,
+        )
+
+        song = _song(chords, frame_count=20, fps=10.0, presence=presence)
+        self.assertEqual(slicer.windows(song), ((3, 11, (0, 1)),))
+
+        presence[3:5] = False
+        filtered_song = _song(
+            chords,
+            frame_count=20,
+            fps=10.0,
+            presence=presence,
+        )
+        self.assertEqual(slicer.windows(filtered_song), ())
 
     def test_last_chord_dataset_crops_pre_onset_frames(self) -> None:
         chords = tuple(
