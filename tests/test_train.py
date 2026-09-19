@@ -97,6 +97,22 @@ class TrainTest(unittest.TestCase):
         self.assertIsNone(canonicalizer.postprocessor)
         self.assertEqual(str(config.output.dir), "outputs/baseline")
         self.assertEqual(
+            str(config.data.root), "/storage/jinxuan/data/AirPianoFull"
+        )
+        self.assertEqual(
+            str(config.data.processed_root),
+            "/storage2/jinxuan/data/AirPianoFull",
+        )
+        self.assertEqual(str(config.data.midi_root), f"{config.data.root}/MIDI")
+        self.assertEqual(str(config.data.video_root), f"{config.data.root}/Video")
+        self.assertEqual(
+            str(config.data.raw_wilor_root), f"{config.data.processed_root}/wilor"
+        )
+        self.assertEqual(
+            str(config.data.hand_root),
+            f"{config.data.processed_root}/airpiano_wilor_2p5d_30fps",
+        )
+        self.assertEqual(
             type(instantiate(config.model)).__name__, "AirPianoTransformer"
         )
         self.assertEqual(components["slicer"].mode, "frame")
@@ -264,7 +280,7 @@ class TrainTest(unittest.TestCase):
         ]
         extended_components = data.build_data_components(extended)
         self.assertEqual(
-            str(extended.data.root), "/storage2/jinxuan/data/AirPianoFull"
+            str(extended.data.root), "/storage/jinxuan/data/AirPianoFull"
         )
         self.assertEqual(
             {key: str(value) for key, value in extended.data.splits.items()},
@@ -294,11 +310,11 @@ class TrainTest(unittest.TestCase):
         self.assertEqual(str(config.output.dir), "outputs/pianovam")
         self.assertEqual(str(config.wandb.name), "pianovam")
         self.assertEqual(
-            str(config.data.root), "/storage/jinxuan/data/PianoVAM_v1"
+            str(config.data.root), "/storage/jinxuan/data/AirPianoFull"
         )
         self.assertEqual(
             str(config.data.processed_root),
-            "/storage2/jinxuan/data/PianoVAM_v1",
+            "/storage2/jinxuan/data/AirPianoFull",
         )
         self.assertEqual(str(config.data.midi_root), f"{config.data.root}/MIDI")
         self.assertEqual(str(config.data.video_root), f"{config.data.root}/Video")
@@ -374,15 +390,16 @@ class TrainTest(unittest.TestCase):
             config = compose(config_name="full")
 
         components = data.build_data_components(config)
-        root = "/storage2/jinxuan/data/AirPianoFull"
+        root = "/storage/jinxuan/data/AirPianoFull"
+        processed_root = "/storage2/jinxuan/data/AirPianoFull"
         self.assertEqual(str(config.output.dir), "outputs/full")
         self.assertEqual(str(config.wandb.name), "full")
         self.assertEqual(str(config.data.root), root)
-        self.assertEqual(str(config.data.processed_root), root)
-        self.assertEqual(str(config.data.midi_root), f"{root}/midi")
+        self.assertEqual(str(config.data.processed_root), processed_root)
+        self.assertEqual(str(config.data.midi_root), f"{root}/MIDI")
         self.assertEqual(
             str(config.data.hand_root),
-            f"{root}/airpiano_wilor_2p5d_30fps",
+            f"{processed_root}/airpiano_wilor_2p5d_30fps",
         )
         self.assertEqual(
             {name: str(path) for name, path in config.data.splits.items()},
@@ -464,7 +481,8 @@ class TrainTest(unittest.TestCase):
                 name: compose(config_name=name) for name in config_names
             }
 
-        root = "/storage2/jinxuan/data/AirPianoFull"
+        root = "/storage/jinxuan/data/AirPianoFull"
+        processed_root = "/storage2/jinxuan/data/AirPianoFull"
         expected_splits = {
             "train": "assets/splits/extended/train.txt",
             "valid": "assets/splits/extended/valid.txt",
@@ -472,10 +490,10 @@ class TrainTest(unittest.TestCase):
         }
         expected_hand_roots = {
             "causal_chord24_extended": (
-                f"{root}/airpiano_wilor_2p5d_30fps"
+                f"{processed_root}/airpiano_wilor_2p5d_30fps"
             ),
             "wrist_xyz10_causal_chord24_extended": (
-                f"{root}/airpiano_wilor_wrist_xyz_30fps"
+                f"{processed_root}/airpiano_wilor_wrist_xyz_30fps"
             ),
         }
         expected_scales = {
@@ -488,8 +506,8 @@ class TrainTest(unittest.TestCase):
             self.assertEqual(str(config.output.dir), f"outputs/{name}")
             self.assertEqual(str(config.wandb.name), name)
             self.assertEqual(str(config.data.root), root)
-            self.assertEqual(str(config.data.processed_root), root)
-            self.assertEqual(str(config.data.midi_root), f"{root}/midi")
+            self.assertEqual(str(config.data.processed_root), processed_root)
+            self.assertEqual(str(config.data.midi_root), f"{root}/MIDI")
             self.assertEqual(str(config.data.hand_root), expected_hand_roots[name])
             self.assertEqual(
                 {key: str(value) for key, value in config.data.splits.items()},
@@ -519,7 +537,7 @@ class TrainTest(unittest.TestCase):
         self.assertEqual(str(config.wandb.name), name)
         self.assertEqual(
             str(config.data.beat_root),
-            "/storage/jinxuan/data/PianoMotion10M/beats",
+            "/storage2/jinxuan/data/AirPianoFull/beats",
         )
         self.assertTrue(reader.quantization)
         self.assertEqual(reader.subdivision, 12)
@@ -554,7 +572,7 @@ class TrainTest(unittest.TestCase):
         self.assertEqual(components["slicer"].segment_frames, 24)
         self.assertEqual(components["slicer"].stride_frames, 12)
         self.assertEqual(
-            str(config.data.root), "/storage2/jinxuan/data/AirPianoFull"
+            str(config.data.root), "/storage/jinxuan/data/AirPianoFull"
         )
 
     def test_wrist_chord_zero_hand_and_delayed_target_configs(self) -> None:
@@ -737,15 +755,16 @@ class TrainTest(unittest.TestCase):
         components = data.build_data_components(config)
         merger = components["midi_loader"].chord_merger
         slicer = components["slicer"]
-        root = "/storage2/jinxuan/data/AirPianoFull"
+        root = "/storage/jinxuan/data/AirPianoFull"
+        processed_root = "/storage2/jinxuan/data/AirPianoFull"
         self.assertEqual(str(config.output.dir), f"outputs/{name}")
         self.assertEqual(str(config.wandb.name), name)
         self.assertEqual(str(config.data.root), root)
-        self.assertEqual(str(config.data.processed_root), root)
-        self.assertEqual(str(config.data.midi_root), f"{root}/midi")
+        self.assertEqual(str(config.data.processed_root), processed_root)
+        self.assertEqual(str(config.data.midi_root), f"{root}/MIDI")
         self.assertEqual(
             str(config.data.hand_root),
-            f"{root}/airpiano_wilor_2p5d_30fps",
+            f"{processed_root}/airpiano_wilor_2p5d_30fps",
         )
         self.assertEqual(
             {key: str(value) for key, value in config.data.splits.items()},

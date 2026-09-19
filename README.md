@@ -77,8 +77,6 @@ The alignment loss is selected by `alignment_loss`; BCE remains the default.
 | `configs/wrist_xyz10_causal_chord24_chord_duration_relative.yaml` | Wrist-relative, causal 24-chord model with song-scaled duration tokens. |
 | `scripts/convert_legacy_splits.py` | One-time conversion of the original PianoMotion split lists to generalized record stems. |
 | `scripts/convert_pianovam_splits.py` | Generate AirPiano splits from PianoVAM's canonical v1.1 metadata. |
-| `scripts/create_full_data_view.py` | Build the symlink-only combined MIDI/canonical-hand view. |
-| `scripts/migrate_pianomotion_data.py` | Resumable, verified migration of PianoMotion postprocessed data to `/storage2`. |
 | `assets/splits/pianomotion10m/` | Ignored, locally generated train, validation, and test record stems used by the baseline. |
 | `assets/splits/pianovam/` | Ignored, locally generated PianoVAM train, validation, and test record stems. |
 | `assets/splits/full/` | Combined train split plus PianoMotion validation and test stems. |
@@ -243,7 +241,7 @@ also override `device=cuda:0`.
 ```bash
 nvidia-smi --query-gpu=index,name,memory.total,memory.free --format=csv
 conda run -n v2n wandb login
-df -h /storage/jinxuan/data/PianoMotion10M \
+df -h /storage/jinxuan/data/AirPianoFull \
   /storage2 /storage/jinxuan/workspace/AirPiano
 ```
 
@@ -258,22 +256,24 @@ A record is identified by one root-relative POSIX stem. A split line may contain
 nested directories, dots, or spaces:
 
 ```text
-performer_07/session.v1/take.03
-ensemble A/rehearsal/finale
+PianoMotion10M/performer_07/session.v1/take.03
+PianoVAM_v1/2024-09-02_12-45-12
 ```
 
 Blank lines and lines whose stripped form begins with `#` are ignored. Duplicate
-stems are removed in first-seen order. The complete stripped line is the
-`record_id`; it is not tokenized into dataset-specific identity fields.
+stems are removed in first-seen order. Every record begins with the owning
+dataset directory, `PianoMotion10M/` or `PianoVAM_v1/`. The complete stripped
+line is the `record_id`; it is not tokenized into separate identity fields.
 
 Extensions are appended to the complete stem rather than replacing its final
-suffix. Given `performer_07/session.v1/take.03`, offline roots resolve to:
+suffix. Given `PianoMotion10M/performer_07/session.v1/take.03`, offline roots
+resolve to:
 
 ```text
-<video_root>/performer_07/session.v1/take.03.mp4
-<midi_root>/performer_07/session.v1/take.03.mid
-<raw_wilor_root>/performer_07/session.v1/take.03/
-<hand_root>/performer_07/session.v1/take.03.npz
+<video_root>/PianoMotion10M/performer_07/session.v1/take.03.mp4
+<midi_root>/PianoMotion10M/performer_07/session.v1/take.03.mid
+<raw_wilor_root>/PianoMotion10M/performer_07/session.v1/take.03/
+<hand_root>/PianoMotion10M/performer_07/session.v1/take.03.npz
 ```
 
 `RelativeStemPairer` reports each missing MIDI/canonical path, prints a
@@ -289,11 +289,12 @@ generate them before preprocessing or training:
 ```text
 assets/splits/pianomotion10m/train.txt    882 records
 assets/splits/pianomotion10m/valid.txt    101 records
-assets/splits/pianomotion10m/test.txt     983 records
+assets/splits/pianomotion10m/test.txt      13 records
+assets/splits/pianomotion10m/test_full.txt 983 records
 ```
 
-To reproduce them from the original PianoMotion lists at the script's default
-source root:
+To reproduce `train.txt`, `valid.txt`, and the complete source `test_full.txt`
+from the original PianoMotion lists at the script's default source root:
 
 ```bash
 conda run -n v2n python scripts/convert_legacy_splits.py
@@ -307,9 +308,10 @@ conda run -n v2n python scripts/convert_legacy_splits.py \
   --output-root=/absolute/path/to/generalized_splits
 ```
 
-The converter preserves first-seen order, removes duplicates, emits POSIX
-stems, and writes newline-terminated files. It is a migration utility only;
-runtime split readers accept only generalized stems.
+The converter preserves first-seen order, removes duplicates, prefixes every
+stem with `PianoMotion10M/`, and writes newline-terminated files. It deliberately
+does not overwrite the 13-record held-out `test.txt`. Runtime split readers
+accept only generalized, dataset-prefixed stems.
 
 ### PianoVAM splits and 30 Hz preparation
 
@@ -317,8 +319,8 @@ runtime split readers accept only generalized stems.
 roots are intentionally separate:
 
 ```text
-source:     /storage/jinxuan/data/PianoVAM_v1
-processed:  /storage2/jinxuan/data/PianoVAM_v1
+source:     /storage/jinxuan/data/AirPianoFull
+processed:  /storage2/jinxuan/data/AirPianoFull
 splits:     <AirPiano>/assets/splits/pianovam
 ```
 
@@ -330,11 +332,11 @@ conda run -n v2n python scripts/convert_pianovam_splits.py
 wc -l assets/splits/pianovam/*.txt
 ```
 
-The converter sorts record IDs, requires the selected records' MP4 and MIDI
-files, merges `ext-train` into training, and excludes the special blurry and
-four-hand subsets. The expected counts are 81 train, 9 valid, and 9 test (99
-records total). Use `--data-root` and `--output-root` only for an alternate
-installation.
+The converter sorts record IDs, prefixes them with `PianoVAM_v1/`, requires the
+selected records' MP4 and MIDI files beneath the shared modality roots, merges
+`ext-train` into training, and excludes the special blurry and four-hand
+subsets. The expected counts are 81 train, 9 valid, and 9 test (99 records
+total). Use `--data-root` and `--output-root` only for an alternate installation.
 
 This preset does not reuse `processed_wilor_25fps`. For records without a raw
 cache, it first-due samples the native video to 30 Hz before hand detection and
@@ -380,9 +382,9 @@ even if their rate differs from the current setting. Completion requires 99
 `_SUCCESS` markers under the configured ragged root and 99 canonical NPZs:
 
 ```bash
-find /storage2/jinxuan/data/PianoVAM_v1/wilor \
+find /storage2/jinxuan/data/AirPianoFull/wilor/PianoVAM_v1 \
   -name _SUCCESS -type f | wc -l
-find /storage2/jinxuan/data/PianoVAM_v1/airpiano_wilor_2p5d_30fps \
+find /storage2/jinxuan/data/AirPianoFull/airpiano_wilor_2p5d_30fps/PianoVAM_v1 \
   -maxdepth 1 -name '*.npz' -type f | wc -l
 ```
 
@@ -397,28 +399,16 @@ Artifacts live under `outputs/pianovam`. PianoVAM is CC BY-NC-SA 4.0; the
 derived cache also remains subject to WiLoR and MANO terms. Do not commit or
 redistribute the source data, model assets, or derived pose arrays.
 
-### Combined PianoMotion and PianoVAM training view
+### Combined PianoMotion and PianoVAM training
 
-`configs/full.yaml` trains on the existing combined split without copying
-either dataset. Its train list is PianoMotion train followed by PianoVAM train
-(963 records); validation and test remain PianoMotion-only with 101 and 13
-records. Create the absolute-symlink view with:
-
-```bash
-conda run -n v2n python scripts/create_full_data_view.py
-conda run -n v2n python run.py --config-name full --cfg job --resolve
-```
-
-The resulting `/storage2/jinxuan/data/AirPianoFull` contains unified `midi/`
-and `airpiano_wilor_2p5d_30fps/` trees. Nested record stems are preserved. The
-builder is idempotent, refuses conflicting destinations, requires every MIDI
-source, and creates dangling hand symlinks for canonical files that are still
-being generated. The normal pairer reports and skips those records until the
-targets appear; rerunning the builder is unnecessary.
+`configs/full.yaml` reads both datasets directly from the shared modality
+roots. Its train list is PianoMotion train followed by PianoVAM train (963
+records); validation and test remain PianoMotion-only with 101 and 13 records.
+No symlink view or preparation command is required.
 
 This preset is only for training and evaluation. Continue preprocessing with
 `baseline` for PianoMotion or `pianovam` for PianoVAM so each corpus retains its
-own source roots and pre-WiLoR sampling policy. Train and evaluate with:
+own pre-WiLoR sampling policy. Train and evaluate with:
 
 ```bash
 conda run -n v2n python run.py --config-name full stage=train
@@ -429,35 +419,15 @@ With every canonical file present, the expected pairing summaries are
 963/101/13 for train/valid/test. Until then, the configured loader preserves
 its normal skip-and-report behavior.
 
-### Extended combined training view
+### Extended combined training
 
 The extended split keeps the combined validation and held-out test lists
 unchanged while expanding training to 1,951 records. It appends PianoMotion's
 `test_full.txt` records other than the 13 held-out test records, followed by
 PianoVAM test and validation, to the existing combined training list.
 
-Add the extended standard-hand records to the existing combined symlink view:
-
-```bash
-conda run -n v2n python scripts/create_full_data_view.py \
-  --full-split-root assets/splits/extended \
-  --pianomotion-extra-split assets/splits/pianomotion10m/test_full.txt
-```
-
-Create the parallel wrist-relative hand tree in that same view with:
-
-```bash
-conda run -n v2n python scripts/create_full_data_view.py \
-  --full-split-root assets/splits/extended \
-  --pianomotion-extra-split assets/splits/pianomotion10m/test_full.txt \
-  --view-hand-root /storage2/jinxuan/data/AirPianoFull/airpiano_wilor_wrist_xyz_30fps \
-  --pianomotion-hand-root /storage2/jinxuan/data/PianoMotion10M/airpiano_wilor_wrist_xyz_30fps \
-  --pianovam-hand-root /storage2/jinxuan/data/PianoVAM_v1/airpiano_wilor_wrist_xyz_30fps
-```
-
-The builder creates dangling hand symlinks for canonical caches that are not
-ready and reports their count; it does not generate those caches. Train the two
-extended ablations with:
+All extended modalities are addressed directly by their dataset-prefixed
+record IDs under the shared roots. Train the two extended ablations with:
 
 ```bash
 conda run -n v2n python run.py --config-name causal_chord24_extended stage=train
@@ -465,167 +435,33 @@ conda run -n v2n python run.py \
   --config-name wrist_xyz10_causal_chord24_extended stage=train
 ```
 
-## PianoMotion postprocessed-data migration
+## Consolidated dataset layout
 
-The baseline keeps immutable inputs on the original volume and generated data
-on the larger volume:
-
-```text
-/storage/jinxuan/data/PianoMotion10M/
-├── midi/
-└── Video/
-
-/storage2/jinxuan/data/PianoMotion10M/
-├── .airpiano-migration-v1.json
-├── airpiano_wilor_2p5d_30fps/
-├── processed_pianomotion_image_xy_wrist_z_30fps/
-├── processed_pianomotion_mano_30fps/
-├── processed_pianomotionnew_wilor_2p5d_30fps/
-└── wilor/
-```
-
-The one-time migration uses these defaults:
+AirPiano uses modality-first roots with a dataset namespace inside each
+modality. Immutable source data lives under `/storage/jinxuan/data/AirPianoFull`;
+derived caches live under `/storage2/jinxuan/data/AirPianoFull`.
 
 ```text
-source:  /storage/jinxuan/data/PianoMotion10M
-staging: /storage2/jinxuan/data/.PianoMotion10M.airpiano-migration
-target:  /storage2/jinxuan/data/PianoMotion10M
-splits:  <AirPiano>/assets/splits/pianomotion10m
+/storage/jinxuan/data/AirPianoFull/
+├── Video/{PianoMotion10M,PianoVAM_v1}/
+├── MIDI/{PianoMotion10M,PianoVAM_v1}/
+├── Audio/{PianoMotion10M,PianoVAM_v1}/
+├── Annotation/PianoMotion10M/
+├── Handskeleton/PianoVAM_v1/
+├── TSV/PianoVAM_v1/
+└── Metadata/{PianoMotion10M,PianoVAM_v1}/
+
+/storage2/jinxuan/data/AirPianoFull/
+├── wilor/{PianoMotion10M,PianoVAM_v1}/
+├── airpiano_wilor_*_30fps/{PianoMotion10M,PianoVAM_v1}/
+├── processed_*/<owning-dataset>/
+├── beats/PianoMotion10M/
+├── .cache/PianoVAM_v1/
+└── Metadata/PianoMotion10M/
 ```
 
-The live report on 2026-09-05 found this split coverage:
-
-| Split | Full | MIDI | Video | Raw manifest | Complete raw | Canonical |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Train | 882 | 882 | 835 | 834 | 833 | 581 |
-| Valid | 101 | 101 | 93 | 93 | 93 | 35 |
-| Test | 983 | 983 | 336 | 336 | 336 | 64 |
-| Total | 1,966 | 1,966 | 1,264 | 1,263 | 1,262 | 680 |
-
-The extra video relative to the original 1,263-video inventory is
-`688183660/BV1CZ42127hq`; it has no raw manifest yet. Treat a fresh `report`,
-not this dated snapshot, as authoritative if producers add more files.
-
-`report` is read-only. It independently audits the full split union, MIDI,
-video, raw-cache, completed-raw, and canonical intersections, reports
-percentages and byte totals, identifies incomplete records, and checks target
-capacity. Use the optional missing-record output when investigating a mismatch:
-
-```bash
-conda run -n v2n python scripts/migrate_pianomotion_data.py report
-conda run -n v2n python scripts/migrate_pianomotion_data.py report \
-  --show-missing
-```
-
-For a different checkout or storage layout, place path overrides before the
-subcommand:
-
-```bash
-conda run -n v2n python scripts/migrate_pianomotion_data.py \
-  --source-root /source/PianoMotion10M \
-  --destination-root /destination/PianoMotion10M \
-  --split-root /path/to/splits report
-```
-
-The retained trees currently contain 35,125,061,684 logical bytes (32.71 GiB;
-about 32.74 GiB of filesystem usage). `copy` requires the `/storage2` parent to
-be writable and to have enough free space. It resumes into the hidden staging
-directory with `rsync`, checksum-verifies every retained file, and never
-removes or modifies a source file:
-
-```bash
-findmnt -no OPTIONS /storage2
-```
-
-At the time of implementation this environment reported `/storage2` as
-read-only. An administrator must make the mount writable before `copy`; the
-migration utility never changes mounts or permissions itself.
-
-```bash
-conda run -n v2n python scripts/migrate_pianomotion_data.py copy
-```
-
-It copies `wilor` in full, including historical top-level status logs, plus the
-three `processed_*` legacy trees shown above. It intentionally does not copy the
-existing `airpiano_wilor_2p5d_30fps`; those canonical files are inexpensive to
-regenerate.
-
-Within staging, each recognized WiLoR manifest is atomically converted from
-`pianomotion-wilor-v1` to `airpiano-wilor-ragged-v1`. Conversion removes only
-the dataset-specific `subject_id`, `video_id`, and `source_url` fields. It
-preserves the remaining timestamps, video metadata, model settings, inference
-settings, chunk inventory, and status, and it does not invent MANO provenance.
-The incomplete record `66685747/BV1wf4y157th` remains incomplete without
-`_SUCCESS`; its three resumable chunks are retained. Runtime itself remains
-strict and rejects every unconverted legacy manifest.
-
-After verification, staging contains `.airpiano-migration-v1.json`, a compact
-catalog of per-tree counts, byte sizes, and SHA-256 digests. `finalize` uses it
-to detect changes and recover safely if publication or source cleanup is
-interrupted. Keep this file with the published dataset root.
-
-After inspecting the report and staged copy, explicitly publish and clean up:
-
-Before the final `copy` pass, stop every process that reads or writes the five
-source trees, including WiLoR producers, canonical preprocessing, training,
-and status-log writers. Keep them stopped until `finalize` finishes. The
-utility verifies filesystem contents but cannot lock legacy processes that do
-not participate in its protocol; a writer racing source quarantine could
-otherwise create data that was not part of the verified copy, while a reader
-would lose its old path during cleanup.
-
-```bash
-conda run -n v2n python scripts/migrate_pianomotion_data.py copy
-conda run -n v2n python scripts/migrate_pianomotion_data.py finalize \
-  --confirm-delete-source
-```
-
-`finalize` first re-verifies staging against source, atomically publishes it as
-the target, and then deletes only these source directories:
-
-```text
-airpiano_wilor_2p5d_30fps
-processed_pianomotion_image_xy_wrist_z_30fps
-processed_pianomotion_mano_30fps
-processed_pianomotionnew_wilor_2p5d_30fps
-wilor
-```
-
-It creates an empty target `airpiano_wilor_2p5d_30fps` for regeneration. The
-confirmation flag is mandatory because source cleanup is destructive. Unknown
-manifest schemas, checksum differences, insufficient capacity, an unwritable
-destination, and unexpected pre-existing target content all stop the operation
-before source deletion. Source directories are first atomically quarantined to
-allowlisted hidden tombstones, so an interruption partway through recursive
-cleanup can be resumed without mistaking a partial tree for the verified
-source.
-
-Both mutating commands are restart-safe. Rerun `copy` after an interrupted
-transfer. If interruption occurs during or after publication, rerun the shown
-`finalize` command with `--confirm-delete-source`; it verifies an
-already-published destination before treating a missing allowlisted source
-directory as cleaned up. Do not manually merge staging with a pre-existing
-target.
-
-After finalization, regenerate all currently available canonical records without
-loading WiLoR:
-
-```bash
-conda run -n v2n python run.py stage=preprocess \
-  preprocess.task=ragged_to_canonical
-```
-
-The expected result is 1,262 canonical records, with the one incomplete raw
-cache and 703 unavailable records skipped. Once the WiLoR assets are available,
-resume the incomplete cache and canonicalize it through the normal combined
-pipeline:
-
-```bash
-CUDA_VISIBLE_DEVICES=1 conda run -n v2n python run.py \
-  stage=preprocess \
-  preprocess.task=all \
-  device=cuda:0
-```
+Split stems carry the same dataset prefix, so preprocessing and loading resolve
+directly against these roots without compatibility symlinks.
 
 ## Preprocessing contracts
 
@@ -719,8 +555,8 @@ modify pose caches:
 
 ```bash
 conda run -n v2n python -m airpiano.preprocessing.wilor.visualize \
-  --video /storage/jinxuan/data/PianoMotion10M/Video/442401135/BV1ED4y1D75s.mp4 \
-  --raw-cache /storage2/jinxuan/data/PianoMotion10M/wilor/442401135/BV1ED4y1D75s \
+  --video /storage/jinxuan/data/AirPianoFull/Video/PianoMotion10M/442401135/BV1ED4y1D75s.mp4 \
+  --raw-cache /storage2/jinxuan/data/AirPianoFull/wilor/PianoMotion10M/442401135/BV1ED4y1D75s \
   --output outputs/baseline/visualizations/wilor/BV1ED4y1D75s.mp4
 ```
 
@@ -760,13 +596,9 @@ Runtime has no raw-cache compatibility layer. Any manifest whose schema is not
 schema-mismatch `ValueError` in both producer reuse checks and canonicalization.
 Runtime never reuses or converts a legacy manifest.
 
-The one-time `scripts/migrate_pianomotion_data.py` utility is deliberately
-separate from runtime. During a verified storage migration it converts the
-known `pianomotion-wilor-v1` manifests at rest to
-`airpiano-wilor-ragged-v1`, without relaxing the producer or canonicalizer.
-Unknown schemas are rejected. See
-[PianoMotion postprocessed-data migration](#pianomotion-postprocessed-data-migration)
-before operating on the legacy corpus.
+The consolidated PianoMotion cache contains the already migrated
+`airpiano-wilor-ragged-v1` manifests. Unknown and legacy schemas remain
+rejected; storage layout does not relax the producer or canonicalizer.
 
 Existing canonical NPZs remain valid training inputs and are trusted when
 `overwrite=false`. However, a missing canonical file cannot be rebuilt from an
@@ -946,7 +778,7 @@ final chord using its latest member-release tick. That value is clamped to
 328-value chord-token shape. The
 `wrist_xyz10_causal_chord24_extended_new` preset enables this representation,
 12 subdivisions per beat, and chord-duration conditioning. Its dataset beat
-root is `/storage/jinxuan/data/PianoMotion10M/beats`.
+root is `/storage2/jinxuan/data/AirPianoFull/beats`.
 
 With `mode=chord`, `segment_frames` and `stride_frames` instead count chord
 tokens and `chord_count` is ignored. Token windows retain the exact
@@ -1181,7 +1013,7 @@ clean destination rather than expecting compatibility:
 ```bash
 conda run -n v2n python run.py stage=preprocess \
   preprocess.task=all \
-  data.raw_wilor_root=/storage2/jinxuan/data/PianoMotion10M/airpiano_wilor_raw
+  data.raw_wilor_root=/storage2/jinxuan/data/AirPianoFull/airpiano_wilor_raw
 ```
 
 For a small smoke list:
@@ -1280,18 +1112,7 @@ conda run -n v2n python run.py \
   stage=preprocess preprocess.task=ragged_to_canonical
 ```
 
-Create the corresponding symlink-only combined view:
-
-```bash
-conda run -n v2n python scripts/create_full_data_view.py \
-  --full-split-root assets/splits/extended \
-  --pianomotion-extra-split assets/splits/pianomotion10m/test_full.txt \
-  --view-hand-root /storage2/jinxuan/data/AirPianoFull/airpiano_wilor_wrist_xyz_delta_30fps \
-  --pianomotion-hand-root /storage2/jinxuan/data/PianoMotion10M/airpiano_wilor_wrist_xyz_delta_30fps \
-  --pianovam-hand-root /storage2/jinxuan/data/PianoVAM_v1/airpiano_wilor_wrist_xyz_delta_30fps
-```
-
-Train and evaluate only after the view reports no missing hand sources:
+Train and evaluate after the canonical roots contain the required records:
 
 ```bash
 conda run -n v2n python run.py \
@@ -1695,23 +1516,21 @@ Hydra `key=value` syntax.
 | `output.root` | `outputs` | Parent of generated project artifacts. |
 | `output.project_name` | `baseline` | Single local project directory name. |
 | `output.dir` | `${output.root}/${output.project_name}` | Explicit project artifact directory; relative values resolve from the AirPiano root. |
-| `data.root` | `/storage/jinxuan/data/PianoMotion10M` | Parent of immutable source modalities. |
-| `data.processed_root` | `/storage2/jinxuan/data/PianoMotion10M` | Parent of generated and migrated modalities. |
-| `data.midi_root` | `${data.root}/midi` | `<stem>.mid` files. |
-| `data.video_root` | `${data.root}/Video` | `<stem>.mp4` source videos. |
-| `data.raw_wilor_root` | `${data.processed_root}/wilor` | `<stem>/` current-schema raw caches. |
-| `data.hand_root` | `${data.processed_root}/airpiano_wilor_2p5d_30fps` | `<stem>.npz` canonical files. |
-| `data.splits.*` | `assets/splits/pianomotion10m/*.txt` | Ignored local generalized root-relative stems. |
+| `data.root` | `/storage/jinxuan/data/AirPianoFull` | Parent of immutable source modalities. |
+| `data.processed_root` | `/storage2/jinxuan/data/AirPianoFull` | Parent of generated modalities. |
+| `data.midi_root` | `${data.root}/MIDI` | `<dataset>/<stem>.mid` files. |
+| `data.video_root` | `${data.root}/Video` | `<dataset>/<stem>.mp4` source videos. |
+| `data.raw_wilor_root` | `${data.processed_root}/wilor` | `<dataset>/<stem>/` current-schema raw caches. |
+| `data.hand_root` | `${data.processed_root}/airpiano_wilor_2p5d_30fps` | `<dataset>/<stem>.npz` canonical files. |
+| `data.splits.*` | `assets/splits/pianomotion10m/*.txt` | Ignored local dataset-prefixed stems. |
 
-The `pianovam` preset overrides these paths with the PianoVAM source root,
-`/storage2/jinxuan/data/PianoVAM_v1` processed root, uppercase `MIDI/`, and
-`assets/splits/pianovam/*.txt`. It also requests 30 Hz first-due sampling before
-WiLoR for missing raw records. It retains the baseline 30 Hz canonical rate,
+The `pianovam` preset uses the same shared roots with
+`assets/splits/pianovam/*.txt`. It requests 30 Hz first-due sampling before
+WiLoR for missing raw records and retains the baseline 30 Hz canonical rate,
 210-frame, 105-stride, 128-chord, and pose-transform settings.
 
-The training/evaluation-only `full` preset points `midi_root` and `hand_root`
-at `/storage2/jinxuan/data/AirPianoFull`, the symlink view created by
-`scripts/create_full_data_view.py`, and uses `assets/splits/full/*.txt`.
+The training/evaluation-only `full` preset uses the same shared modality roots
+with `assets/splits/full/*.txt`; dataset-prefixed stems select the corpus.
 
 ### WiLoR and canonicalization
 

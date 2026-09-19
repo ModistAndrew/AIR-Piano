@@ -12,9 +12,9 @@ output:
   dir: ${output.root}/${output.project_name}
 
 data:
-  root: /storage/jinxuan/data/PianoMotion10M
-  processed_root: /storage2/jinxuan/data/PianoMotion10M
-  midi_root: ${data.root}/midi
+  root: /storage/jinxuan/data/AirPianoFull
+  processed_root: /storage2/jinxuan/data/AirPianoFull
+  midi_root: ${data.root}/MIDI
   video_root: ${data.root}/Video
   raw_wilor_root: ${data.processed_root}/wilor
   hand_root: ${data.processed_root}/airpiano_wilor_2p5d_30fps

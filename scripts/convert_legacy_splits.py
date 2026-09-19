@@ -11,9 +11,13 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_SOURCE_ROOT = Path("/storage/jinxuan/data/PianoMotion10M")
+DATASET_NAME = "PianoMotion10M"
+DEFAULT_SOURCE_ROOT = Path(
+    "/storage/jinxuan/data/AirPianoFull/Metadata/PianoMotion10M"
+)
 DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "assets" / "splits" / "pianomotion10m"
 SPLIT_NAMES = ("train", "valid", "test")
+OUTPUT_NAMES = {"train": "train", "valid": "valid", "test": "test_full"}
 
 
 def convert_split(source: Path, destination: Path) -> int:
@@ -27,7 +31,7 @@ def convert_split(source: Path, destination: Path) -> int:
             if not line or line.startswith("#"):
                 continue
             subject, video_id = line.split()
-            record_id = (Path(subject) / video_id).as_posix()
+            record_id = (Path(DATASET_NAME) / subject / video_id).as_posix()
             if record_id not in seen:
                 seen.add(record_id)
                 records.append(record_id)
@@ -46,7 +50,7 @@ def convert_splits(source_root: Path, output_root: Path) -> dict[str, int]:
     return {
         name: convert_split(
             source_root / f"{name}.txt",
-            output_root / f"{name}.txt",
+            output_root / f"{OUTPUT_NAMES[name]}.txt",
         )
         for name in SPLIT_NAMES
     }

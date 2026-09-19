@@ -6,8 +6,8 @@ output:
   project_name: pianovam
 
 data:
-  root: /storage/jinxuan/data/PianoVAM_v1
-  processed_root: /storage2/jinxuan/data/PianoVAM_v1
+  root: /storage/jinxuan/data/AirPianoFull
+  processed_root: /storage2/jinxuan/data/AirPianoFull
   midi_root: ${data.root}/MIDI
   video_root: ${data.root}/Video
   raw_wilor_root: ${data.processed_root}/wilor

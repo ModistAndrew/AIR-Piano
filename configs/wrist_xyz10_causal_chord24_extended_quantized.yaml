@@ -6,9 +6,9 @@ output:
   project_name: wrist_xyz10_causal_chord24_extended_quantized
 
 data:
-  root: /storage2/jinxuan/data/AirPianoFull
-  processed_root: ${data.root}
-  beat_root: /storage/jinxuan/data/PianoMotion10M/beats
+  root: /storage/jinxuan/data/AirPianoFull
+  processed_root: /storage2/jinxuan/data/AirPianoFull
+  beat_root: ${data.processed_root}/beats
   splits:
     train: assets/splits/extended/train.txt
     valid: assets/splits/extended/valid.txt

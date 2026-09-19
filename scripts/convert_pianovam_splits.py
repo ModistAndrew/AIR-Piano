@@ -9,7 +9,8 @@ from typing import Any
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_DATA_ROOT = Path("/storage/jinxuan/data/PianoVAM_v1")
+DATASET_NAME = "PianoVAM_v1"
+DEFAULT_DATA_ROOT = Path("/storage/jinxuan/data/AirPianoFull")
 DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "assets" / "splits" / "pianovam"
 SPLIT_NAMES = ("train", "valid", "test")
 ALLOWED_SOURCE_SPLITS = {
@@ -34,7 +35,7 @@ def _metadata_records(payload: Any, path: Path) -> list[dict[str, Any]]:
 def convert_splits(data_root: Path, output_root: Path) -> dict[str, int]:
     """Validate PianoVAM metadata and write deterministic AirPiano splits."""
 
-    metadata_path = data_root / "metadata.json"
+    metadata_path = data_root / "Metadata" / DATASET_NAME / "metadata.json"
     with metadata_path.open("r", encoding="utf-8") as handle:
         records = _metadata_records(json.load(handle), metadata_path)
 
@@ -59,14 +60,16 @@ def convert_splits(data_root: Path, output_root: Path) -> dict[str, int]:
 
         target_split = "train" if source_split == "ext-train" else source_split
         for required in (
-            data_root / "Video" / f"{record_id}.mp4",
-            data_root / "MIDI" / f"{record_id}.mid",
+            data_root / "Video" / DATASET_NAME / f"{record_id}.mp4",
+            data_root / "MIDI" / DATASET_NAME / f"{record_id}.mid",
         ):
             if not required.is_file():
                 raise FileNotFoundError(
                     f"required PianoVAM modality not found: {required}"
                 )
-        split_records[target_split].append(record_id)
+        split_records[target_split].append(
+            (Path(DATASET_NAME) / record_id).as_posix()
+        )
 
     output_root.mkdir(parents=True, exist_ok=True)
     for split_name, record_ids in split_records.items():
@@ -84,7 +87,7 @@ def main() -> None:
         "--data-root",
         type=Path,
         default=DEFAULT_DATA_ROOT,
-        help="PianoVAM root containing metadata.json, Video/, and MIDI/",
+        help="AirPianoFull root containing Metadata/, Video/, and MIDI/",
     )
     parser.add_argument(
         "--output-root",
