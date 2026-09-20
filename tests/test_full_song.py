@@ -20,6 +20,7 @@ from airpiano.data import (
     ChordOnsetEvents,
     FutureChordSlicer,
     Note,
+    NoteEvent,
     Song,
     TargetGenerator,
     TriangularSoftener,
@@ -28,29 +29,41 @@ from airpiano.data.midi import quantize_duration_seconds
 from airpiano.render.artifact import load_artifact
 
 
+def _chord(
+    chord_id: int,
+    onset: float,
+    pitch: int,
+    velocity: int = 80,
+    duration: float = 0.1,
+    quantized_dur: torch.Tensor | None = None,
+) -> Chord:
+    note = Note(chord_id, onset, onset + 0.1, pitch, velocity)
+    event = NoteEvent(note, False)
+    return Chord(
+        id=chord_id,
+        events=(event,),
+        onset_notes=(note,),
+        offset_notes=(),
+        time=onset,
+        duration=duration,
+        quantized_dur=(
+            quantize_duration_seconds(torch.tensor(duration))
+            if quantized_dur is None
+            else quantized_dur
+        ),
+    )
+
+
 def _song(chord_count: int, frame_count: int = 6) -> Song:
     chords = tuple(
-        Chord(
-            index,
-            (
-                Note(
-                    index,
-                    index / 10.0,
-                    index / 10.0 + 0.1,
-                    60 + index,
-                    80,
-                ),
-            ),
-            0.1,
-            quantize_duration_seconds(torch.tensor(0.1)),
-        )
+        _chord(index, index / 10.0, 60 + index)
         for index in range(chord_count)
     )
     hands = torch.arange(frame_count, dtype=torch.float32)[:, None, None, None]
     hands = hands.expand(-1, 2, 21, 3).clone()
     return Song(
         record_id="subject/performance.v1",
-        notes=tuple(note for chord in chords for note in chord.notes),
+        notes=tuple(note for chord in chords for note in chord.onset_notes),
         chords=chords,
         hands=hands,
         presence=torch.ones((frame_count, 2), dtype=torch.bool),
@@ -184,17 +197,11 @@ class FullSongControllerTest(unittest.TestCase):
     def test_cross_entropy_keeps_pre_onset_frames_and_uses_softmax(self) -> None:
         base = _song(3)
         chords = tuple(
-            Chord(
+            _chord(
                 chord.id,
-                (
-                    Note(
-                        chord.notes[0].id,
-                        onset,
-                        onset + 0.1,
-                        chord.notes[0].pitch,
-                        chord.notes[0].velocity,
-                    ),
-                ),
+                onset,
+                chord.onset_notes[0].pitch,
+                chord.onset_notes[0].velocity,
                 chord.duration,
                 chord.quantized_dur,
             )
@@ -204,7 +211,9 @@ class FullSongControllerTest(unittest.TestCase):
         )
         song = Song(
             record_id=base.record_id,
-            notes=tuple(note for chord in chords for note in chord.notes),
+            notes=tuple(
+                note for chord in chords for note in chord.onset_notes
+            ),
             chords=chords,
             hands=base.hands,
             presence=base.presence,

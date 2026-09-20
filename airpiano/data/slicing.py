@@ -12,6 +12,8 @@ from .types import Chord, Song
 
 
 PITCH_FEATURES = 128
+EVENT_PITCH_FEATURES = 2 * PITCH_FEATURES
+CHORD_FEATURES = EVENT_PITCH_FEATURES + DURATION_BINS
 
 
 class FutureChordSlicer:
@@ -75,7 +77,7 @@ class FutureChordSlicer:
             for index, chord in enumerate(chords)
             if any(
                 note.onset < end_seconds and note.offset > start_seconds
-                for note in chord.notes
+                for note in chord.onset_notes + chord.offset_notes
             )
         ]
         if len(overlaps) > self.chord_count:
@@ -90,7 +92,7 @@ class FutureChordSlicer:
                 successor_start = overlaps[-1] + 1
             else:
                 successor_start = bisect.bisect_left(
-                    [chord.onset for chord in chords], end_seconds
+                    [chord.time for chord in chords], end_seconds
                 )
             successor_stop = min(
                 len(chords), successor_start + self.chord_count - len(selected)
@@ -108,22 +110,6 @@ class FutureChordSlicer:
         first_position = chord_positions[0]
         last_position = chord_positions[-1]
         frame_count = len(song.hands)
-        if self.crop_to_chord_bounds:
-            frame_start = math.ceil(
-                song.chords[first_position].onset * self.fps
-            )
-            frame_stop = math.ceil(
-                max(
-                    note.offset
-                    for note in song.chords[last_position].notes
-                )
-                * self.fps
-            )
-            return (
-                max(0, min(frame_start, frame_count)),
-                max(0, min(frame_stop, frame_count)),
-            )
-
         context_start_position = max(
             0, first_position - self.hand_context_chords
         )
@@ -131,24 +117,33 @@ class FutureChordSlicer:
             len(song.chords) - 1,
             last_position + self.hand_context_chords,
         )
-        if self.crop_before_first_chord:
-            frame_start = math.ceil(
-                song.chords[first_position].onset * self.fps
-            )
-        else:
-            frame_start = (
+        frame_start = (
+            math.ceil(song.chords[first_position].time * self.fps)
+            if self.crop_before_first_chord
+            else (
                 0
-                if first_position == 0
+                if first_position == 0 and not self.crop_to_chord_bounds
                 else math.floor(
-                    song.chords[context_start_position].onset * self.fps
+                    song.chords[context_start_position].time * self.fps
                 )
             )
+        )
         frame_stop = (
-            frame_count
+            (
+                math.ceil(
+                    (
+                        song.chords[last_position].time
+                        + song.chords[last_position].duration
+                    )
+                    * self.fps
+                )
+                if self.crop_to_chord_bounds
+                else frame_count
+            )
             if last_position == len(song.chords) - 1
             else math.ceil(
                 (
-                    song.chords[context_stop_position].onset
+                    song.chords[context_stop_position].time
                     + self.end_padding_seconds
                 )
                 * self.fps
@@ -223,14 +218,18 @@ class FutureChordSlicer:
             song.chords[index] for index in chord_positions
         )
         chord_values = torch.zeros(
-            (len(selected_chords), PITCH_FEATURES + DURATION_BINS),
+            (len(selected_chords), CHORD_FEATURES),
             dtype=torch.float32,
         )
         for local_index, chord in enumerate(selected_chords):
-            for note in chord.notes:
+            for note in chord.onset_notes:
                 # Duplicate physical notes intentionally collapse in multi-hot space.
                 chord_values[local_index, note.pitch] = 1.0
-            chord_values[local_index, PITCH_FEATURES:] = chord.quantized_dur
+            for note in chord.offset_notes:
+                chord_values[local_index, PITCH_FEATURES + note.pitch] = 1.0
+            chord_values[local_index, EVENT_PITCH_FEATURES:] = (
+                chord.quantized_dur
+            )
 
         return {
             "hands": song.hands[frame_start:frame_stop],

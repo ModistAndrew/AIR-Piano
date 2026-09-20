@@ -13,7 +13,7 @@ import mido
 import torch
 import torch.nn.functional as F
 
-from .types import Chord, MidiSequence, Note
+from .types import Chord, EventSequence, MidiSequence, Note, NoteEvent
 
 
 DURATION_BINS = 200
@@ -146,13 +146,14 @@ class MidoNoteReader:
 
 
 class InitializerChordMerger:
-    """Group notes and encode seconds or beat-grid tick durations."""
+    """Group note events and encode seconds or beat-grid tick durations."""
 
     def __init__(
         self,
         tolerance_seconds: float = 0.05,
         duration_scale_range: Sequence[float] | None = None,
         duration_normalization: str = "none",
+        time_mode: str = "first",
     ):
         self.tolerance_seconds = float(tolerance_seconds)
         if duration_scale_range is None:
@@ -173,60 +174,81 @@ class InitializerChordMerger:
                 "duration normalization"
             )
         self.duration_normalization = duration_normalization
+        if time_mode not in {"first", "mean"}:
+            raise ValueError("time_mode must be 'first' or 'mean'")
+        self.time_mode = time_mode
 
     def merge(
         self,
-        notes: tuple[Note, ...],
+        event_sequence: EventSequence,
         quantization: bool = False,
     ) -> tuple[Chord, ...]:
-        groups: list[tuple[Note, ...]] = []
+        events = event_sequence.events
+        groups: list[tuple[NoteEvent, ...]] = []
         start = 0
-        while start < len(notes):
+        while start < len(events):
             initializer = (
-                notes[start].onset_tick if quantization else notes[start].onset
+                events[start].tick if quantization else events[start].time
             )
             stop = start + 1
-            while stop < len(notes):
-                onset = (
-                    notes[stop].onset_tick if quantization else notes[stop].onset
+            while stop < len(events):
+                action_time = (
+                    events[stop].tick if quantization else events[stop].time
                 )
                 if quantization:
-                    if onset != initializer:
+                    if action_time != initializer:
                         break
                     stop += 1
                     continue
                 roundoff = 8.0 * max(
-                    math.ulp(onset),
+                    math.ulp(action_time),
                     math.ulp(initializer),
                     math.ulp(self.tolerance_seconds),
                 )
-                if onset - initializer > self.tolerance_seconds + roundoff:
+                if action_time - initializer > self.tolerance_seconds + roundoff:
                     break
                 stop += 1
-            groups.append(notes[start:stop])
+            groups.append(events[start:stop])
             start = stop
 
         if not groups:
             return ()
 
+        if self.time_mode == "mean":
+            times = [
+                sum(event.time for event in group) / len(group)
+                for group in groups
+            ]
+        else:
+            times = [group[0].time for group in groups]
         durations: list[float] = []
         duration_ticks: list[int | None] = []
         for index, group in enumerate(groups):
-            onset = group[0].onset
             if index + 1 < len(groups):
-                duration = groups[index + 1][0].onset - onset
+                duration = times[index + 1] - times[index]
+            elif event_sequence.include_offsets:
+                duration = 0.0
             else:
-                duration = max(note.offset for note in group) - onset
+                duration = (
+                    max(event.note.offset for event in group) - times[index]
+                )
             durations.append(duration)
 
             ticks = None
             if quantization:
-                onset_tick = int(group[0].onset_tick)
+                action_tick = int(group[0].tick)
                 if index + 1 < len(groups):
-                    next_tick = int(groups[index + 1][0].onset_tick)
-                    ticks = next_tick - onset_tick
+                    next_tick = int(groups[index + 1][0].tick)
+                    ticks = next_tick - action_tick
+                elif event_sequence.include_offsets:
+                    # The final group contains the last note offset, so there
+                    # is no following event gap to encode.
+                    ticks = 0
                 else:
-                    ticks = max(int(note.offset_tick) for note in group) - onset_tick
+                    ticks = (
+                        max(int(event.note.offset_tick) for event in group)
+                        - action_tick
+                    )
             duration_ticks.append(ticks)
 
         if self.duration_normalization == "song_mean":
@@ -237,8 +259,8 @@ class InitializerChordMerger:
             duration_scale = 1.0
 
         chords = []
-        for index, (group, duration, ticks) in enumerate(
-            zip(groups, durations, duration_ticks)
+        for index, (group, time, duration, ticks) in enumerate(
+            zip(groups, times, durations, duration_ticks)
         ):
             if quantization:
                 quantized_dur = quantize_duration_ticks(torch.tensor(ticks))
@@ -249,7 +271,14 @@ class InitializerChordMerger:
             chords.append(
                 Chord(
                     id=index,
-                    notes=group,
+                    events=group,
+                    onset_notes=tuple(
+                        event.note for event in group if not event.is_offset
+                    ),
+                    offset_notes=tuple(
+                        event.note for event in group if event.is_offset
+                    ),
+                    time=time,
                     duration=duration,
                     duration_ticks=ticks,
                     quantized_dur=quantized_dur,
@@ -261,9 +290,15 @@ class InitializerChordMerger:
 class MidiLoader:
     """Compose note parsing and chord construction."""
 
-    def __init__(self, reader: MidoNoteReader, chord_merger: InitializerChordMerger):
+    def __init__(
+        self,
+        reader: MidoNoteReader,
+        chord_merger: InitializerChordMerger,
+        include_offsets: bool = False,
+    ):
         self.reader = reader
         self.chord_merger = chord_merger
+        self.include_offsets = bool(include_offsets)
 
     def load(
         self,
@@ -274,10 +309,11 @@ class MidiLoader:
             notes = self.reader.read(path)
         else:
             notes = self.reader.read(path, beat_path)
+        events = EventSequence.from_notes(notes, self.include_offsets)
         return MidiSequence(
             notes=notes,
             chords=self.chord_merger.merge(
-                notes,
+                events,
                 quantization=self.reader.quantization,
             ),
         )

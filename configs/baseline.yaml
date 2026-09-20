@@ -69,6 +69,7 @@ dataset:
       _target_: airpiano.data.files.EagerSongReader
   midi_loader:
     _target_: airpiano.data.midi.MidiLoader
+    include_offsets: false
     reader:
       _target_: airpiano.data.midi.MidoNoteReader
     chord_merger:
@@ -76,6 +77,7 @@ dataset:
       tolerance_seconds: 0.05
       duration_scale_range: null
       duration_normalization: none
+      time_mode: first
   hand_loader:
     _target_: airpiano.data.hands.HandLoader
     reader:
@@ -110,6 +112,7 @@ model:
   _target_: airpiano.model.transformer.AirPianoTransformer
   causal_frame_attention: false
   include_chord_duration: false
+  include_chord_offsets: false
   zero_hand_input: false
 
 train:

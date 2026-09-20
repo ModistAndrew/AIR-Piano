@@ -32,18 +32,64 @@ class Note:
 
 
 @dataclass(frozen=True)
+class NoteEvent:
+    """One onset or offset action tied to its physical MIDI note."""
+
+    note: Note
+    is_offset: bool
+
+    @property
+    def pitch(self) -> int:
+        return self.note.pitch
+
+    @property
+    def time(self) -> float:
+        return self.note.offset if self.is_offset else self.note.onset
+
+    @property
+    def tick(self) -> int | None:
+        return self.note.offset_tick if self.is_offset else self.note.onset_tick
+
+
+@dataclass(frozen=True)
+class EventSequence:
+    """Chronological MIDI actions expanded from physical notes."""
+
+    events: tuple[NoteEvent, ...]
+    include_offsets: bool = False
+
+    @classmethod
+    def from_notes(
+        cls,
+        notes: tuple[Note, ...],
+        include_offsets: bool = False,
+    ) -> EventSequence:
+        events = [NoteEvent(note, False) for note in notes]
+        if include_offsets:
+            events.extend(NoteEvent(note, True) for note in notes)
+        events.sort(
+            key=lambda event: (
+                event.time,
+                event.is_offset,
+                event.pitch,
+                event.note.id,
+            )
+        )
+        return cls(tuple(events), bool(include_offsets))
+
+
+@dataclass(frozen=True)
 class Chord:
-    """An onset group with raw seconds, optional ticks, and an encoding."""
+    """A group of simultaneous note actions and its duration encoding."""
 
     id: int
-    notes: tuple[Note, ...]
+    events: tuple[NoteEvent, ...]
+    onset_notes: tuple[Note, ...]
+    offset_notes: tuple[Note, ...]
+    time: float
     duration: float
     quantized_dur: torch.Tensor
     duration_ticks: int | None = None
-
-    @property
-    def onset(self) -> float:
-        return self.notes[0].onset
 
 
 @dataclass(frozen=True)

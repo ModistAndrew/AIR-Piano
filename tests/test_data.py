@@ -22,6 +22,7 @@ from airpiano.data import (
     Chord,
     ChordOnsetEvents,
     EagerSongReader,
+    EventSequence,
     FileLoader,
     FilePair,
     FutureChordSlicer,
@@ -31,6 +32,7 @@ from airpiano.data import (
     MidiSequence,
     MidoNoteReader,
     Note,
+    NoteEvent,
     OffsetScaleTransform,
     Song,
     RelativeStemPairer,
@@ -68,13 +70,23 @@ def _chord(
     duration: float | None = None,
     quantized_dur: torch.Tensor | None = None,
 ) -> Chord:
+    events = tuple(NoteEvent(note, False) for note in notes)
+    time = events[0].time
     if duration is None:
-        duration = max(note.offset for note in notes) - notes[0].onset
+        duration = max(note.offset for note in notes) - time
     if quantized_dur is None:
         quantized_dur = quantize_duration_seconds(
             torch.tensor(duration, dtype=torch.float64)
         )
-    return Chord(chord_id, notes, duration, quantized_dur)
+    return Chord(
+        id=chord_id,
+        events=events,
+        onset_notes=notes,
+        offset_notes=(),
+        time=time,
+        duration=duration,
+        quantized_dur=quantized_dur,
+    )
 
 
 def _song(
@@ -89,9 +101,14 @@ def _song(
     )
     if presence is None:
         presence = torch.ones((frame_count, 2), dtype=torch.bool)
+    notes_by_id = {
+        event.note.id: event.note
+        for chord in chords
+        for event in chord.events
+    }
     return Song(
         record_id="subject/video",
-        notes=tuple(note for chord in chords for note in chord.notes),
+        notes=tuple(notes_by_id[index] for index in sorted(notes_by_id)),
         chords=chords,
         hands=hands,
         presence=presence,
@@ -228,6 +245,34 @@ class PairingTest(unittest.TestCase):
 
 
 class MidiTest(unittest.TestCase):
+    def test_event_sequence_expands_offsets_and_orders_actions(self) -> None:
+        first = _note(0, 0.0, 0.4, 60, onset_tick=0, offset_tick=4)
+        second = _note(1, 0.2, 0.3, 64, onset_tick=2, offset_tick=3)
+
+        onset_only = EventSequence.from_notes((first, second))
+        with_offsets = EventSequence.from_notes(
+            (first, second), include_offsets=True
+        )
+
+        self.assertFalse(onset_only.include_offsets)
+        self.assertEqual(
+            [(event.note.id, event.is_offset) for event in onset_only.events],
+            [(0, False), (1, False)],
+        )
+        self.assertTrue(with_offsets.include_offsets)
+        self.assertEqual(
+            [
+                (event.note.id, event.is_offset, event.pitch, event.time, event.tick)
+                for event in with_offsets.events
+            ],
+            [
+                (0, False, 60, 0.0, 0),
+                (1, False, 64, 0.2, 2),
+                (1, True, 64, 0.3, 3),
+                (0, True, 60, 0.4, 4),
+            ],
+        )
+
     def test_reader_uses_merged_track_tempo_clock(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "tempo.mid"
@@ -314,18 +359,23 @@ class MidiTest(unittest.TestCase):
             _note(3, 0.22, 20.0, 71, onset_tick=3, offset_tick=250),
         )
 
-        chords = InitializerChordMerger(tolerance_seconds=0.05).merge(
-            notes,
+        chords = InitializerChordMerger(
+            tolerance_seconds=0.05,
+            time_mode="mean",
+        ).merge(
+            EventSequence.from_notes(notes),
             quantization=True,
         )
 
         self.assertEqual(len(chords), 2)
         self.assertEqual(
-            [[note.id for note in chord.notes] for chord in chords],
+            [[note.id for note in chord.onset_notes] for chord in chords],
             [[0, 1], [2, 3]],
         )
-        self.assertAlmostEqual(chords[0].duration, 0.21)
-        self.assertAlmostEqual(chords[1].duration, 19.79)
+        self.assertAlmostEqual(chords[0].time, 0.1)
+        self.assertAlmostEqual(chords[1].time, 0.215)
+        self.assertAlmostEqual(chords[0].duration, 0.115)
+        self.assertAlmostEqual(chords[1].duration, 19.785)
         self.assertEqual([chord.duration_ticks for chord in chords], [3, 247])
         self.assertEqual(
             [chord.quantized_dur.argmax().item() for chord in chords],
@@ -337,11 +387,54 @@ class MidiTest(unittest.TestCase):
         )
 
         zero = InitializerChordMerger().merge(
-            (_note(0, 1.0, 1.01, 60, onset_tick=7, offset_tick=7),),
+            EventSequence.from_notes(
+                (_note(0, 1.0, 1.01, 60, onset_tick=7, offset_tick=7),)
+            ),
             quantization=True,
         )
         self.assertEqual(zero[0].duration_ticks, 0)
         self.assertEqual(zero[0].quantized_dur.argmax().item(), 0)
+
+    def test_chord_merger_groups_mixed_quantized_actions(self) -> None:
+        notes = (
+            _note(0, 0.0, 0.31, 60, onset_tick=0, offset_tick=3),
+            _note(1, 0.02, 0.4, 64, onset_tick=0, offset_tick=4),
+            _note(2, 0.29, 0.5, 67, onset_tick=3, offset_tick=5),
+        )
+
+        chords = InitializerChordMerger(time_mode="mean").merge(
+            EventSequence.from_notes(notes, include_offsets=True),
+            quantization=True,
+        )
+
+        self.assertEqual(len(chords), 4)
+        torch.testing.assert_close(
+            torch.tensor([chord.time for chord in chords]),
+            torch.tensor([0.01, 0.30, 0.40, 0.50]),
+        )
+        torch.testing.assert_close(
+            torch.tensor([chord.duration for chord in chords]),
+            torch.tensor([0.29, 0.10, 0.10, 0.0]),
+        )
+        self.assertEqual(
+            [chord.duration_ticks for chord in chords],
+            [3, 1, 1, 0],
+        )
+        self.assertEqual(
+            [note.id for note in chords[1].onset_notes],
+            [2],
+        )
+        self.assertEqual(
+            [note.id for note in chords[1].offset_notes],
+            [0],
+        )
+        self.assertEqual(
+            [(event.note.id, event.is_offset) for event in chords[1].events],
+            [(2, False), (0, True)],
+        )
+        self.assertEqual(chords[-1].onset_notes, ())
+        self.assertEqual(chords[-1].offset_notes, (notes[2],))
+        self.assertEqual(chords[-1].quantized_dur.argmax().item(), 0)
 
     def test_chord_merger_is_inclusive_and_initializer_anchored(self) -> None:
         notes = tuple(
@@ -349,20 +442,25 @@ class MidiTest(unittest.TestCase):
             for index, onset in enumerate((0.0, 0.05, 0.09, 0.139, 0.141))
         )
 
-        chords = InitializerChordMerger(tolerance_seconds=0.05).merge(notes)
+        chords = InitializerChordMerger(
+            tolerance_seconds=0.05,
+            time_mode="mean",
+        ).merge(
+            EventSequence.from_notes(notes)
+        )
 
         self.assertEqual([chord.id for chord in chords], [0, 1, 2])
         self.assertEqual(
-            [[note.id for note in chord.notes] for chord in chords],
+            [[note.id for note in chord.onset_notes] for chord in chords],
             [[0, 1], [2, 3], [4]],
         )
-        self.assertIs(chords[0].notes[0], notes[0])
+        self.assertIs(chords[0].onset_notes[0], notes[0])
         torch.testing.assert_close(
             torch.tensor([chord.duration for chord in chords]),
-            torch.tensor([0.09, 0.051, 0.2]),
+            torch.tensor([0.0895, 0.0265, 0.2]),
         )
         expected_quantized = quantize_duration_seconds(
-            torch.tensor([0.09, 0.051, 0.2], dtype=torch.float64)
+            torch.tensor([0.0895, 0.0265, 0.2], dtype=torch.float64)
         )
         torch.testing.assert_close(
             torch.stack([chord.quantized_dur for chord in chords]),
@@ -371,6 +469,22 @@ class MidiTest(unittest.TestCase):
         self.assertEqual(chords[0].quantized_dur.dtype, torch.float32)
         self.assertEqual(tuple(chords[0].quantized_dur.shape), (200,))
 
+    def test_chord_merger_switches_between_first_and_mean_time(self) -> None:
+        notes = (
+            _note(0, 0.0, 0.4, 60),
+            _note(1, 0.04, 0.5, 64),
+            _note(2, 1.0, 1.2, 67),
+        )
+        events = EventSequence.from_notes(notes)
+
+        first = InitializerChordMerger(time_mode="first").merge(events)
+        mean = InitializerChordMerger(time_mode="mean").merge(events)
+
+        self.assertEqual([chord.time for chord in first], [0.0, 1.0])
+        self.assertEqual([chord.time for chord in mean], [0.02, 1.0])
+        self.assertEqual(first[0].duration, 1.0)
+        self.assertEqual(mean[0].duration, 0.98)
+
     def test_chord_merger_uses_next_onset_then_latest_final_release(self) -> None:
         notes = (
             _note(0, 0.0, 4.0, 60),
@@ -378,14 +492,19 @@ class MidiTest(unittest.TestCase):
             _note(2, 1.02, 1.7, 67),
         )
 
-        chords = InitializerChordMerger(tolerance_seconds=0.05).merge(notes)
+        chords = InitializerChordMerger(
+            tolerance_seconds=0.05,
+            time_mode="mean",
+        ).merge(
+            EventSequence.from_notes(notes)
+        )
 
         self.assertEqual(len(chords), 2)
-        self.assertAlmostEqual(chords[0].duration, 1.0)
-        self.assertAlmostEqual(chords[1].duration, 0.7)
+        self.assertAlmostEqual(chords[0].duration, 1.01)
+        self.assertAlmostEqual(chords[1].duration, 0.69)
         torch.testing.assert_close(
             torch.stack([chord.quantized_dur for chord in chords]),
-            quantize_duration_seconds(torch.tensor([1.0, 0.7])),
+            quantize_duration_seconds(torch.tensor([1.01, 0.69])),
         )
 
     def test_chord_merger_scales_all_duration_encodings_once_per_song(
@@ -404,7 +523,7 @@ class MidiTest(unittest.TestCase):
         with patch(
             "airpiano.data.midi.random.uniform", return_value=1.5
         ) as uniform:
-            chords = merger.merge(notes)
+            chords = merger.merge(EventSequence.from_notes(notes))
 
         uniform.assert_called_once_with(0.5, 2.0)
         torch.testing.assert_close(
@@ -428,7 +547,7 @@ class MidiTest(unittest.TestCase):
             "airpiano.data.midi.quantize_duration_seconds",
             wraps=quantize_duration_seconds,
         ) as quantize:
-            chords = merger.merge(notes)
+            chords = merger.merge(EventSequence.from_notes(notes))
 
         normalized_durations = torch.stack(
             [call.args[0] for call in quantize.call_args_list]
@@ -464,8 +583,8 @@ class MidiTest(unittest.TestCase):
         )
         merger = InitializerChordMerger(duration_normalization="song_mean")
 
-        chords = merger.merge(notes)
-        scaled_chords = merger.merge(scaled_notes)
+        chords = merger.merge(EventSequence.from_notes(notes))
+        scaled_chords = merger.merge(EventSequence.from_notes(scaled_notes))
 
         torch.testing.assert_close(
             torch.stack([chord.quantized_dur for chord in scaled_chords]),
@@ -481,8 +600,10 @@ class MidiTest(unittest.TestCase):
     ) -> None:
         merger = InitializerChordMerger(duration_normalization="song_mean")
 
-        self.assertEqual(merger.merge(()), ())
-        chords = merger.merge((_note(0, 2.0, 2.4, 60),))
+        self.assertEqual(merger.merge(EventSequence.from_notes(())), ())
+        chords = merger.merge(
+            EventSequence.from_notes((_note(0, 2.0, 2.4, 60),))
+        )
 
         self.assertEqual(len(chords), 1)
         self.assertAlmostEqual(chords[0].duration, 0.4)
@@ -507,6 +628,10 @@ class MidiTest(unittest.TestCase):
             "duration_normalization must be 'none' or 'song_mean'",
         ):
             InitializerChordMerger(duration_normalization="median")
+
+    def test_chord_merger_rejects_unknown_time_mode(self) -> None:
+        with self.assertRaisesRegex(ValueError, "time_mode"):
+            InitializerChordMerger(time_mode="median")
 
 
 class HandCacheTest(unittest.TestCase):
@@ -640,16 +765,22 @@ class SlicingAndTargetTest(unittest.TestCase):
         window = slicer.slice(song, 19, 23, positions)
 
         self.assertEqual(window["chord_ids"].tolist(), [1, 2])
-        self.assertEqual(tuple(window["chords"].shape), (2, 328))
+        self.assertEqual(tuple(window["chords"].shape), (2, 456))
         self.assertEqual(window["chords"][0, 60].item(), 1.0)
         self.assertEqual(window["chords"][0, 0].item(), 1.0)
         self.assertEqual(window["chords"][0, 127].item(), 1.0)
         self.assertEqual(window["chords"][0].sum().item(), 4.0)
-        self.assertEqual(len(window["selected_chords"][0].notes), 4)
+        self.assertEqual(len(window["selected_chords"][0].onset_notes), 4)
         torch.testing.assert_close(window["hands"], song.hands[19:23])
 
         no_overlap = slicer.candidate_positions(chords, frame_start=6)
         self.assertEqual(no_overlap, (1, 2))
+
+        sustained = (_chord(0, (_note(6, 0.0, 2.0, 72),)),)
+        self.assertEqual(
+            slicer.candidate_positions(sustained, frame_start=10),
+            (0,),
+        )
 
     def test_duration_tokens_use_quantized_durations_stored_on_chords(self) -> None:
         middle_duration = quantize_duration_seconds(torch.tensor(1.2))
@@ -683,11 +814,12 @@ class SlicingAndTargetTest(unittest.TestCase):
         middle = slicer.slice(song, 0, 1, (1,))["chords"]
         final = slicer.slice(song, 0, 1, (2,))["chords"]
 
-        self.assertEqual(tuple(middle.shape), (1, 328))
+        self.assertEqual(tuple(middle.shape), (1, 456))
         self.assertEqual(middle[0, :128].argmax().item(), 64)
-        self.assertEqual(middle[0, 128:].sum().item(), 1.0)
-        torch.testing.assert_close(middle[0, 128:], middle_duration)
-        torch.testing.assert_close(final[0, 128:], final_duration)
+        self.assertEqual(middle[0, 128:256].sum().item(), 0.0)
+        self.assertEqual(middle[0, 256:].sum().item(), 1.0)
+        torch.testing.assert_close(middle[0, 256:], middle_duration)
+        torch.testing.assert_close(final[0, 256:], final_duration)
 
         dataset = AlignmentDataset(
             [song],
@@ -695,7 +827,54 @@ class SlicingAndTargetTest(unittest.TestCase):
             TargetGenerator(ChordOnsetEvents(), TriangularSoftener(0.2)),
         )
         batch = collate_alignment_batch([dataset[0], dataset[-1]])
-        self.assertEqual(tuple(batch["chords"].shape), (2, 3, 328))
+        self.assertEqual(tuple(batch["chords"].shape), (2, 3, 456))
+
+    def test_offset_events_drive_candidates_targets_and_token_planes(self) -> None:
+        notes = (
+            _note(0, 0.0, 0.31, 60, onset_tick=0, offset_tick=3),
+            _note(1, 0.02, 0.4, 64, onset_tick=0, offset_tick=4),
+            _note(2, 0.29, 0.5, 67, onset_tick=3, offset_tick=5),
+        )
+        chords = InitializerChordMerger(time_mode="mean").merge(
+            EventSequence.from_notes(notes, include_offsets=True),
+            quantization=True,
+        )
+        song = _song(chords, frame_count=10, fps=10.0)
+        slicer = FutureChordSlicer(
+            fps=10.0,
+            segment_frames=1,
+            stride_frames=1,
+            chord_count=4,
+        )
+
+        positions = slicer.candidate_positions(chords, frame_start=2)
+        sample = slicer.slice(song, 2, 4, (1,))
+        target = TargetGenerator(
+            ChordOnsetEvents(), TriangularSoftener(0.2)
+        ).generate(
+            sample["selected_chords"],
+            frame_start=2,
+            frame_count=2,
+            fps=10.0,
+        )
+
+        self.assertEqual(positions, (0, 1, 2, 3))
+        self.assertEqual(tuple(sample["chords"].shape), (1, 456))
+        self.assertEqual(sample["chords"][0, 67].item(), 1.0)
+        self.assertEqual(sample["chords"][0, 128 + 60].item(), 1.0)
+        self.assertEqual(sample["chords"][0, 256 + 1].item(), 1.0)
+        self.assertEqual(target[:, 0].tolist(), [0.5, 1.0])
+
+        cropped = FutureChordSlicer(
+            mode="chord",
+            fps=10.0,
+            segment_frames=2,
+            stride_frames=1,
+            crop_to_chord_bounds=True,
+        )
+        self.assertEqual(cropped.chord_frame_bounds(song, (0, 1)), (0, 4))
+        self.assertEqual(cropped.chord_frame_bounds(song, (1, 2)), (3, 5))
+        self.assertEqual(cropped.chord_frame_bounds(song, (2, 3)), (4, 5))
 
     def test_more_overlapping_chords_than_fixed_width_raises(self) -> None:
         chords = tuple(
@@ -732,13 +911,13 @@ class SlicingAndTargetTest(unittest.TestCase):
         )
         window = slicer.slice(song, 10, 21, (2, 3, 4))
         self.assertEqual(tuple(window["hands"].shape), (11, 2, 21, 3))
-        self.assertEqual(tuple(window["chords"].shape), (3, 328))
+        self.assertEqual(tuple(window["chords"].shape), (3, 456))
         self.assertEqual(window["chord_ids"].tolist(), [2, 3, 4])
         self.assertNotIn("frame_mask", window)
         self.assertNotIn("chord_mask", window)
         torch.testing.assert_close(window["hands"], song.hands[10:21])
 
-    def test_chord_mode_can_crop_to_selected_chord_bounds(self) -> None:
+    def test_chord_crop_changes_only_song_boundary_windows(self) -> None:
         chords = (
             _chord(0, (_note(0, 0.21, 0.4, 60),)),
             _chord(
@@ -765,13 +944,13 @@ class SlicingAndTargetTest(unittest.TestCase):
         self.assertEqual(
             slicer.windows(song),
             (
-                (3, 11, (0, 1)),
-                (13, 20, (2, 3)),
+                (2, 30, (0, 1)),
+                (5, 20, (2, 3)),
             ),
         )
 
         short_song = _song(chords, frame_count=18, fps=10.0)
-        self.assertEqual(slicer.windows(short_song)[1], (13, 18, (2, 3)))
+        self.assertEqual(slicer.windows(short_song)[1], (5, 18, (2, 3)))
 
     def test_zero_hand_filter_uses_cropped_chord_bounds(self) -> None:
         chords = (
@@ -790,7 +969,7 @@ class SlicingAndTargetTest(unittest.TestCase):
         )
 
         song = _song(chords, frame_count=20, fps=10.0, presence=presence)
-        self.assertEqual(slicer.windows(song), ((3, 11, (0, 1)),))
+        self.assertEqual(slicer.windows(song), ((2, 11, (0, 1)),))
 
         presence[3:5] = False
         filtered_song = _song(
@@ -923,7 +1102,7 @@ class SlicingAndTargetTest(unittest.TestCase):
             stride_frames=2,
             chord_count=1,
         ).slice(song, 0, 20, (0, 1, 2))
-        self.assertEqual(tuple(window["chords"].shape), (3, 328))
+        self.assertEqual(tuple(window["chords"].shape), (3, 456))
         self.assertEqual(window["chord_ids"].tolist(), [0, 1, 2])
 
     def test_dataset_returns_real_tensors_and_collate_adds_masks(self) -> None:
@@ -956,7 +1135,7 @@ class SlicingAndTargetTest(unittest.TestCase):
         self.assertEqual(slicer.selection_calls, 1)
 
         self.assertEqual(tuple(sample["hands"].shape), (2, 2, 21, 3))
-        self.assertEqual(tuple(sample["chords"].shape), (2, 328))
+        self.assertEqual(tuple(sample["chords"].shape), (2, 456))
         self.assertEqual(tuple(sample["target"].shape), (2, 2))
         self.assertNotIn("frame_mask", sample)
         self.assertNotIn("chord_mask", sample)

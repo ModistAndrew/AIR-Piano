@@ -1,0 +1,15 @@
+defaults:
+  - wrist_xyz10_causal_chord24_extended_wrist_delta_quantized
+  - _self_
+
+output:
+  project_name: wrist_xyz10_causal_chord24_extended_wrist_delta_quantized_offset
+
+dataset:
+  midi_loader:
+    include_offsets: true
+    chord_merger:
+      time_mode: mean
+
+model:
+  include_chord_offsets: true

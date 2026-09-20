@@ -23,9 +23,9 @@ class _TinyDataset(Dataset):
         return 2
 
     def __getitem__(self, index: int):
-        chords = torch.zeros(2, 328)
+        chords = torch.zeros(2, 456)
         chords[:, :128] = torch.eye(128)[:2]
-        chords[:, 128] = 1.0
+        chords[:, 256] = 1.0
         return {
             "hands": torch.zeros(2, 2, 21, 3),
             "hand_presence": torch.ones(2, 2, dtype=torch.bool),
@@ -52,10 +52,12 @@ class _TinyModel(nn.Module):
         self,
         causal_frame_attention: bool = False,
         include_chord_duration: bool = False,
+        include_chord_offsets: bool = False,
     ) -> None:
         super().__init__()
         self.causal_frame_attention = causal_frame_attention
         self.include_chord_duration = include_chord_duration
+        self.include_chord_offsets = include_chord_offsets
         self.bias = nn.Parameter(torch.tensor(0.0))
 
     def forward(self, hands, hand_presence, chords, frame_mask, chord_mask):
@@ -118,7 +120,13 @@ class TrainTest(unittest.TestCase):
         self.assertEqual(components["slicer"].mode, "frame")
         self.assertFalse(bool(config.model.causal_frame_attention))
         self.assertFalse(bool(config.model.include_chord_duration))
+        self.assertFalse(bool(config.model.include_chord_offsets))
         self.assertFalse(bool(config.model.zero_hand_input))
+        self.assertFalse(components["midi_loader"].include_offsets)
+        self.assertEqual(
+            components["midi_loader"].chord_merger.time_mode,
+            "first",
+        )
         self.assertEqual(float(config.dataset.random_hand_shift_seconds), 0.0)
         self.assertEqual(components["slicer"].end_padding_seconds, 0.0)
         self.assertEqual(components["slicer"].hand_context_chords, 0)
@@ -546,27 +554,40 @@ class TrainTest(unittest.TestCase):
                 expected_scales[name],
             )
 
-    def test_extended_new_config_enables_quantized_chord_duration(self) -> None:
+    def test_wrist_delta_quantized_and_offset_configs(self) -> None:
         config_directory = Path(__file__).parents[1] / "configs"
-        name = "wrist_xyz10_causal_chord24_extended_new"
+        quantized_name = (
+            "wrist_xyz10_causal_chord24_extended_wrist_delta_quantized"
+        )
+        offset_name = f"{quantized_name}_offset"
         with initialize_config_dir(
             version_base=None, config_dir=str(config_directory.resolve())
         ):
-            config = compose(config_name=name)
+            quantized = compose(config_name=quantized_name)
+            offset = compose(config_name=offset_name)
 
-        components = data.build_data_components(config)
+        components = data.build_data_components(quantized)
+        offset_components = data.build_data_components(offset)
         reader = components["midi_loader"].reader
         slicer = components["slicer"]
-        self.assertEqual(str(config.output.dir), f"outputs/{name}")
-        self.assertEqual(str(config.wandb.name), name)
         self.assertEqual(
-            str(config.data.beat_root),
+            str(quantized.output.dir), f"outputs/{quantized_name}"
+        )
+        self.assertEqual(str(quantized.wandb.name), quantized_name)
+        self.assertEqual(
+            str(quantized.data.beat_root),
             "/storage2/jinxuan/data/AirPianoFull/beats",
         )
         self.assertTrue(reader.quantization)
         self.assertEqual(reader.subdivision, 12)
-        self.assertTrue(bool(config.model.include_chord_duration))
-        self.assertTrue(bool(config.model.causal_frame_attention))
+        self.assertFalse(components["midi_loader"].include_offsets)
+        self.assertEqual(
+            components["midi_loader"].chord_merger.time_mode,
+            "first",
+        )
+        self.assertTrue(bool(quantized.model.include_chord_duration))
+        self.assertFalse(bool(quantized.model.include_chord_offsets))
+        self.assertTrue(bool(quantized.model.causal_frame_attention))
         self.assertEqual(slicer.mode, "chord")
         self.assertEqual(slicer.segment_frames, 24)
         self.assertEqual(slicer.stride_frames, 12)
@@ -574,6 +595,21 @@ class TrainTest(unittest.TestCase):
             components["hand_loader"].transform.scale,
             (10.0, 10.0, 10.0),
         )
+        self.assertTrue(
+            str(quantized.data.hand_root).endswith(
+                "/airpiano_wilor_wrist_xyz_delta_30fps"
+            )
+        )
+        self.assertEqual(str(offset.output.dir), f"outputs/{offset_name}")
+        self.assertEqual(str(offset.wandb.name), offset_name)
+        self.assertTrue(offset_components["midi_loader"].include_offsets)
+        self.assertEqual(
+            offset_components["midi_loader"].chord_merger.time_mode,
+            "mean",
+        )
+        self.assertTrue(bool(offset.model.include_chord_duration))
+        self.assertTrue(bool(offset.model.include_chord_offsets))
+        self.assertTrue(offset_components["midi_loader"].reader.quantization)
 
     def test_extended_last_chord_softmax_config(self) -> None:
         config_directory = Path(__file__).parents[1] / "configs"
@@ -829,6 +865,7 @@ class TrainTest(unittest.TestCase):
                 "model": {
                     "causal_frame_attention": False,
                     "include_chord_duration": False,
+                    "include_chord_offsets": False,
                     "zero_hand_input": False,
                 },
                 "data": {"splits": {}, "midi_root": ".", "hand_root": "."},
@@ -912,6 +949,9 @@ class TrainTest(unittest.TestCase):
             )
             self.assertFalse(
                 checkpoint["config"]["model"]["include_chord_duration"]
+            )
+            self.assertFalse(
+                checkpoint["config"]["model"]["include_chord_offsets"]
             )
             self.assertFalse(
                 checkpoint["config"]["model"]["zero_hand_input"]

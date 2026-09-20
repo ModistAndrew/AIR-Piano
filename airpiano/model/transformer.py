@@ -30,11 +30,13 @@ class AirPianoTransformer(nn.Module):
         self,
         causal_frame_attention: bool = False,
         include_chord_duration: bool = False,
+        include_chord_offsets: bool = False,
         zero_hand_input: bool = False,
     ) -> None:
         super().__init__()
         self.causal_frame_attention = bool(causal_frame_attention)
         self.include_chord_duration = bool(include_chord_duration)
+        self.include_chord_offsets = bool(include_chord_offsets)
         self.zero_hand_input = bool(zero_hand_input)
         self.hand_embedding = nn.Sequential(
             nn.Linear(128, MODEL_DIM),
@@ -48,6 +50,14 @@ class AirPianoTransformer(nn.Module):
             nn.LayerNorm(MODEL_DIM),
             nn.Dropout(DROPOUT),
         )
+        self.chord_offset_embedding = None
+        if self.include_chord_offsets:
+            self.chord_offset_embedding = nn.Sequential(
+                nn.Linear(128, MODEL_DIM),
+                nn.GELU(),
+                nn.LayerNorm(MODEL_DIM),
+                nn.Dropout(DROPOUT),
+            )
         self.chord_duration_embedding = None
         if self.include_chord_duration:
             self.chord_duration_embedding = nn.Sequential(
@@ -108,6 +118,10 @@ class AirPianoTransformer(nn.Module):
 
         batch_size, frame_count = hands.shape[:2]
         chord_count = chords.shape[1]
+        if chords.shape[-1] != 456:
+            raise ValueError(
+                f"expected 456 chord features, got {chords.shape[-1]}"
+            )
 
         hand_dtype = self.hand_embedding[0].weight.dtype
         if self.zero_hand_input:
@@ -136,9 +150,13 @@ class AirPianoTransformer(nn.Module):
         chord_states = self.chord_embedding(
             chords[..., :128].to(dtype=chord_dtype)
         )
+        if self.chord_offset_embedding is not None:
+            chord_states = chord_states + self.chord_offset_embedding(
+                chords[..., 128:256].to(dtype=chord_dtype)
+            )
         if self.chord_duration_embedding is not None:
             chord_states = chord_states + self.chord_duration_embedding(
-                chords[..., 128:].to(dtype=chord_dtype)
+                chords[..., 256:].to(dtype=chord_dtype)
             )
         chord_states = chord_states.masked_fill(~chord_mask.unsqueeze(-1), 0.0)
         global_chord = self.global_chord.expand(batch_size, -1, -1)

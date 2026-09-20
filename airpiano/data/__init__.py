@@ -17,7 +17,16 @@ from .hands import (
 from .midi import InitializerChordMerger, MidiLoader, MidoNoteReader
 from .slicing import FutureChordSlicer
 from .targets import ChordOnsetEvents, TargetGenerator, TriangularSoftener
-from .types import Chord, FilePair, HandSequence, MidiSequence, Note, Song
+from .types import (
+    Chord,
+    EventSequence,
+    FilePair,
+    HandSequence,
+    MidiSequence,
+    Note,
+    NoteEvent,
+    Song,
+)
 
 __all__ = [
     "AlignmentDataset",
@@ -25,6 +34,7 @@ __all__ = [
     "CanonicalNpzReader",
     "Chord",
     "ChordOnsetEvents",
+    "EventSequence",
     "EagerSongReader",
     "FileLoader",
     "FilePair",
@@ -36,6 +46,7 @@ __all__ = [
     "MidiSequence",
     "MidoNoteReader",
     "Note",
+    "NoteEvent",
     "OffsetScaleTransform",
     "Song",
     "RelativeStemPairer",

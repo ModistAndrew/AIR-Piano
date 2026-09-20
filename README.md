@@ -46,8 +46,8 @@ visibility after preprocessing the complete recording.
 Deliberate non-goals include pluggable model architectures, note-level tokens,
 distributed training, checkpoint resume, video downloading, and
 compatibility with V2N checkpoints. The model exposes causal frame-attention,
-chord-duration, and zero-hand-input switches and is constructed through a Hydra
-`_target_`.
+chord-duration, chord-offset, and zero-hand-input switches and is constructed
+through a Hydra `_target_`.
 The alignment loss is selected by `alignment_loss`; BCE remains the default.
 
 ## Repository map
@@ -63,10 +63,12 @@ The alignment loss is selected by `alignment_loss`; BCE remains the default.
 | `configs/causal_chord24_extended.yaml` | Causal 24-chord ablation using the extended combined training split. |
 | `configs/causal_chord24_extended_chord_duration_mean_normalized.yaml` | Duration-conditioned causal 24-chord extended-data ablation with deterministic song-mean duration normalization. |
 | `configs/wrist_xyz10_causal_chord24_extended.yaml` | Wrist-relative causal 24-chord ablation using the extended combined training split. |
-| `configs/wrist_xyz10_causal_chord24_extended_new.yaml` | Extended wrist-relative causal ablation with beat-grid chord-duration tokens. |
+| `configs/wrist_xyz10_causal_chord24_extended_quantized.yaml` | Extended wrist-relative causal ablation with beat-grid chord-duration tokens. |
 | `configs/wrist_xyz10_causal_chord24_extended_last_chord_softmax.yaml` | Extended wrist-relative causal ablation with persistent last-chord targets and categorical softmax. |
 | `configs/wrist_xyz10_causal_chord24_extended_wrist_delta.yaml` | Extended wrist-relative causal ablation with camera-space wrist deltas in joint zero. |
-| `configs/wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20.yaml` | Wrist-delta ablation with chord-bounded hand windows and a 20% fully-missing-hand frame limit. |
+| `configs/wrist_xyz10_causal_chord24_extended_wrist_delta_quantized.yaml` | Wrist-delta ablation with 12-subdivision beat-grid chord durations. |
+| `configs/wrist_xyz10_causal_chord24_extended_wrist_delta_quantized_offset.yaml` | Quantized wrist-delta ablation that adds note-offset actions. |
+| `configs/wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20.yaml` | Wrist-delta ablation with score-bounded outer windows and a 20% fully-missing-hand frame limit. |
 | `configs/wrist_xyz10.yaml` | Wrist-relative local-XYZ ×10 ablation inheriting the baseline. |
 | `configs/chord_duration.yaml` | Duration-conditioned chord-token ablation inheriting the baseline. |
 | `configs/causal_chord24.yaml` | Causal frame-attention and 24-chord slicing ablation inheriting the baseline. |
@@ -693,14 +695,21 @@ algorithm failures propagate directly.
 
 `MidoNoteReader` parses the merged tempo-aware MIDI clock, treats zero-velocity
 note-on as note-off, pairs repeated channel/pitch notes FIFO, ignores sustain,
-and keeps positive-duration pairs. `InitializerChordMerger` groups later notes
-within 0.05 seconds of the initializer note; grouping is inclusive and
-initializer-anchored rather than transitive. Every resulting `Chord` stores its
-absolute duration and a precomputed `float32[200]` duration one-hot. The raw
-duration is time to the next chord onset, or time to the latest member release
-for the final chord. Configurations may apply one shared random multiplier or
-deterministic song-mean normalization to all durations before quantization
-without changing these raw values.
+and keeps positive-duration pairs. `MidiLoader` expands those physical notes
+into an immutable `EventSequence`: onset actions are always present and offset
+actions are opt-in. Every `NoteEvent` retains its physical `Note` and exposes
+its action type, pitch, seconds, and optional tick.
+
+`InitializerChordMerger` groups later events within 0.05 seconds of the
+initializer event; grouping is inclusive and initializer-anchored rather than
+transitive. Every resulting `Chord` stores its events, separate onset/offset
+note tuples, its selected representative time, its duration, and a precomputed
+`float32[200]` duration one-hot. `InitializerChordMerger.time_mode` selects the
+first event time by default or the arithmetic mean of all grouped event times.
+Raw duration is the gap between successive selected chord times. The final
+onset-only chord lasts to its latest member release; the final chord in an
+offset-enabled sequence has duration zero. Configurations may transform
+durations before quantization without changing these raw values.
 
 With `MidoNoteReader.quantization=true`, the reader also consumes the paired
 beat text file's first column. Beat zero maps to tick zero and each following
@@ -728,19 +737,19 @@ One baseline item is:
 | --- | --- | --- |
 | `hands` | `float32[T,2,21,3]` | Real transformed left/right frames; baseline `T<=210`. |
 | `hand_presence` | `bool[T,2]` | Per-hand detection flags. |
-| `chords` | binary `float32[C,328]` | 128 MIDI-pitch multi-hot values followed by a 200-way duration one-hot; baseline `C<=128`. |
+| `chords` | binary `float32[C,456]` | 128 onset-pitch bits, 128 offset-pitch bits, and a 200-way duration one-hot; baseline `C<=128`. |
 | `chord_ids` | `int64[C]` | Global IDs for the selected chords. |
-| `target` | `float32[T,C]` | Soft chord-onset alignment. |
+| `target` | `float32[T,C]` | Soft chord-action alignment. |
 | `record_id` | string | Complete root-relative stem. |
 | `frame_start` | integer | Global left-edge frame index. |
 | `fps` | float | Canonical/source clock used by the slicer. |
 
 The slicer emits regular 105-frame starts plus the exact right-aligned final
-window. It keeps every chord with any member overlapping
-the half-open window, appends later chords until the configured fixed width is
+window. It keeps every chord whose onset or offset notes physically overlap the
+half-open window, appends later chords until the configured fixed width is
 available or the score ends, and returns only real frames and chords. More
-overlapping chords than that width raises instead of truncating positives.
-Duplicate pitches remain distinct notes internally but collapse to one
+matching chords than that width raises instead of truncating positives.
+Duplicate pitch/action pairs remain distinct internally but collapse to one
 multi-hot entry.
 
 During MIDI loading, every chord's duration is quantized using
@@ -765,46 +774,49 @@ then mapped to a bin using:
 bin = clamp(floor(200 * log(4 * duration_seconds + 1) / log(65)), 0, 199)
 ```
 
-The resulting one-hot is stored as `Chord.quantized_dur`; slicing only appends
-it to the 128 pitch bits. Both transformations preserve within-song duration
+The resulting one-hot is stored as `Chord.quantized_dur`; slicing appends it to
+the 256 onset/offset pitch bits. Both transformations preserve within-song duration
 ratios, while song-mean normalization removes global tempo scale
 deterministically. Values outside the mapping's representable range retain the
 existing clipping behavior. Quantization happens before window selection, so
 the normalization covers the full song and the last chord in a slice does not
 incorrectly receive the final-chord rule.
 
-Quantized notes instead use the integer gap to the next chord tick, with the
-final chord using its latest member-release tick. That value is clamped to
-`[0,199]` and used directly as a 200-way one-hot index, preserving the same
-328-value chord-token shape. The
-`wrist_xyz10_causal_chord24_extended_new` preset enables this representation,
-12 subdivisions per beat, and chord-duration conditioning. Its dataset beat
-root is `/storage2/jinxuan/data/AirPianoFull/beats`.
+Quantized events at the same tick form one chord even when onsets and offsets
+are mixed. Durations use the integer gap to the next chord tick; the final
+onset-only chord uses its latest member-release tick and the final
+offset-enabled chord uses zero. The value is clamped to `[0,199]` and directly
+selects the duration bin. The quantized presets use 12 subdivisions per beat,
+chord-duration conditioning, and the beat root
+`/storage2/jinxuan/data/AirPianoFull/beats`.
 
 With `mode=chord`, `segment_frames` and `stride_frames` instead count chord
 tokens and `chord_count` is ignored. Token windows retain the exact
 right-aligned tail. The first score window starts at song frame 0; other
-windows start at the frame at or before their first chord onset. The final
+windows start at the frame at or before their first chord time. The final
 score window ends at song end; other windows include the first sampled frame
-at or after their last chord onset plus the configured end padding. End padding
+at or after their last chord time plus the configured end padding. End padding
 defaults to zero. `hand_context_chords` can move these hand-frame boundaries to
-earlier and later neighboring chord onsets without adding those neighbors to
+earlier and later neighboring chord times without adding those neighbors to
 the model's chord tokens or targets.
 
-`crop_to_chord_bounds=true` instead starts each hand window at the first
-selected chord onset and ends it at the latest physical note offset in the
-last selected chord. These bounds take precedence over the legacy crop,
-context, and end-padding settings. `max_zero_hand_fraction` optionally removes
+`crop_to_chord_bounds=true` trims only the score's outer boundaries. A window
+that begins with the song's first chord starts at the sampled frame at or before
+that chord time instead of frame zero. A window that reaches the song's final
+chord ends at `chord.time + chord.duration` instead of continuing to the
+hand-sequence end. Interior window bounds retain the normal context and
+end-padding behavior.
+`max_zero_hand_fraction` optionally removes
 windows whose fraction of frames with neither hand present is strictly greater
 than the configured value; frames with either hand present do not count as
 zero-hand frames.
 
-Targets use global frame times and chord initializer onsets plus the configured
-event delay, which defaults to zero:
+Targets use global frame times and each chord's selected action time plus the
+configured event delay, which defaults to zero:
 
 ```text
 target[t,c] = max(0, 1 - abs(global_frame_time[t]
-                              - (chord_onset[c] + delay)) / 0.2)
+                              - (chord_time[c] + delay)) / 0.2)
 ```
 
 The collator pads both axes to the batch maxima, creates `frame_mask` and
@@ -818,13 +830,15 @@ zero. Missing hands do not remove frames, targets, or loss positions.
 ```text
 hands          [B,T,2,21,3]
 hand_presence  [B,T,2]
-chords         [B,C,328]
+chords         [B,C,456]
 frame_mask     [B,T]
 chord_mask     [B,C]
 ```
 
 and returns logits `[B,T,C]`. It embeds 126 hand coordinates plus two presence
-bits and always embeds the first 128 chord pitch values. When
+bits and always embeds the first 128 onset-pitch values. When
+`model.include_chord_offsets=true`, a separate embedding processes the next
+128 offset-pitch values and is added to the onset embedding. When
 `model.include_chord_duration=true`, a separate embedding processes the last
 200 values and is added to the pitch embedding. Four chord transformer layers
 and four frame self/cross-attention blocks feed 32-wide pairwise projections.
@@ -1136,9 +1150,9 @@ artifacts use
 `outputs/wrist_xyz10_causal_chord24_extended_wrist_delta/`. Existing
 wrist-relative caches are not read or overwritten.
 
-The filtered ablation reuses the same cache and model settings, crops each hand
-window to its selected chords, and removes windows with more than 20% frames
-where neither hand is present:
+The filtered ablation reuses the same cache and model settings, trims the first
+and final windows to the score boundaries, and removes windows with more than
+20% frames where neither hand is present:
 
 ```bash
 conda run -n v2n python run.py \
@@ -1151,6 +1165,20 @@ conda run -n v2n python run.py \
 
 Its artifacts use
 `outputs/wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20/`.
+
+The two quantized wrist-delta ablations reuse the same hand cache. The first
+adds beat-grid duration tokens; the second also expands MIDI into onset and
+offset actions, selects mean event time for each chord, and enables the
+offset-pitch embedding:
+
+```bash
+conda run -n v2n python run.py \
+  --config-name wrist_xyz10_causal_chord24_extended_wrist_delta_quantized \
+  stage=train
+conda run -n v2n python run.py \
+  --config-name wrist_xyz10_causal_chord24_extended_wrist_delta_quantized_offset \
+  stage=train
+```
 
 ### Causal 24-chord ablation
 
@@ -1168,10 +1196,10 @@ conda run -n v2n python run.py --config-name causal_chord24 stage=test
 `wrist_xyz10_causal_chord24_extended_last_chord_softmax` inherits the extended
 wrist-relative causal 24-chord preset. It replaces the triangular onset target
 with one hard target per target-bearing frame: a chord becomes active at its
-initializer onset, remains active until the next chord onset, and the final
+selected action time, remains active until the next chord time, and the final
 chord remains active through the slice end. Direct target generation returns
 zero before the first supplied onset. Windowed datasets crop each slice to the
-first sampled frame at or after its first selected chord onset, ensuring every
+first sampled frame at or after its first selected chord time, ensuring every
 windowed target row contains exactly one class. Full-song inference retains its
 original complete frame history and does not apply the dataset crop.
 
@@ -1613,14 +1641,16 @@ the process into an output directory.
 | --- | --- |
 | `file_loader` / `RelativeStemPairer` | Pair `<stem>.mid` and `<stem>.npz`, optionally require `<stem>.txt` beats, report the intersection, then read full songs. |
 | `MidoNoteReader` | Tempo-aware physical note parsing, with optional beat-grid tick quantization. |
+| `MidiLoader.include_offsets` | `false`; optionally expand physical notes into both onset and offset actions. |
 | `InitializerChordMerger.tolerance_seconds` | Initializer-relative grouping at `0.05`, with absolute chord durations assigned after grouping. |
+| `InitializerChordMerger.time_mode` | `first`; select the first grouped event time, or `mean` to average all grouped event times. |
 | `InitializerChordMerger.duration_scale_range` / `duration_normalization` | Baseline `null` / `none`; optionally apply one random song scale or deterministic `song_mean` normalization before duration quantization. |
 | `CanonicalNpzReader` | Direct trusted canonical array loading. |
 | `OffsetScaleTransform` | Apply configured per-axis offset and scale, then restore absent slots to zero. |
-| `FutureChordSlicer` | Frame mode: 30 Hz, 210 frames, stride 105, fixed 128 future-extending candidates. Chord mode can add end padding, neighboring-onset context, or opt-in chord-bound cropping without changing chord tokens. Every chord token contains pitch and duration features. |
-| `FutureChordSlicer.crop_to_chord_bounds` | `false`; optionally crop chord-mode hand frames to the first selected onset and final selected chord's latest note offset. |
+| `FutureChordSlicer` | Frame mode: 30 Hz, 210 frames, stride 105, fixed 128 future-extending candidates. Chord mode can add end padding, neighboring-action context, or opt-in chord-bound cropping. Every chord token contains onset pitch, offset pitch, and duration features. |
+| `FutureChordSlicer.crop_to_chord_bounds` | `false`; trim the first and final chord-mode windows to the score boundaries while retaining normal context and padding for interior bounds. |
 | `FutureChordSlicer.max_zero_hand_fraction` | `null`; optionally reject windows whose fraction of frames with neither hand present exceeds the configured value. |
-| `ChordOnsetEvents` | One event at each chord initializer onset plus `delay_seconds`. |
+| `ChordOnsetEvents` | One target at each selected chord action time plus `delay_seconds`. |
 | `TriangularSoftener.radius_seconds` | Continuous target radius `0.2`. |
 
 Each `_target_` is a replaceable seam, but its parent-facing contract must stay
@@ -1642,6 +1672,7 @@ loss intentionally remains fixed in code.
 | `dataset.random_hand_shift_seconds` | `0.0` | Maximum signed shift independently sampled for each training hand-window edge; validation and inference remain unshifted. |
 | `model._target_` | `airpiano.model.transformer.AirPianoTransformer` | Configured alignment model instantiated for training and restored from checkpoints. |
 | `model.include_chord_duration` | `false` | Consume the packed 200-bin duration suffix through a separate embedding. |
+| `model.include_chord_offsets` | `false` | Consume the packed 128 offset-pitch values through a separate embedding. |
 | `model.zero_hand_input` | `false` | Replace all coordinates and hand-presence features with zero before embedding. |
 | `wandb.project` | `air_piano` | Required online project. |
 | `wandb.name` | `${output.project_name}` | Run name shared with the local output directory. |
@@ -1684,7 +1715,7 @@ The narrow replaceable interfaces are:
 | `RelativeStemPairer` | `pair(split_file, midi_root, hand_root) -> list[FilePair]`. |
 | `EagerSongReader` | `read(pair, midi_loader, hand_loader) -> Song`; the loader exposes it as `.reader` for realtime. |
 | `MidoNoteReader` | `read(path) -> tuple[Note,...]`. |
-| `InitializerChordMerger` | `merge(notes) -> tuple[Chord,...]`; every chord includes its absolute-seconds `duration` and a `float32[200]` `quantized_dur` that may encode absolute, randomly song-scaled, or song-mean-normalized duration. |
+| `InitializerChordMerger` | `merge(event_sequence) -> tuple[Chord,...]`; every chord includes grouped events, selected action time, absolute-seconds `duration`, and a `float32[200]` `quantized_dur`. |
 | `CanonicalNpzReader` | `read(path) -> HandSequence`. |
 | `WiLoRCoordinateConverter` | `(raw_arrays, detection_index) -> float32[21,3]` canonical hand. |
 | Hand transform | `(pose, presence) -> pose` with unchanged shape and absent slots zero. |

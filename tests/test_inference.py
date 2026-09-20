@@ -23,11 +23,11 @@ class _TinyDataset(Dataset):
         return 2
 
     def __getitem__(self, index: int):
-        chords = torch.zeros(2, 328)
+        chords = torch.zeros(2, 456)
         chords[0, 60] = 1.0
         chords[1, 64] = 1.0
-        chords[0, 128 + 10] = 1.0
-        chords[1, 128 + 20] = 1.0
+        chords[0, 256 + 10] = 1.0
+        chords[1, 256 + 20] = 1.0
         return {
             "hands": torch.zeros(2, 2, 21, 3),
             "hand_presence": torch.ones(2, 2, dtype=torch.bool),
@@ -54,11 +54,13 @@ class _TinyModel(nn.Module):
         self,
         causal_frame_attention: bool = False,
         include_chord_duration: bool = False,
+        include_chord_offsets: bool = False,
         zero_hand_input: bool = False,
     ) -> None:
         super().__init__()
         self.causal_frame_attention = causal_frame_attention
         self.include_chord_duration = include_chord_duration
+        self.include_chord_offsets = include_chord_offsets
         self.zero_hand_input = zero_hand_input
         self.bias = nn.Parameter(torch.tensor(0.0))
 
@@ -73,6 +75,7 @@ class TestInferenceTest(unittest.TestCase):
             root = Path(directory)
             causal = root / "causal.pt"
             duration = root / "duration.pt"
+            offsets = root / "offsets.pt"
             zero_hand = root / "zero_hand.pt"
             legacy = root / "legacy.pt"
             torch.save(
@@ -96,6 +99,13 @@ class TestInferenceTest(unittest.TestCase):
             torch.save(
                 {
                     "model": _TinyModel().state_dict(),
+                    "config": {"model": {"include_chord_offsets": True}},
+                },
+                offsets,
+            )
+            torch.save(
+                {
+                    "model": _TinyModel().state_dict(),
                     "config": {"model": {"zero_hand_input": True}},
                 },
                 zero_hand,
@@ -109,6 +119,9 @@ class TestInferenceTest(unittest.TestCase):
                     ),
                     include_chord_duration=bool(
                         config.include_chord_duration
+                    ),
+                    include_chord_offsets=bool(
+                        config.include_chord_offsets
                     ),
                     zero_hand_input=bool(config.zero_hand_input),
                 )
@@ -124,6 +137,9 @@ class TestInferenceTest(unittest.TestCase):
                 duration_model = inference_stage.load_model_checkpoint(
                     duration, torch.device("cpu")
                 )
+                offset_model = inference_stage.load_model_checkpoint(
+                    offsets, torch.device("cpu")
+                )
                 zero_hand_model = inference_stage.load_model_checkpoint(
                     zero_hand, torch.device("cpu")
                 )
@@ -133,9 +149,11 @@ class TestInferenceTest(unittest.TestCase):
 
             self.assertTrue(causal_model.causal_frame_attention)
             self.assertTrue(duration_model.include_chord_duration)
+            self.assertTrue(offset_model.include_chord_offsets)
             self.assertTrue(zero_hand_model.zero_hand_input)
             self.assertFalse(legacy_model.causal_frame_attention)
             self.assertFalse(legacy_model.include_chord_duration)
+            self.assertFalse(legacy_model.include_chord_offsets)
             self.assertFalse(legacy_model.zero_hand_input)
 
     def test_uses_configured_checkpoint_and_dumps_test_artifacts(self) -> None:
