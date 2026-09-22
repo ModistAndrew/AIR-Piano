@@ -554,20 +554,24 @@ class TrainTest(unittest.TestCase):
                 expected_scales[name],
             )
 
-    def test_wrist_delta_quantized_and_offset_configs(self) -> None:
+    def test_wrist_delta_filter20_quantized_and_offset_configs(self) -> None:
         config_directory = Path(__file__).parents[1] / "configs"
         quantized_name = (
-            "wrist_xyz10_causal_chord24_extended_wrist_delta_quantized"
+            "wrist_xyz10_causal_chord24_extended_wrist_delta_"
+            "zero_hand_filter20_quantized"
         )
         offset_name = f"{quantized_name}_offset"
+        offset_softmax_name = f"{offset_name}_last_chord_softmax"
         with initialize_config_dir(
             version_base=None, config_dir=str(config_directory.resolve())
         ):
             quantized = compose(config_name=quantized_name)
             offset = compose(config_name=offset_name)
+            offset_softmax = compose(config_name=offset_softmax_name)
 
         components = data.build_data_components(quantized)
         offset_components = data.build_data_components(offset)
+        offset_softmax_components = data.build_data_components(offset_softmax)
         reader = components["midi_loader"].reader
         slicer = components["slicer"]
         self.assertEqual(
@@ -591,6 +595,8 @@ class TrainTest(unittest.TestCase):
         self.assertEqual(slicer.mode, "chord")
         self.assertEqual(slicer.segment_frames, 24)
         self.assertEqual(slicer.stride_frames, 12)
+        self.assertTrue(slicer.crop_to_chord_bounds)
+        self.assertEqual(slicer.max_zero_hand_fraction, 0.2)
         self.assertEqual(
             components["hand_loader"].transform.scale,
             (10.0, 10.0, 10.0),
@@ -610,6 +616,127 @@ class TrainTest(unittest.TestCase):
         self.assertTrue(bool(offset.model.include_chord_duration))
         self.assertTrue(bool(offset.model.include_chord_offsets))
         self.assertTrue(offset_components["midi_loader"].reader.quantization)
+        self.assertTrue(offset_components["slicer"].crop_to_chord_bounds)
+        self.assertEqual(
+            offset_components["slicer"].max_zero_hand_fraction,
+            0.2,
+        )
+        self.assertEqual(
+            str(offset_softmax.output.dir),
+            f"outputs/{offset_softmax_name}",
+        )
+        self.assertEqual(
+            str(offset_softmax.wandb.name), offset_softmax_name
+        )
+        self.assertEqual(
+            str(offset_softmax.alignment_loss), "cross_entropy"
+        )
+        self.assertTrue(
+            offset_softmax_components["midi_loader"].include_offsets
+        )
+        self.assertEqual(
+            offset_softmax_components["midi_loader"].chord_merger.time_mode,
+            "mean",
+        )
+        self.assertTrue(bool(offset_softmax.model.include_chord_duration))
+        self.assertTrue(bool(offset_softmax.model.include_chord_offsets))
+        self.assertTrue(
+            offset_softmax_components["midi_loader"].reader.quantization
+        )
+        self.assertEqual(
+            offset_softmax_components["target_generator"].target_mode,
+            "last_chord",
+        )
+        self.assertTrue(
+            offset_softmax_components["slicer"].crop_before_first_chord
+        )
+        self.assertTrue(
+            offset_softmax_components["slicer"].crop_to_chord_bounds
+        )
+        self.assertEqual(
+            offset_softmax_components["slicer"].max_zero_hand_fraction,
+            0.2,
+        )
+
+    def test_wrist_delta_filter20_additional_duration_configs(self) -> None:
+        config_directory = Path(__file__).parents[1] / "configs"
+        base_name = (
+            "wrist_xyz10_causal_chord24_extended_wrist_delta_"
+            "zero_hand_filter20"
+        )
+        normalized_name = f"{base_name}_chord_duration_mean_normalized"
+        softmax_name = f"{base_name}_quantized_last_chord_softmax"
+        mean_time_name = f"{base_name}_quantized_mean_time"
+        names = (normalized_name, softmax_name, mean_time_name)
+        with initialize_config_dir(
+            version_base=None, config_dir=str(config_directory.resolve())
+        ):
+            configs = [compose(config_name=name) for name in names]
+
+        normalized, softmax, mean_time = configs
+        normalized_components = data.build_data_components(normalized)
+        softmax_components = data.build_data_components(softmax)
+        mean_time_components = data.build_data_components(mean_time)
+
+        for name, config, components in zip(
+            names,
+            configs,
+            (
+                normalized_components,
+                softmax_components,
+                mean_time_components,
+            ),
+            strict=True,
+        ):
+            slicer = components["slicer"]
+            self.assertEqual(str(config.output.dir), f"outputs/{name}")
+            self.assertEqual(str(config.wandb.name), name)
+            self.assertTrue(bool(config.model.causal_frame_attention))
+            self.assertEqual(slicer.mode, "chord")
+            self.assertEqual(slicer.segment_frames, 24)
+            self.assertEqual(slicer.stride_frames, 12)
+            self.assertTrue(slicer.crop_to_chord_bounds)
+            self.assertEqual(slicer.max_zero_hand_fraction, 0.2)
+            self.assertEqual(
+                components["hand_loader"].transform.scale,
+                (10.0, 10.0, 10.0),
+            )
+            self.assertTrue(
+                str(config.data.hand_root).endswith(
+                    "/airpiano_wilor_wrist_xyz_delta_30fps"
+                )
+            )
+
+        normalized_loader = normalized_components["midi_loader"]
+        self.assertFalse(normalized_loader.reader.quantization)
+        self.assertEqual(
+            normalized_loader.chord_merger.duration_normalization,
+            "song_mean",
+        )
+        self.assertIsNone(
+            normalized_loader.chord_merger.duration_scale_range
+        )
+        self.assertEqual(normalized_loader.chord_merger.time_mode, "first")
+        self.assertTrue(bool(normalized.model.include_chord_duration))
+
+        softmax_loader = softmax_components["midi_loader"]
+        self.assertTrue(softmax_loader.reader.quantization)
+        self.assertEqual(softmax_loader.reader.subdivision, 12)
+        self.assertTrue(bool(softmax.model.include_chord_duration))
+        self.assertEqual(str(softmax.alignment_loss), "cross_entropy")
+        self.assertEqual(
+            softmax_components["target_generator"].target_mode,
+            "last_chord",
+        )
+        self.assertTrue(softmax_components["slicer"].crop_before_first_chord)
+
+        mean_time_loader = mean_time_components["midi_loader"]
+        self.assertTrue(mean_time_loader.reader.quantization)
+        self.assertEqual(mean_time_loader.reader.subdivision, 12)
+        self.assertFalse(mean_time_loader.include_offsets)
+        self.assertEqual(mean_time_loader.chord_merger.time_mode, "mean")
+        self.assertTrue(bool(mean_time.model.include_chord_duration))
+        self.assertFalse(bool(mean_time.model.include_chord_offsets))
 
     def test_extended_last_chord_softmax_config(self) -> None:
         config_directory = Path(__file__).parents[1] / "configs"

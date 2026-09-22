@@ -1,9 +1,9 @@
 defaults:
-  - wrist_xyz10_causal_chord24_extended_wrist_delta
+  - wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20
   - _self_
 
 output:
-  project_name: wrist_xyz10_causal_chord24_extended_wrist_delta_quantized
+  project_name: wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized
 
 data:
   beat_root: ${data.processed_root}/beats

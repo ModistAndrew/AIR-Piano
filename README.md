@@ -66,9 +66,13 @@ The alignment loss is selected by `alignment_loss`; BCE remains the default.
 | `configs/wrist_xyz10_causal_chord24_extended_quantized.yaml` | Extended wrist-relative causal ablation with beat-grid chord-duration tokens. |
 | `configs/wrist_xyz10_causal_chord24_extended_last_chord_softmax.yaml` | Extended wrist-relative causal ablation with persistent last-chord targets and categorical softmax. |
 | `configs/wrist_xyz10_causal_chord24_extended_wrist_delta.yaml` | Extended wrist-relative causal ablation with camera-space wrist deltas in joint zero. |
-| `configs/wrist_xyz10_causal_chord24_extended_wrist_delta_quantized.yaml` | Wrist-delta ablation with 12-subdivision beat-grid chord durations. |
-| `configs/wrist_xyz10_causal_chord24_extended_wrist_delta_quantized_offset.yaml` | Quantized wrist-delta ablation that adds note-offset actions. |
 | `configs/wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20.yaml` | Wrist-delta ablation with score-bounded outer windows and a 20% fully-missing-hand frame limit. |
+| `configs/wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_chord_duration_mean_normalized.yaml` | Zero-hand-filter20 wrist-delta ablation with song-mean-normalized chord durations. |
+| `configs/wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized.yaml` | Zero-hand-filter20 wrist-delta ablation with 12-subdivision beat-grid chord durations. |
+| `configs/wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized_last_chord_softmax.yaml` | Quantized zero-hand-filter20 wrist-delta ablation with persistent last-chord targets and categorical softmax. |
+| `configs/wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized_mean_time.yaml` | Quantized zero-hand-filter20 wrist-delta ablation using mean grouped-event times. |
+| `configs/wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized_offset.yaml` | Quantized zero-hand-filter20 wrist-delta ablation that adds note-offset actions. |
+| `configs/wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized_offset_last_chord_softmax.yaml` | Quantized onset/offset ablation with persistent last-action targets and categorical softmax. |
 | `configs/wrist_xyz10.yaml` | Wrist-relative local-XYZ ×10 ablation inheriting the baseline. |
 | `configs/chord_duration.yaml` | Duration-conditioned chord-token ablation inheriting the baseline. |
 | `configs/causal_chord24.yaml` | Causal frame-attention and 24-chord slicing ablation inheriting the baseline. |
@@ -1166,18 +1170,57 @@ conda run -n v2n python run.py \
 Its artifacts use
 `outputs/wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20/`.
 
-The two quantized wrist-delta ablations reuse the same hand cache. The first
-adds beat-grid duration tokens; the second also expands MIDI into onset and
-offset actions, selects mean event time for each chord, and enables the
-offset-pitch embedding:
+The two quantized wrist-delta ablations inherit score-bounded outer windows
+and the 20% fully-missing-hand frame limit while reusing the same hand cache.
+The first adds beat-grid duration tokens; the second also expands MIDI into
+onset and offset actions, selects mean event time for each chord, and enables
+the offset-pitch embedding:
 
 ```bash
 conda run -n v2n python run.py \
-  --config-name wrist_xyz10_causal_chord24_extended_wrist_delta_quantized \
+  --config-name wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized \
   stage=train
 conda run -n v2n python run.py \
-  --config-name wrist_xyz10_causal_chord24_extended_wrist_delta_quantized_offset \
+  --config-name wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized_offset \
   stage=train
+conda run -n v2n python run.py \
+  --config-name wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized_offset_last_chord_softmax \
+  stage=train
+conda run -n v2n python run.py \
+  --config-name wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized_offset_last_chord_softmax \
+  stage=test
+```
+
+The final variant retains the quantized onset/offset action sequence and uses
+the persistent last-action target with categorical cross-entropy.
+
+Three additional filter20 ablations isolate duration normalization, target
+generation, and chord timing. The first replaces beat-grid duration tokens
+with deterministic song-mean-normalized durations. The second keeps beat-grid
+durations but trains against the persistent last-chord target with categorical
+cross-entropy. The third keeps the quantized input and onset target while using
+the mean grouped-event time instead of the first event time, without adding
+note-offset actions:
+
+```bash
+conda run -n v2n python run.py \
+  --config-name wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_chord_duration_mean_normalized \
+  stage=train
+conda run -n v2n python run.py \
+  --config-name wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_chord_duration_mean_normalized \
+  stage=test
+conda run -n v2n python run.py \
+  --config-name wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized_last_chord_softmax \
+  stage=train
+conda run -n v2n python run.py \
+  --config-name wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized_last_chord_softmax \
+  stage=test
+conda run -n v2n python run.py \
+  --config-name wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized_mean_time \
+  stage=train
+conda run -n v2n python run.py \
+  --config-name wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized_mean_time \
+  stage=test
 ```
 
 ### Causal 24-chord ablation
