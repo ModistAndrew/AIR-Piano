@@ -658,6 +658,120 @@ class TrainTest(unittest.TestCase):
             0.2,
         )
 
+    def test_pianovam_non_quantized_offset_last_chord_config(self) -> None:
+        config_directory = Path(__file__).parents[1] / "configs"
+        name = (
+            "wrist_xyz10_causal_chord24_wrist_delta_zero_hand_filter20_"
+            "offset_last_chord_softmax_pianovam"
+        )
+        with initialize_config_dir(
+            version_base=None, config_dir=str(config_directory.resolve())
+        ):
+            config = compose(config_name=name)
+
+        components = data.build_data_components(config)
+        midi_loader = components["midi_loader"]
+        slicer = components["slicer"]
+        self.assertEqual(str(config.output.dir), f"outputs/{name}")
+        self.assertEqual(str(config.wandb.name), name)
+        self.assertEqual(str(config.alignment_loss), "cross_entropy")
+        self.assertEqual(
+            {key: str(value) for key, value in config.data.splits.items()},
+            {
+                "train": "assets/splits/pianovam/train.txt",
+                "valid": "assets/splits/pianovam/valid.txt",
+                "test": "assets/splits/pianovam/test.txt",
+            },
+        )
+        self.assertEqual(
+            float(config.preprocess.video_to_ragged.target_fps), 30.0
+        )
+        self.assertNotIn("beat_root", config.data)
+        self.assertFalse(midi_loader.reader.quantization)
+        self.assertTrue(midi_loader.include_offsets)
+        self.assertEqual(midi_loader.chord_merger.time_mode, "mean")
+        self.assertFalse(bool(config.model.include_chord_duration))
+        self.assertTrue(bool(config.model.include_chord_offsets))
+        self.assertTrue(bool(config.model.causal_frame_attention))
+        self.assertEqual(
+            components["target_generator"].target_mode,
+            "last_chord",
+        )
+        self.assertEqual(slicer.mode, "chord")
+        self.assertEqual(slicer.segment_frames, 24)
+        self.assertEqual(slicer.stride_frames, 12)
+        self.assertTrue(slicer.crop_before_first_chord)
+        self.assertTrue(slicer.crop_to_chord_bounds)
+        self.assertEqual(slicer.max_zero_hand_fraction, 0.2)
+        self.assertTrue(
+            str(config.data.hand_root).endswith(
+                "/airpiano_wilor_wrist_xyz_delta_30fps"
+            )
+        )
+
+    def test_pianovam_non_quantized_onset_target_configs(self) -> None:
+        config_directory = Path(__file__).parents[1] / "configs"
+        offset_name = (
+            "wrist_xyz10_causal_chord24_wrist_delta_zero_hand_filter20_"
+            "offset_pianovam"
+        )
+        onset_name = (
+            "wrist_xyz10_causal_chord24_wrist_delta_zero_hand_filter20_"
+            "pianovam"
+        )
+        with initialize_config_dir(
+            version_base=None, config_dir=str(config_directory.resolve())
+        ):
+            offset = compose(config_name=offset_name)
+            onset = compose(config_name=onset_name)
+
+        offset_components = data.build_data_components(offset)
+        onset_components = data.build_data_components(onset)
+        for name, config, components in (
+            (offset_name, offset, offset_components),
+            (onset_name, onset, onset_components),
+        ):
+            self.assertEqual(str(config.output.dir), f"outputs/{name}")
+            self.assertEqual(str(config.wandb.name), name)
+            self.assertEqual(str(config.alignment_loss), "bce")
+            self.assertEqual(
+                {
+                    key: str(value)
+                    for key, value in config.data.splits.items()
+                },
+                {
+                    "train": "assets/splits/pianovam/train.txt",
+                    "valid": "assets/splits/pianovam/valid.txt",
+                    "test": "assets/splits/pianovam/test.txt",
+                },
+            )
+            self.assertNotIn("beat_root", config.data)
+            self.assertFalse(components["midi_loader"].reader.quantization)
+            self.assertFalse(bool(config.model.include_chord_duration))
+            self.assertEqual(
+                components["target_generator"].target_mode,
+                "onset",
+            )
+            self.assertTrue(components["slicer"].crop_before_first_chord)
+            self.assertTrue(components["slicer"].crop_to_chord_bounds)
+            self.assertEqual(
+                components["slicer"].max_zero_hand_fraction,
+                0.2,
+            )
+
+        self.assertTrue(offset_components["midi_loader"].include_offsets)
+        self.assertEqual(
+            offset_components["midi_loader"].chord_merger.time_mode,
+            "mean",
+        )
+        self.assertTrue(bool(offset.model.include_chord_offsets))
+        self.assertFalse(onset_components["midi_loader"].include_offsets)
+        self.assertEqual(
+            onset_components["midi_loader"].chord_merger.time_mode,
+            "first",
+        )
+        self.assertFalse(bool(onset.model.include_chord_offsets))
+
     def test_wrist_delta_filter20_additional_duration_configs(self) -> None:
         config_directory = Path(__file__).parents[1] / "configs"
         base_name = (

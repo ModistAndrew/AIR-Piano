@@ -1,0 +1,34 @@
+defaults:
+  - wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20
+  - _self_
+
+alignment_loss: cross_entropy
+
+output:
+  project_name: wrist_xyz10_causal_chord24_wrist_delta_zero_hand_filter20_offset_last_chord_softmax_pianovam
+
+data:
+  splits:
+    train: assets/splits/pianovam/train.txt
+    valid: assets/splits/pianovam/valid.txt
+    test: assets/splits/pianovam/test.txt
+
+preprocess:
+  video_to_ragged:
+    target_fps: 30.0
+
+dataset:
+  midi_loader:
+    include_offsets: true
+    reader:
+      quantization: false
+    chord_merger:
+      time_mode: mean
+  slicer:
+    crop_before_first_chord: true
+  target_generator:
+    target_mode: last_chord
+
+model:
+  include_chord_duration: false
+  include_chord_offsets: true

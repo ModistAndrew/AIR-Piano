@@ -73,6 +73,9 @@ The alignment loss is selected by `alignment_loss`; BCE remains the default.
 | `configs/wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized_mean_time.yaml` | Quantized zero-hand-filter20 wrist-delta ablation using mean grouped-event times. |
 | `configs/wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized_offset.yaml` | Quantized zero-hand-filter20 wrist-delta ablation that adds note-offset actions. |
 | `configs/wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized_offset_last_chord_softmax.yaml` | Quantized onset/offset ablation with persistent last-action targets and categorical softmax. |
+| `configs/wrist_xyz10_causal_chord24_wrist_delta_zero_hand_filter20_offset_last_chord_softmax_pianovam.yaml` | PianoVAM-only non-quantized onset/offset ablation with persistent last-action targets and categorical softmax. |
+| `configs/wrist_xyz10_causal_chord24_wrist_delta_zero_hand_filter20_offset_pianovam.yaml` | PianoVAM-only non-quantized onset/offset ablation with onset targets and BCE. |
+| `configs/wrist_xyz10_causal_chord24_wrist_delta_zero_hand_filter20_pianovam.yaml` | PianoVAM-only non-quantized onset-only wrist-delta ablation with onset targets and BCE. |
 | `configs/wrist_xyz10.yaml` | Wrist-relative local-XYZ ×10 ablation inheriting the baseline. |
 | `configs/chord_duration.yaml` | Duration-conditioned chord-token ablation inheriting the baseline. |
 | `configs/causal_chord24.yaml` | Causal frame-attention and 24-chord slicing ablation inheriting the baseline. |
@@ -1193,6 +1196,40 @@ conda run -n v2n python run.py \
 
 The final variant retains the quantized onset/offset action sequence and uses
 the persistent last-action target with categorical cross-entropy.
+
+The PianoVAM counterpart removes both beat-grid quantization and duration-token
+conditioning while retaining onset/offset actions, mean grouped-event times,
+the persistent last-action target, and categorical cross-entropy. It must be
+trained from scratch because quantized checkpoints contain a duration embedding
+that this model does not instantiate:
+
+```bash
+conda run -n v2n python run.py \
+  --config-name wrist_xyz10_causal_chord24_wrist_delta_zero_hand_filter20_offset_last_chord_softmax_pianovam \
+  stage=train
+conda run -n v2n python run.py \
+  --config-name wrist_xyz10_causal_chord24_wrist_delta_zero_hand_filter20_offset_last_chord_softmax_pianovam \
+  stage=test
+```
+
+Two nested ablations first replace the persistent target and categorical loss
+with onset targets and BCE, then additionally remove offset actions and their
+pitch embedding:
+
+```bash
+conda run -n v2n python run.py \
+  --config-name wrist_xyz10_causal_chord24_wrist_delta_zero_hand_filter20_offset_pianovam \
+  stage=train
+conda run -n v2n python run.py \
+  --config-name wrist_xyz10_causal_chord24_wrist_delta_zero_hand_filter20_offset_pianovam \
+  stage=test
+conda run -n v2n python run.py \
+  --config-name wrist_xyz10_causal_chord24_wrist_delta_zero_hand_filter20_pianovam \
+  stage=train
+conda run -n v2n python run.py \
+  --config-name wrist_xyz10_causal_chord24_wrist_delta_zero_hand_filter20_pianovam \
+  stage=test
+```
 
 Three additional filter20 ablations isolate duration normalization, target
 generation, and chord timing. The first replaces beat-grid duration tokens
