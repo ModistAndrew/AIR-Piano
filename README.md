@@ -71,6 +71,10 @@ The alignment loss is selected by `alignment_loss`; BCE remains the default.
 | `configs/wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized.yaml` | Zero-hand-filter20 wrist-delta ablation with 12-subdivision beat-grid chord durations. |
 | `configs/wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized_last_chord_softmax.yaml` | Quantized zero-hand-filter20 wrist-delta ablation with persistent last-chord targets and categorical softmax. |
 | `configs/wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized_mean_time.yaml` | Quantized zero-hand-filter20 wrist-delta ablation using mean grouped-event times. |
+| `configs/wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized_mean_time_subdivision8.yaml` | Mean-time quantized ablation using 8 subdivisions per beat. |
+| `configs/wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized_mean_time_subdivision16.yaml` | Mean-time quantized ablation using 16 subdivisions per beat. |
+| `configs/wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized_mean_time_subdivision12_triplet_quarter.yaml` | Mean-time quantized ablation limited to quarter and trisection points on a 12-tick beat. |
+| `configs/wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized_mean_time_subdivision12_triplet_quarter_clamped.yaml` | Triplet/quarter-grid ablation that clamps endpoints outside the annotated beat span. |
 | `configs/wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized_offset.yaml` | Quantized zero-hand-filter20 wrist-delta ablation that adds note-offset actions. |
 | `configs/wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized_offset_last_chord_softmax.yaml` | Quantized onset/offset ablation with persistent last-action targets and categorical softmax. |
 | `configs/wrist_xyz10_causal_chord24_wrist_delta_zero_hand_filter20_offset_last_chord_softmax_pianovam.yaml` | PianoVAM-only non-quantized onset/offset ablation with persistent last-action targets and categorical softmax. |
@@ -721,12 +725,18 @@ durations before quantization without changing these raw values.
 With `MidoNoteReader.quantization=true`, the reader also consumes the paired
 beat text file's first column. Beat zero maps to tick zero and each following
 beat advances by `subdivision` ticks (12 by default); note endpoints snap to
-the nearest tick, with half-ties moving to the later tick. Times before or
-after the detected beat span extrapolate the first or last beat interval.
-Original MIDI seconds remain on every note for hand slicing and targets, while
-the added integer ticks control chord grouping and duration tokens. Missing
-beat files are reported and omitted during pairing; malformed present files
-raise normally.
+the nearest tick, with half-ties moving to the later tick. Optional
+`allowed_tick_offsets` restricts snap candidates within each beat while
+retaining their original logical tick positions. For example, subdivision 12 with
+offsets `[0,3,4,6,8,9]` keeps the beat boundary, quarter points, and trisection
+points, so duration tokens remain measured in twelfths of a beat. By default,
+times before or after the detected beat span repeat the same candidate pattern
+using the first or last beat interval. Setting `out_of_bounds_mode=clamp`
+instead maps those endpoints to the first or last tick position. Original MIDI
+seconds remain on every note for hand slicing and targets, while the added
+integer ticks control chord grouping and duration tokens. Missing beat files
+are reported and omitted during pairing; malformed present files raise
+normally.
 
 `OffsetScaleTransform` applies configured per-axis `(pose - offset) * scale` to
 present slots while preserving exact zero absent slots. The baseline uses
@@ -1257,6 +1267,38 @@ conda run -n v2n python run.py \
   stage=train
 conda run -n v2n python run.py \
   --config-name wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized_mean_time \
+  stage=test
+```
+
+Four beat-grid resolution ablations inherit the quantized mean-time preset.
+The two irregular variants retain 12 logical ticks per beat but permit only
+quarter and trisection positions. The clamped variant maps endpoints outside
+the annotated beat span to its first or last tick position:
+
+```bash
+conda run -n v2n python run.py \
+  --config-name wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized_mean_time_subdivision8 \
+  stage=train
+conda run -n v2n python run.py \
+  --config-name wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized_mean_time_subdivision8 \
+  stage=test
+conda run -n v2n python run.py \
+  --config-name wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized_mean_time_subdivision16 \
+  stage=train
+conda run -n v2n python run.py \
+  --config-name wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized_mean_time_subdivision16 \
+  stage=test
+conda run -n v2n python run.py \
+  --config-name wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized_mean_time_subdivision12_triplet_quarter \
+  stage=train
+conda run -n v2n python run.py \
+  --config-name wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized_mean_time_subdivision12_triplet_quarter \
+  stage=test
+conda run -n v2n python run.py \
+  --config-name wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized_mean_time_subdivision12_triplet_quarter_clamped \
+  stage=train
+conda run -n v2n python run.py \
+  --config-name wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized_mean_time_subdivision12_triplet_quarter_clamped \
   stage=test
 ```
 

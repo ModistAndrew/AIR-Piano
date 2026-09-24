@@ -56,42 +56,109 @@ class MidoNoteReader:
         self,
         quantization: bool = False,
         subdivision: int = 12,
+        allowed_tick_offsets: Sequence[int] | None = None,
+        out_of_bounds_mode: str = "extrapolate",
     ) -> None:
         self.quantization = quantization
-        self.subdivision = subdivision
+        self.subdivision = int(subdivision)
+        if out_of_bounds_mode not in {"extrapolate", "clamp"}:
+            raise ValueError(
+                "out_of_bounds_mode must be 'extrapolate' or 'clamp'"
+            )
+        self.out_of_bounds_mode = out_of_bounds_mode
+        if allowed_tick_offsets is None:
+            self.allowed_tick_offsets = None
+        else:
+            offsets = tuple(allowed_tick_offsets)
+            if any(not isinstance(offset, int) for offset in offsets):
+                raise ValueError("allowed_tick_offsets must contain integers")
+            if len(offsets) != len(set(offsets)):
+                raise ValueError("allowed_tick_offsets must be unique")
+            if 0 not in offsets:
+                raise ValueError("allowed_tick_offsets must include 0")
+            if any(
+                offset < 0 or offset >= self.subdivision
+                for offset in offsets
+            ):
+                raise ValueError(
+                    "allowed_tick_offsets must be in [0, subdivision)"
+                )
+            self.allowed_tick_offsets = tuple(sorted(offsets))
 
-    def _read_ticks(self, path: str | Path) -> tuple[float, ...]:
+    def _read_ticks(
+        self,
+        path: str | Path,
+    ) -> tuple[tuple[float, ...], tuple[int, ...]]:
         with Path(path).open("r", encoding="utf-8") as handle:
             beats = tuple(
                 float(line.split()[0])
                 for line in handle
                 if line.strip()
             )
-        return tuple(
-            start + (stop - start) * index / self.subdivision
+        offsets = self.allowed_tick_offsets
+        if offsets is None:
+            offsets = tuple(range(self.subdivision))
+        tick_times = tuple(
+            start + (stop - start) * offset / self.subdivision
             for start, stop in zip(beats, beats[1:])
-            for index in range(self.subdivision)
+            for offset in offsets
         ) + (beats[-1],)
+        tick_positions = tuple(
+            beat_index * self.subdivision + offset
+            for beat_index in range(len(beats) - 1)
+            for offset in offsets
+        ) + ((len(beats) - 1) * self.subdivision,)
+        return tick_times, tick_positions
 
-    @staticmethod
-    def _nearest_tick(time_seconds: float, ticks: tuple[float, ...]) -> int:
-        if time_seconds <= ticks[0]:
-            position = (time_seconds - ticks[0]) / (ticks[1] - ticks[0])
-            return math.floor(position + 0.5)
-        if time_seconds >= ticks[-1]:
-            position = (
-                len(ticks)
-                - 1
-                + (time_seconds - ticks[-1]) / (ticks[-1] - ticks[-2])
+    def _nearest_allowed_tick(self, position: float) -> int:
+        offsets = self.allowed_tick_offsets
+        if offsets is None:
+            offsets = tuple(range(self.subdivision))
+        beat_index = math.floor(position / self.subdivision)
+        candidates = (
+            candidate_beat * self.subdivision + offset
+            for candidate_beat in range(beat_index - 1, beat_index + 2)
+            for offset in offsets
+        )
+        return min(candidates, key=lambda tick: (abs(tick - position), -tick))
+
+    def _nearest_tick(
+        self,
+        time_seconds: float,
+        tick_times: tuple[float, ...],
+        tick_positions: tuple[int, ...],
+    ) -> int:
+        if time_seconds <= tick_times[0]:
+            if self.out_of_bounds_mode == "clamp":
+                return tick_positions[0]
+            seconds_per_tick = (
+                (tick_times[1] - tick_times[0])
+                / (tick_positions[1] - tick_positions[0])
             )
-            return math.floor(position + 0.5)
+            position = tick_positions[0] + (
+                time_seconds - tick_times[0]
+            ) / seconds_per_tick
+            return self._nearest_allowed_tick(position)
+        if time_seconds >= tick_times[-1]:
+            if self.out_of_bounds_mode == "clamp":
+                return tick_positions[-1]
+            seconds_per_tick = (
+                (tick_times[-1] - tick_times[-2])
+                / (tick_positions[-1] - tick_positions[-2])
+            )
+            position = (
+                tick_positions[-1]
+                + (time_seconds - tick_times[-1]) / seconds_per_tick
+            )
+            return self._nearest_allowed_tick(position)
 
-        later = bisect_left(ticks, time_seconds)
+        later = bisect_left(tick_times, time_seconds)
         earlier = later - 1
         return (
-            earlier
-            if time_seconds - ticks[earlier] < ticks[later] - time_seconds
-            else later
+            tick_positions[earlier]
+            if time_seconds - tick_times[earlier]
+            < tick_times[later] - time_seconds
+            else tick_positions[later]
         )
 
     def read(
@@ -129,8 +196,17 @@ class MidoNoteReader:
             onset_tick = None
             offset_tick = None
             if ticks is not None:
-                onset_tick = self._nearest_tick(onset, ticks)
-                offset_tick = self._nearest_tick(offset, ticks)
+                tick_times, tick_positions = ticks
+                onset_tick = self._nearest_tick(
+                    onset,
+                    tick_times,
+                    tick_positions,
+                )
+                offset_tick = self._nearest_tick(
+                    offset,
+                    tick_times,
+                    tick_positions,
+                )
             notes.append(
                 Note(
                     id=note_id,

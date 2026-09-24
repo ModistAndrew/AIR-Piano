@@ -1,0 +1,11 @@
+defaults:
+  - wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized_mean_time
+  - _self_
+
+output:
+  project_name: wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized_mean_time_subdivision16
+
+dataset:
+  midi_loader:
+    reader:
+      subdivision: 16

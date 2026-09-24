@@ -852,6 +852,64 @@ class TrainTest(unittest.TestCase):
         self.assertTrue(bool(mean_time.model.include_chord_duration))
         self.assertFalse(bool(mean_time.model.include_chord_offsets))
 
+    def test_mean_time_subdivision_ablation_configs(self) -> None:
+        config_directory = Path(__file__).parents[1] / "configs"
+        base_name = (
+            "wrist_xyz10_causal_chord24_extended_wrist_delta_"
+            "zero_hand_filter20_quantized_mean_time"
+        )
+        expectations = {
+            f"{base_name}_subdivision8": (8, None, "extrapolate"),
+            f"{base_name}_subdivision16": (16, None, "extrapolate"),
+            f"{base_name}_subdivision12_triplet_quarter": (
+                12,
+                (0, 3, 4, 6, 8, 9),
+                "extrapolate",
+            ),
+            f"{base_name}_subdivision12_triplet_quarter_clamped": (
+                12,
+                (0, 3, 4, 6, 8, 9),
+                "clamp",
+            ),
+        }
+        with initialize_config_dir(
+            version_base=None,
+            config_dir=str(config_directory.resolve()),
+        ):
+            configs = {
+                name: compose(config_name=name) for name in expectations
+            }
+
+        for name, (subdivision, offsets, bounds_mode) in expectations.items():
+            with self.subTest(name=name):
+                config = configs[name]
+                components = data.build_data_components(config)
+                midi_loader = components["midi_loader"]
+                slicer = components["slicer"]
+
+                self.assertEqual(str(config.output.dir), f"outputs/{name}")
+                self.assertEqual(str(config.wandb.name), name)
+                self.assertTrue(midi_loader.reader.quantization)
+                self.assertEqual(midi_loader.reader.subdivision, subdivision)
+                self.assertEqual(
+                    midi_loader.reader.allowed_tick_offsets,
+                    offsets,
+                )
+                self.assertEqual(
+                    midi_loader.reader.out_of_bounds_mode,
+                    bounds_mode,
+                )
+                self.assertFalse(midi_loader.include_offsets)
+                self.assertEqual(midi_loader.chord_merger.time_mode, "mean")
+                self.assertTrue(bool(config.model.include_chord_duration))
+                self.assertFalse(bool(config.model.include_chord_offsets))
+                self.assertTrue(bool(config.model.causal_frame_attention))
+                self.assertEqual(slicer.mode, "chord")
+                self.assertEqual(slicer.segment_frames, 24)
+                self.assertEqual(slicer.stride_frames, 12)
+                self.assertTrue(slicer.crop_to_chord_bounds)
+                self.assertEqual(slicer.max_zero_hand_fraction, 0.2)
+
     def test_extended_last_chord_softmax_config(self) -> None:
         config_directory = Path(__file__).parents[1] / "configs"
         name = "wrist_xyz10_causal_chord24_extended_last_chord_softmax"

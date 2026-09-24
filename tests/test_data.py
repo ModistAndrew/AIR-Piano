@@ -351,6 +351,113 @@ class MidiTest(unittest.TestCase):
         self.assertEqual([note.onset for note in parsed], [0.5, 1.375, 2.875])
         self.assertEqual([note.offset for note in parsed], [1.125, 2.125, 3.25])
 
+    def test_reader_quantizes_to_filtered_tick_offsets(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            beat_path = Path(directory) / "beats.txt"
+            beat_path.write_text("1.0\n2.0\n3.0\n", encoding="utf-8")
+            reader = MidoNoteReader(
+                quantization=True,
+                subdivision=12,
+                allowed_tick_offsets=(0, 3, 4, 6, 8, 9),
+            )
+            tick_times, tick_positions = reader._read_ticks(beat_path)
+
+        self.assertEqual(
+            tick_positions,
+            (0, 3, 4, 6, 8, 9, 12, 15, 16, 18, 20, 21, 24),
+        )
+
+        def quantize(time_seconds: float) -> int:
+            return reader._nearest_tick(
+                time_seconds,
+                tick_times,
+                tick_positions,
+            )
+
+        self.assertEqual(
+            tuple(quantize(1.0 + index / 12) for index in range(12)),
+            (0, 0, 3, 3, 4, 6, 6, 8, 8, 9, 9, 12),
+        )
+        self.assertEqual(quantize(1.125), 3)
+        self.assertEqual(quantize(0.75), -3)
+        self.assertEqual(quantize(0.875), 0)
+        self.assertEqual(quantize(3.125), 27)
+        self.assertEqual(quantize(3.25), 27)
+
+        notes = (
+            _note(
+                0,
+                1.25,
+                1.75,
+                60,
+                onset_tick=quantize(1.25),
+                offset_tick=quantize(1.75),
+            ),
+            _note(
+                1,
+                1.5,
+                2.0,
+                64,
+                onset_tick=quantize(1.5),
+                offset_tick=quantize(2.0),
+            ),
+        )
+        chords = InitializerChordMerger().merge(
+            EventSequence.from_notes(notes),
+            quantization=True,
+        )
+        self.assertEqual(
+            [chord.duration_ticks for chord in chords],
+            [3, 6],
+        )
+        self.assertEqual(
+            [chord.quantized_dur.argmax().item() for chord in chords],
+            [3, 6],
+        )
+
+    def test_reader_clamps_filtered_grid_out_of_bounds(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            beat_path = Path(directory) / "beats.txt"
+            beat_path.write_text("1.0\n2.0\n3.0\n", encoding="utf-8")
+            reader = MidoNoteReader(
+                quantization=True,
+                subdivision=12,
+                allowed_tick_offsets=(0, 3, 4, 6, 8, 9),
+                out_of_bounds_mode="clamp",
+            )
+            tick_times, tick_positions = reader._read_ticks(beat_path)
+
+        def quantize(time_seconds: float) -> int:
+            return reader._nearest_tick(
+                time_seconds,
+                tick_times,
+                tick_positions,
+            )
+
+        self.assertEqual(quantize(0.75), 0)
+        self.assertEqual(quantize(1.125), 3)
+        self.assertEqual(quantize(3.125), 24)
+        self.assertEqual(quantize(3.25), 24)
+
+    def test_reader_rejects_invalid_filtered_tick_offsets(self) -> None:
+        invalid_offsets = (
+            ((0, 3.5), "integers"),
+            ((0, 3, 3), "unique"),
+            ((3, 4, 6), "include 0"),
+            ((0, 12), r"\[0, subdivision\)"),
+        )
+        for offsets, message in invalid_offsets:
+            with self.subTest(offsets=offsets):
+                with self.assertRaisesRegex(ValueError, message):
+                    MidoNoteReader(
+                        subdivision=12,
+                        allowed_tick_offsets=offsets,
+                    )
+
+    def test_reader_rejects_unknown_out_of_bounds_mode(self) -> None:
+        with self.assertRaisesRegex(ValueError, "out_of_bounds_mode"):
+            MidoNoteReader(out_of_bounds_mode="wrap")
+
     def test_chord_merger_uses_tick_groups_and_direct_tick_durations(self) -> None:
         notes = (
             _note(0, 0.0, 0.02, 60, onset_tick=0, offset_tick=0),
