@@ -502,6 +502,49 @@ class MidiTest(unittest.TestCase):
         self.assertEqual(zero[0].duration_ticks, 0)
         self.assertEqual(zero[0].quantized_dur.argmax().item(), 0)
 
+    def test_chord_merger_splits_same_tick_notes_in_absolute_time_order(
+        self,
+    ) -> None:
+        notes = (
+            _note(0, 0.2, 0.6, 60, onset_tick=0, offset_tick=4),
+            _note(1, 0.1, 0.5, 64, onset_tick=0, offset_tick=4),
+            _note(2, 0.3, 0.8, 67, onset_tick=3, offset_tick=8),
+        )
+
+        chords = InitializerChordMerger(
+            time_mode="mean",
+            split_notes=True,
+        ).merge(
+            EventSequence.from_notes(notes),
+            quantization=True,
+        )
+
+        self.assertEqual(len(chords), 3)
+        self.assertEqual(
+            [[note.id for note in chord.onset_notes] for chord in chords],
+            [[1], [0], [2]],
+        )
+        torch.testing.assert_close(
+            torch.tensor([chord.time for chord in chords]),
+            torch.tensor([0.1, 0.2, 0.3]),
+        )
+        self.assertEqual(
+            [chord.duration_ticks for chord in chords],
+            [0, 3, 5],
+        )
+        self.assertEqual(
+            [chord.quantized_dur.argmax().item() for chord in chords],
+            [0, 3, 5],
+        )
+
+        song = _song(chords, frame_count=10, fps=10.0)
+        tokens = FutureChordSlicer().slice(song, 0, 1, (0, 1, 2))["chords"]
+        self.assertEqual(
+            [tokens[index, :128].argmax().item() for index in range(3)],
+            [64, 60, 67],
+        )
+        self.assertEqual(tokens[:, :128].sum(dim=-1).tolist(), [1.0] * 3)
+
     def test_chord_merger_groups_mixed_quantized_actions(self) -> None:
         notes = (
             _note(0, 0.0, 0.31, 60, onset_tick=0, offset_tick=3),
@@ -1450,6 +1493,40 @@ class SlicingAndTargetTest(unittest.TestCase):
             target[:, 0], torch.tensor([0.5, 1.0, 0.5]), atol=1e-6, rtol=0
         )
         self.assertGreater(target[-1, 1].item(), 0.0)
+
+    def test_velocity_target_scales_merged_and_single_note_columns(self) -> None:
+        chords = (
+            _chord(
+                0,
+                (
+                    _note(0, 1.0, 1.2, 60, velocity=32),
+                    _note(1, 1.0, 1.2, 64, velocity=96),
+                ),
+            ),
+            _chord(1, (_note(2, 1.5, 1.7, 67, velocity=32),)),
+            _chord(2, (_note(3, 2.0, 2.2, 71, velocity=96),)),
+        )
+        target = TargetGenerator(
+            ChordOnsetEvents(),
+            TriangularSoftener(radius_seconds=0.2),
+            velocity_target=True,
+        ).generate(
+            chords,
+            frame_start=9,
+            frame_count=13,
+            fps=10.0,
+        )
+
+        torch.testing.assert_close(
+            target.amax(dim=0),
+            torch.tensor([0.5, 0.25, 0.75]),
+        )
+        torch.testing.assert_close(
+            target[[0, 5, 10], [0, 1, 2]],
+            torch.tensor([0.25, 0.125, 0.375]),
+            atol=1e-6,
+            rtol=0,
+        )
 
     def test_target_delay_moves_onset_peak_later(self) -> None:
         chord = _chord(0, (_note(0, 1.0, 1.1, 60),))

@@ -41,12 +41,14 @@ class TargetGenerator:
         event_generator: ChordOnsetEvents,
         softener: TriangularSoftener,
         target_mode: str = "onset",
+        velocity_target: bool = False,
     ):
         if target_mode not in {"onset", "last_chord"}:
             raise ValueError(f"unsupported target mode: {target_mode}")
         self.event_generator = event_generator
         self.softener = softener
         self.target_mode = target_mode
+        self.velocity_target = bool(velocity_target)
 
     def generate(
         self,
@@ -67,18 +69,31 @@ class TargetGenerator:
         )
         event_times = self.event_generator.times(chords)
         if self.target_mode == "onset":
-            return self.softener.soften(frame_times, event_times).to(
+            target = self.softener.soften(frame_times, event_times).to(
                 torch.float32
             )
+        else:
+            target = torch.zeros(
+                (frame_count, len(chords)), dtype=torch.float32
+            )
+            if chords:
+                chord_indices = torch.searchsorted(
+                    event_times, frame_times, right=True
+                ) - 1
+                assigned = chord_indices >= 0
+                target[
+                    torch.arange(frame_count)[assigned],
+                    chord_indices[assigned],
+                ] = 1.0
 
-        target = torch.zeros((frame_count, len(chords)), dtype=torch.float32)
-        if not chords:
-            return target
-        chord_indices = torch.searchsorted(
-            event_times, frame_times, right=True
-        ) - 1
-        assigned = chord_indices >= 0
-        target[
-            torch.arange(frame_count)[assigned], chord_indices[assigned]
-        ] = 1.0
+        if self.velocity_target:
+            amplitudes = torch.tensor(
+                [
+                    sum(event.note.velocity for event in chord.events)
+                    / (128.0 * len(chord.events))
+                    for chord in chords
+                ],
+                dtype=torch.float32,
+            )
+            target = target * amplitudes
         return target

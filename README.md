@@ -71,6 +71,9 @@ The alignment loss is selected by `alignment_loss`; BCE remains the default.
 | `configs/wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized.yaml` | Zero-hand-filter20 wrist-delta ablation with 12-subdivision beat-grid chord durations. |
 | `configs/wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized_last_chord_softmax.yaml` | Quantized zero-hand-filter20 wrist-delta ablation with persistent last-chord targets and categorical softmax. |
 | `configs/wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized_mean_time.yaml` | Quantized zero-hand-filter20 wrist-delta ablation using mean grouped-event times. |
+| `configs/wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized_mean_time_note_split.yaml` | Mean-time quantized ablation with one score token per note. |
+| `configs/wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized_mean_time_note_split_velocity.yaml` | Per-note mean-time quantized ablation with velocity-scaled targets. |
+| `configs/wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized_mean_time_velocity.yaml` | Mean-time quantized ablation with mean-chord-velocity-scaled targets. |
 | `configs/wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized_mean_time_subdivision8.yaml` | Mean-time quantized ablation using 8 subdivisions per beat. |
 | `configs/wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized_mean_time_subdivision16.yaml` | Mean-time quantized ablation using 16 subdivisions per beat. |
 | `configs/wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized_mean_time_subdivision12_triplet_quarter.yaml` | Mean-time quantized ablation limited to quarter and trisection points on a 12-tick beat. |
@@ -1766,6 +1769,7 @@ the process into an output directory.
 | `MidiLoader.include_offsets` | `false`; optionally expand physical notes into both onset and offset actions. |
 | `InitializerChordMerger.tolerance_seconds` | Initializer-relative grouping at `0.05`, with absolute chord durations assigned after grouping. |
 | `InitializerChordMerger.time_mode` | `first`; select the first grouped event time, or `mean` to average all grouped event times. |
+| `InitializerChordMerger.split_notes` | `false`; optionally keep every ordered note event as a separate score token, including events on the same quantized tick. |
 | `InitializerChordMerger.duration_scale_range` / `duration_normalization` | Baseline `null` / `none`; optionally apply one random song scale or deterministic `song_mean` normalization before duration quantization. |
 | `CanonicalNpzReader` | Direct trusted canonical array loading. |
 | `OffsetScaleTransform` | Apply configured per-axis offset and scale, then restore absent slots to zero. |
@@ -1774,6 +1778,7 @@ the process into an output directory.
 | `FutureChordSlicer.max_zero_hand_fraction` | `null`; optionally reject windows whose fraction of frames with neither hand present exceeds the configured value. |
 | `ChordOnsetEvents` | One target at each selected chord action time plus `delay_seconds`. |
 | `TriangularSoftener.radius_seconds` | Continuous target radius `0.2`. |
+| `TargetGenerator.velocity_target` | `false`; optionally scale each full target profile by its token's mean MIDI velocity divided by 128. |
 
 Each `_target_` is a replaceable seam, but its parent-facing contract must stay
 stable. This includes the model's five-input, `[B,T,C]` output contract. The

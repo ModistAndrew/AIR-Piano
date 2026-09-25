@@ -230,6 +230,7 @@ class InitializerChordMerger:
         duration_scale_range: Sequence[float] | None = None,
         duration_normalization: str = "none",
         time_mode: str = "first",
+        split_notes: bool = False,
     ):
         self.tolerance_seconds = float(tolerance_seconds)
         if duration_scale_range is None:
@@ -253,6 +254,7 @@ class InitializerChordMerger:
         if time_mode not in {"first", "mean"}:
             raise ValueError("time_mode must be 'first' or 'mean'")
         self.time_mode = time_mode
+        self.split_notes = bool(split_notes)
 
     def merge(
         self,
@@ -263,6 +265,10 @@ class InitializerChordMerger:
         groups: list[tuple[NoteEvent, ...]] = []
         start = 0
         while start < len(events):
+            if self.split_notes:
+                groups.append(events[start : start + 1])
+                start += 1
+                continue
             initializer = (
                 events[start].tick if quantization else events[start].time
             )
