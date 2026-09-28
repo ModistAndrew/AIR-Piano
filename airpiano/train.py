@@ -45,6 +45,15 @@ def _forward(
     return model(**values)
 
 
+def _forward_heads(
+    model: AirPianoTransformer,
+    batch: dict[str, Any],
+    device: torch.device,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    values = {name: _tensor_to_device(batch[name], device) for name in TENSOR_INPUTS}
+    return model.forward_heads(**values)
+
+
 def _autocast(device: torch.device, enabled: bool):
     if device.type != "cuda" or not enabled:
         return contextlib.nullcontext()
@@ -84,6 +93,69 @@ def evaluate(
         loss_sum += float(loss) * valid_count
         valid_sum += valid_count
     return loss_sum / valid_sum
+
+
+@torch.no_grad()
+def evaluate_multitask(
+    model: AirPianoTransformer,
+    loader: DataLoader,
+    device: torch.device,
+    *,
+    bf16: bool,
+    alignment_loss: str,
+    auxiliary_alignment_loss: str,
+    auxiliary_loss_weight: float,
+) -> tuple[float, float, float]:
+    """Return primary, auxiliary, and combined validation losses."""
+
+    model.eval()
+    primary_sum = 0.0
+    primary_valid = 0
+    auxiliary_sum = 0.0
+    auxiliary_valid = 0
+    for batch in loader:
+        target = _tensor_to_device(batch["target"], device)
+        auxiliary_target = _tensor_to_device(
+            batch["auxiliary_target"], device
+        )
+        frame_mask = _tensor_to_device(batch["frame_mask"], device)
+        chord_mask = _tensor_to_device(batch["chord_mask"], device)
+        primary_count = alignment_loss_count(
+            target, frame_mask, chord_mask, alignment_loss
+        )
+        auxiliary_count = alignment_loss_count(
+            auxiliary_target,
+            frame_mask,
+            chord_mask,
+            auxiliary_alignment_loss,
+        )
+        with _autocast(device, bf16):
+            primary_logits, auxiliary_logits = _forward_heads(
+                model, batch, device
+            )
+            primary_loss = masked_alignment_loss(
+                primary_logits,
+                target,
+                frame_mask,
+                chord_mask,
+                alignment_loss,
+            )
+            auxiliary_loss = masked_alignment_loss(
+                auxiliary_logits,
+                auxiliary_target,
+                frame_mask,
+                chord_mask,
+                auxiliary_alignment_loss,
+            )
+        primary_sum += float(primary_loss) * primary_count
+        primary_valid += primary_count
+        auxiliary_sum += float(auxiliary_loss) * auxiliary_count
+        auxiliary_valid += auxiliary_count
+
+    primary_mean = primary_sum / primary_valid
+    auxiliary_mean = auxiliary_sum / auxiliary_valid
+    combined = primary_mean + auxiliary_loss_weight * auxiliary_mean
+    return primary_mean, auxiliary_mean, combined
 
 
 def _lr_lambda(step: int, *, warmup_steps: int, total_steps: int) -> float:
@@ -146,11 +218,20 @@ def train(cfg: DictConfig) -> None:
     global_step = 0
     bf16 = bool(cfg.train.bf16)
     alignment_loss = str(cfg.get("alignment_loss", "bce"))
+    auxiliary_alignment_loss = cfg.train.get("auxiliary_alignment_loss")
+    multitask = auxiliary_alignment_loss is not None
+    auxiliary_loss_weight = float(
+        cfg.train.get("auxiliary_loss_weight", 0.0)
+    )
+    if multitask:
+        auxiliary_alignment_loss = str(auxiliary_alignment_loss)
     try:
         for epoch in range(epochs):
             model.train()
             optimizer.zero_grad(set_to_none=True)
             accumulated_loss = 0.0
+            accumulated_primary_loss = 0.0
+            accumulated_auxiliary_loss = 0.0
             accumulated_batches = 0
             for batch_index, batch in enumerate(train_loader):
                 target = _tensor_to_device(batch["target"], device)
@@ -165,16 +246,48 @@ def train(cfg: DictConfig) -> None:
                     - (batch_index // accumulation) * accumulation,
                 )
                 with _autocast(device, bf16):
-                    logits = _forward(model, batch, device)
-                    loss = masked_alignment_loss(
-                        logits,
-                        target,
-                        frame_mask,
-                        chord_mask,
-                        alignment_loss,
-                    )
+                    if multitask:
+                        primary_logits, auxiliary_logits = _forward_heads(
+                            model, batch, device
+                        )
+                        primary_loss = masked_alignment_loss(
+                            primary_logits,
+                            target,
+                            frame_mask,
+                            chord_mask,
+                            alignment_loss,
+                        )
+                        auxiliary_loss = masked_alignment_loss(
+                            auxiliary_logits,
+                            _tensor_to_device(
+                                batch["auxiliary_target"], device
+                            ),
+                            frame_mask,
+                            chord_mask,
+                            auxiliary_alignment_loss,
+                        )
+                        loss = (
+                            primary_loss
+                            + auxiliary_loss_weight * auxiliary_loss
+                        )
+                    else:
+                        logits = _forward(model, batch, device)
+                        primary_loss = masked_alignment_loss(
+                            logits,
+                            target,
+                            frame_mask,
+                            chord_mask,
+                            alignment_loss,
+                        )
+                        auxiliary_loss = None
+                        loss = primary_loss
                 (loss / group_size).backward()
                 accumulated_loss += float(loss.detach())
+                accumulated_primary_loss += float(primary_loss.detach())
+                if auxiliary_loss is not None:
+                    accumulated_auxiliary_loss += float(
+                        auxiliary_loss.detach()
+                    )
                 accumulated_batches += 1
 
                 last_batch = batch_index + 1 == len(train_loader)
@@ -186,24 +299,68 @@ def train(cfg: DictConfig) -> None:
                     scheduler.step()
                     optimizer.zero_grad(set_to_none=True)
                     global_step += 1
-                    run.log(
-                        {"train/loss": accumulated_loss / accumulated_batches}
-                    )
+                    train_metrics = {
+                        "train/loss": accumulated_loss / accumulated_batches
+                    }
+                    if multitask:
+                        train_metrics.update(
+                            {
+                                "train/primary_loss": (
+                                    accumulated_primary_loss
+                                    / accumulated_batches
+                                ),
+                                "train/auxiliary_loss": (
+                                    accumulated_auxiliary_loss
+                                    / accumulated_batches
+                                ),
+                            }
+                        )
+                    run.log(train_metrics)
                     accumulated_loss = 0.0
+                    accumulated_primary_loss = 0.0
+                    accumulated_auxiliary_loss = 0.0
                     accumulated_batches = 0
 
-            valid_loss = evaluate(
-                model,
-                valid_loader,
-                device,
-                bf16=bf16,
-                alignment_loss=alignment_loss,
-            )
-            run.log({"valid/loss": valid_loss})
-            print(
-                f"epoch {epoch + 1}/{epochs}: valid_loss={valid_loss:.8f}",
-                flush=True,
-            )
+            if multitask:
+                valid_loss, valid_auxiliary_loss, valid_combined_loss = (
+                    evaluate_multitask(
+                        model,
+                        valid_loader,
+                        device,
+                        bf16=bf16,
+                        alignment_loss=alignment_loss,
+                        auxiliary_alignment_loss=auxiliary_alignment_loss,
+                        auxiliary_loss_weight=auxiliary_loss_weight,
+                    )
+                )
+                run.log(
+                    {
+                        "valid/loss": valid_loss,
+                        "valid/auxiliary_loss": valid_auxiliary_loss,
+                        "valid/combined_loss": valid_combined_loss,
+                    }
+                )
+                print(
+                    f"epoch {epoch + 1}/{epochs}: "
+                    f"valid_loss={valid_loss:.8f} "
+                    f"valid_auxiliary_loss={valid_auxiliary_loss:.8f} "
+                    f"valid_combined_loss={valid_combined_loss:.8f}",
+                    flush=True,
+                )
+            else:
+                valid_loss = evaluate(
+                    model,
+                    valid_loader,
+                    device,
+                    bf16=bf16,
+                    alignment_loss=alignment_loss,
+                )
+                run.log({"valid/loss": valid_loss})
+                print(
+                    f"epoch {epoch + 1}/{epochs}: "
+                    f"valid_loss={valid_loss:.8f}",
+                    flush=True,
+                )
             checkpoint = {
                 "format": "airpiano-checkpoint-v1",
                 "model": model.state_dict(),

@@ -27,12 +27,14 @@ class AlignmentDataset(Dataset):
         slicer: FutureChordSlicer,
         target_generator: TargetGenerator,
         random_hand_shift_seconds: float = 0.0,
+        auxiliary_target_generator: TargetGenerator | None = None,
     ):
         if random_hand_shift_seconds < 0.0:
             raise ValueError("random_hand_shift_seconds must be non-negative")
         self.songs = tuple(songs)
         self.slicer = slicer
         self.target_generator = target_generator
+        self.auxiliary_target_generator = auxiliary_target_generator
         self.random_hand_shift_seconds = float(random_hand_shift_seconds)
         self.max_random_hand_shift_frames = round(
             self.random_hand_shift_seconds * self.slicer.fps
@@ -93,13 +95,23 @@ class AlignmentDataset(Dataset):
             frame_count=len(window["hands"]),
             fps=self.slicer.fps,
         )
-        return {
+        sample = {
             **window,
             "target": target,
             "record_id": song.record_id,
             "frame_start": frame_start,
             "fps": song.fps,
         }
+        if self.auxiliary_target_generator is not None:
+            sample["auxiliary_target"] = (
+                self.auxiliary_target_generator.generate(
+                    selected_chords,
+                    frame_start=frame_start,
+                    frame_count=len(window["hands"]),
+                    fps=self.slicer.fps,
+                )
+            )
+        return sample
 
 
 def collate_alignment_batch(batch: list[dict[str, Any]]) -> dict[str, Any]:
@@ -121,7 +133,19 @@ def collate_alignment_batch(batch: list[dict[str, Any]]) -> dict[str, Any]:
         frame_count, chord_count = sample["target"].shape
         target[index, :frame_count, :chord_count] = sample["target"]
 
-    return {
+    auxiliary_target = None
+    if "auxiliary_target" in batch[0]:
+        auxiliary_target = torch.zeros(
+            (len(batch), max_frames, max_chords),
+            dtype=batch[0]["auxiliary_target"].dtype,
+        )
+        for index, sample in enumerate(batch):
+            frame_count, chord_count = sample["auxiliary_target"].shape
+            auxiliary_target[index, :frame_count, :chord_count] = sample[
+                "auxiliary_target"
+            ]
+
+    collated = {
         "hands": pad_sequence(
             [sample["hands"] for sample in batch], batch_first=True
         ),
@@ -151,18 +175,26 @@ def collate_alignment_batch(batch: list[dict[str, Any]]) -> dict[str, Any]:
             [float(sample["fps"]) for sample in batch], dtype=torch.float64
         ),
     }
+    if auxiliary_target is not None:
+        collated["auxiliary_target"] = auxiliary_target
+    return collated
 
 
 def build_data_components(cfg: DictConfig) -> dict[str, Any]:
     """Instantiate the replaceable data components declared in YAML."""
 
-    return {
+    components = {
         "file_loader": instantiate(cfg.dataset.file_loader),
         "midi_loader": instantiate(cfg.dataset.midi_loader),
         "hand_loader": instantiate(cfg.dataset.hand_loader),
         "slicer": instantiate(cfg.dataset.slicer),
         "target_generator": instantiate(cfg.dataset.target_generator),
     }
+    if cfg.dataset.get("auxiliary_target_generator") is not None:
+        components["auxiliary_target_generator"] = instantiate(
+            cfg.dataset.auxiliary_target_generator
+        )
+    return components
 
 
 def build_dataset(
@@ -190,6 +222,9 @@ def build_dataset(
         songs=songs,
         slicer=components["slicer"],
         target_generator=components["target_generator"],
+        auxiliary_target_generator=components.get(
+            "auxiliary_target_generator"
+        ),
         random_hand_shift_seconds=(
             float(cfg.dataset.random_hand_shift_seconds)
             if split == "train"

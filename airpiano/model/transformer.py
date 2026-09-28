@@ -32,12 +32,14 @@ class AirPianoTransformer(nn.Module):
         include_chord_duration: bool = False,
         include_chord_offsets: bool = False,
         zero_hand_input: bool = False,
+        include_last_chord_head: bool = False,
     ) -> None:
         super().__init__()
         self.causal_frame_attention = bool(causal_frame_attention)
         self.include_chord_duration = bool(include_chord_duration)
         self.include_chord_offsets = bool(include_chord_offsets)
         self.zero_hand_input = bool(zero_hand_input)
+        self.include_last_chord_head = bool(include_last_chord_head)
         self.hand_embedding = nn.Sequential(
             nn.Linear(128, MODEL_DIM),
             nn.GELU(),
@@ -88,6 +90,9 @@ class AirPianoTransformer(nn.Module):
         )
         self.frame_norm = nn.LayerNorm(MODEL_DIM)
         self.scorer = PairScorer()
+        self.last_chord_scorer = (
+            PairScorer() if self.include_last_chord_head else None
+        )
         nn.init.normal_(self.global_chord, mean=0.0, std=0.02)
 
     @staticmethod
@@ -100,15 +105,15 @@ class AirPianoTransformer(nn.Module):
         padding_mask[:, 0] &= ~all_padding
         return padding_mask
 
-    def forward(
+    def _encode(
         self,
         hands: torch.Tensor,
         hand_presence: torch.Tensor,
         chords: torch.Tensor,
         frame_mask: torch.Tensor,
         chord_mask: torch.Tensor,
-    ) -> torch.Tensor:
-        """Return alignment logits with shape ``[B,T,C]``.
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Return frame states, chord states, and their valid pair mask.
 
         Unless ``zero_hand_input`` is enabled, ``hand_presence`` zeros an
         absent hand's coordinates and contributes two explicit embedding
@@ -210,9 +215,65 @@ class AirPianoTransformer(nn.Module):
             frames = frames.masked_fill(~frame_mask.unsqueeze(-1), 0.0)
         frames = self.frame_norm(frames)
 
-        logits = self.scorer(frames, chord_memory[:, 1:])
         valid = frame_mask.unsqueeze(-1) & chord_mask.unsqueeze(1)
-        return logits.masked_fill(~valid, 0.0)
+        return frames, chord_memory[:, 1:], valid
+
+    @staticmethod
+    def _score(
+        scorer: PairScorer,
+        frames: torch.Tensor,
+        chords: torch.Tensor,
+        valid: torch.Tensor,
+    ) -> torch.Tensor:
+        return scorer(frames, chords).masked_fill(~valid, 0.0)
+
+    def forward(
+        self,
+        hands: torch.Tensor,
+        hand_presence: torch.Tensor,
+        chords: torch.Tensor,
+        frame_mask: torch.Tensor,
+        chord_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        """Return primary alignment logits with shape ``[B,T,C]``."""
+
+        frames, chord_states, valid = self._encode(
+            hands,
+            hand_presence,
+            chords,
+            frame_mask,
+            chord_mask,
+        )
+        return self._score(self.scorer, frames, chord_states, valid)
+
+    def forward_heads(
+        self,
+        hands: torch.Tensor,
+        hand_presence: torch.Tensor,
+        chords: torch.Tensor,
+        frame_mask: torch.Tensor,
+        chord_mask: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return primary and persistent last-chord logits."""
+
+        if self.last_chord_scorer is None:
+            raise ValueError("last-chord prediction head is not enabled")
+        frames, chord_states, valid = self._encode(
+            hands,
+            hand_presence,
+            chords,
+            frame_mask,
+            chord_mask,
+        )
+        return (
+            self._score(self.scorer, frames, chord_states, valid),
+            self._score(
+                self.last_chord_scorer,
+                frames,
+                chord_states,
+                valid,
+            ),
+        )
 
 
 __all__ = ["AirPianoTransformer"]

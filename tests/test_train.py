@@ -47,6 +47,15 @@ class _CategoricalTinyDataset(_TinyDataset):
         return sample
 
 
+class _DualHeadTinyDataset(_TinyDataset):
+    def __getitem__(self, index: int):
+        sample = super().__getitem__(index)
+        sample["auxiliary_target"] = torch.tensor(
+            [[1.0, 0.0], [0.0, 1.0]]
+        )
+        return sample
+
+
 class _TinyModel(nn.Module):
     def __init__(
         self,
@@ -63,6 +72,24 @@ class _TinyModel(nn.Module):
     def forward(self, hands, hand_presence, chords, frame_mask, chord_mask):
         batch, frames = hands.shape[:2]
         return self.bias.expand(batch, frames, chords.shape[1])
+
+
+class _DualHeadTinyModel(_TinyModel):
+    def __init__(self) -> None:
+        super().__init__()
+        self.auxiliary_bias = nn.Parameter(torch.tensor(0.0))
+
+    def forward_heads(
+        self, hands, hand_presence, chords, frame_mask, chord_mask
+    ):
+        primary = self.forward(
+            hands, hand_presence, chords, frame_mask, chord_mask
+        )
+        batch, frames = hands.shape[:2]
+        auxiliary = self.auxiliary_bias.expand(
+            batch, frames, chords.shape[1]
+        )
+        return primary, auxiliary
 
 
 class _FakeRun:
@@ -772,6 +799,45 @@ class TrainTest(unittest.TestCase):
         )
         self.assertFalse(bool(onset.model.include_chord_offsets))
 
+    def test_pianovam_offset_dual_head_config(self) -> None:
+        config_directory = Path(__file__).parents[1] / "configs"
+        name = (
+            "wrist_xyz10_causal_chord24_wrist_delta_zero_hand_filter20_"
+            "offset_bce_last_chord_softmax_pianovam"
+        )
+        with initialize_config_dir(
+            version_base=None, config_dir=str(config_directory.resolve())
+        ):
+            config = compose(config_name=name)
+
+        components = data.build_data_components(config)
+        self.assertEqual(str(config.output.dir), f"outputs/{name}")
+        self.assertEqual(str(config.wandb.name), name)
+        self.assertEqual(str(config.alignment_loss), "bce")
+        self.assertEqual(
+            components["target_generator"].target_mode,
+            "onset",
+        )
+        self.assertEqual(
+            components["auxiliary_target_generator"].target_mode,
+            "last_chord",
+        )
+        self.assertTrue(components["midi_loader"].include_offsets)
+        self.assertEqual(
+            components["midi_loader"].chord_merger.time_mode,
+            "mean",
+        )
+        self.assertTrue(components["slicer"].crop_before_first_chord)
+        self.assertTrue(bool(config.model.include_chord_offsets))
+        self.assertFalse(bool(config.model.include_chord_duration))
+        self.assertTrue(bool(config.model.include_last_chord_head))
+        self.assertEqual(
+            str(config.train.auxiliary_alignment_loss),
+            "cross_entropy",
+        )
+        self.assertEqual(float(config.train.auxiliary_loss_weight), 0.05)
+        self.assertNotIn("beat_root", config.data)
+
     def test_wrist_delta_filter20_additional_duration_configs(self) -> None:
         config_directory = Path(__file__).parents[1] / "configs"
         base_name = (
@@ -1307,6 +1373,58 @@ class TrainTest(unittest.TestCase):
             )
             self.assertFalse((output / "inference" / "test").exists())
 
+    def test_train_logs_dual_head_losses_and_selects_on_primary(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            config = self._config(output)
+            config.model.include_last_chord_head = True
+            config.train.auxiliary_alignment_loss = "cross_entropy"
+            config.train.auxiliary_loss_weight = 0.05
+            fake_run = _FakeRun()
+            dataset = _DualHeadTinyDataset()
+            with (
+                patch.object(wandb, "init", return_value=fake_run),
+                patch.object(data, "build_data_components", return_value={}),
+                patch.object(data, "build_dataset", return_value=dataset),
+                patch.object(
+                    train,
+                    "instantiate",
+                    return_value=_DualHeadTinyModel(),
+                ),
+            ):
+                train.train(config)
+
+            self.assertEqual(
+                set(fake_run.logs[0]),
+                {
+                    "train/loss",
+                    "train/primary_loss",
+                    "train/auxiliary_loss",
+                },
+            )
+            self.assertEqual(
+                set(fake_run.logs[1]),
+                {
+                    "valid/loss",
+                    "valid/auxiliary_loss",
+                    "valid/combined_loss",
+                },
+            )
+            self.assertAlmostEqual(
+                fake_run.logs[1]["valid/combined_loss"],
+                fake_run.logs[1]["valid/loss"]
+                + 0.05 * fake_run.logs[1]["valid/auxiliary_loss"],
+            )
+            checkpoint = torch.load(
+                output / "checkpoints" / "last.pt",
+                map_location="cpu",
+                weights_only=False,
+            )
+            self.assertAlmostEqual(
+                checkpoint["best_valid_loss"],
+                fake_run.logs[1]["valid/loss"],
+            )
+
     def test_evaluate_supports_cross_entropy(self) -> None:
         loader = data.make_loader(
             _CategoricalTinyDataset(),
@@ -1325,6 +1443,30 @@ class TrainTest(unittest.TestCase):
         )
 
         self.assertAlmostEqual(loss, float(torch.log(torch.tensor(2.0))))
+
+    def test_evaluate_multitask_combines_weighted_head_losses(self) -> None:
+        loader = data.make_loader(
+            _DualHeadTinyDataset(),
+            batch_size=2,
+            shuffle=False,
+            seed=1,
+            device=torch.device("cpu"),
+        )
+
+        primary, auxiliary, combined = train.evaluate_multitask(
+            _DualHeadTinyModel(),
+            loader,
+            torch.device("cpu"),
+            bf16=False,
+            alignment_loss="bce",
+            auxiliary_alignment_loss="cross_entropy",
+            auxiliary_loss_weight=0.05,
+        )
+
+        expected = float(torch.log(torch.tensor(2.0)))
+        self.assertAlmostEqual(primary, expected)
+        self.assertAlmostEqual(auxiliary, expected)
+        self.assertAlmostEqual(combined, expected + 0.05 * expected)
 
 
 if __name__ == "__main__":

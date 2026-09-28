@@ -82,6 +82,7 @@ The alignment loss is selected by `alignment_loss`; BCE remains the default.
 | `configs/wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized_offset_last_chord_softmax.yaml` | Quantized onset/offset ablation with persistent last-action targets and categorical softmax. |
 | `configs/wrist_xyz10_causal_chord24_wrist_delta_zero_hand_filter20_offset_last_chord_softmax_pianovam.yaml` | PianoVAM-only non-quantized onset/offset ablation with persistent last-action targets and categorical softmax. |
 | `configs/wrist_xyz10_causal_chord24_wrist_delta_zero_hand_filter20_offset_pianovam.yaml` | PianoVAM-only non-quantized onset/offset ablation with onset targets and BCE. |
+| `configs/wrist_xyz10_causal_chord24_wrist_delta_zero_hand_filter20_offset_bce_last_chord_softmax_pianovam.yaml` | PianoVAM-only offset ablation combining a primary action-time BCE head with a weighted persistent last-action softmax head. |
 | `configs/wrist_xyz10_causal_chord24_wrist_delta_zero_hand_filter20_pianovam.yaml` | PianoVAM-only non-quantized onset-only wrist-delta ablation with onset targets and BCE. |
 | `configs/wrist_xyz10.yaml` | Wrist-relative local-XYZ ×10 ablation inheriting the baseline. |
 | `configs/chord_duration.yaml` | Duration-conditioned chord-token ablation inheriting the baseline. |
@@ -1241,6 +1242,20 @@ conda run -n v2n python run.py \
   stage=train
 conda run -n v2n python run.py \
   --config-name wrist_xyz10_causal_chord24_wrist_delta_zero_hand_filter20_pianovam \
+  stage=test
+```
+
+The dual-head offset ablation shares one transformer pass between the action-time
+BCE head and a persistent last-action categorical head. Training minimizes
+`BCE + 0.05 * cross_entropy`; checkpoint selection and standard test artifacts
+continue to use the primary BCE head:
+
+```bash
+conda run -n v2n python run.py \
+  --config-name wrist_xyz10_causal_chord24_wrist_delta_zero_hand_filter20_offset_bce_last_chord_softmax_pianovam \
+  stage=train
+conda run -n v2n python run.py \
+  --config-name wrist_xyz10_causal_chord24_wrist_delta_zero_hand_filter20_offset_bce_last_chord_softmax_pianovam \
   stage=test
 ```
 

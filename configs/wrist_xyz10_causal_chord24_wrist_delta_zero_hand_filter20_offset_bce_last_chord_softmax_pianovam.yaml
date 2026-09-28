@@ -1,0 +1,24 @@
+defaults:
+  - wrist_xyz10_causal_chord24_wrist_delta_zero_hand_filter20_offset_pianovam
+  - _self_
+
+output:
+  project_name: wrist_xyz10_causal_chord24_wrist_delta_zero_hand_filter20_offset_bce_last_chord_softmax_pianovam
+
+dataset:
+  auxiliary_target_generator:
+    _target_: airpiano.data.targets.TargetGenerator
+    event_generator:
+      _target_: airpiano.data.targets.ChordOnsetEvents
+      delay_seconds: 0.0
+    softener:
+      _target_: airpiano.data.targets.TriangularSoftener
+      radius_seconds: 0.2
+    target_mode: last_chord
+
+model:
+  include_last_chord_head: true
+
+train:
+  auxiliary_alignment_loss: cross_entropy
+  auxiliary_loss_weight: 0.05

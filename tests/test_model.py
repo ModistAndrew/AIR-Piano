@@ -27,6 +27,7 @@ class AirPianoTransformerTest(unittest.TestCase):
                 "include_chord_duration",
                 "include_chord_offsets",
                 "zero_hand_input",
+                "include_last_chord_head",
             ),
         )
         model = AirPianoTransformer().eval()
@@ -234,6 +235,52 @@ class AirPianoTransformerTest(unittest.TestCase):
             assert gradient is not None
             self.assertTrue(bool(torch.isfinite(gradient).all()))
             self.assertGreater(float(gradient.abs().sum()), 0.0)
+
+    def test_dual_heads_share_states_and_backpropagate_independently(self) -> None:
+        torch.manual_seed(12)
+        model = AirPianoTransformer(include_last_chord_head=True).eval()
+        hands = torch.randn(1, 3, 2, 21, 3)
+        presence = torch.ones(1, 3, 2, dtype=torch.bool)
+        chords = torch.zeros(1, 2, 456)
+        chords[0, 0, [60, 128 + 60]] = 1.0
+        chords[0, 1, [64, 128 + 64]] = 1.0
+        frame_mask = torch.tensor([[True, True, False]])
+        chord_mask = torch.ones(1, 2, dtype=torch.bool)
+
+        with torch.no_grad():
+            expected = model(
+                hands, presence, chords, frame_mask, chord_mask
+            )
+            primary, auxiliary = model.forward_heads(
+                hands, presence, chords, frame_mask, chord_mask
+            )
+
+        self.assertIsNotNone(model.last_chord_scorer)
+        self.assertIsNot(model.scorer, model.last_chord_scorer)
+        torch.testing.assert_close(primary, expected)
+        self.assertEqual(tuple(auxiliary.shape), (1, 3, 2))
+        self.assertTrue(bool((auxiliary[:, -1] == 0.0).all()))
+
+        model.train()
+        model.zero_grad(set_to_none=True)
+        primary, auxiliary = model.forward_heads(
+            hands, presence, chords, frame_mask, chord_mask
+        )
+        (primary.square().mean() + auxiliary.square().mean()).backward()
+        assert model.last_chord_scorer is not None
+        for gradient in (
+            model.hand_embedding[0].weight.grad,
+            model.scorer.frame_query.weight.grad,
+            model.last_chord_scorer.frame_query.weight.grad,
+        ):
+            self.assertIsNotNone(gradient)
+            assert gradient is not None
+            self.assertGreater(float(gradient.abs().sum()), 0.0)
+
+        with self.assertRaisesRegex(ValueError, "not enabled"):
+            AirPianoTransformer().forward_heads(
+                hands, presence, chords, frame_mask, chord_mask
+            )
 
 
 class MaskedBceLossTest(unittest.TestCase):

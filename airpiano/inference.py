@@ -149,6 +149,7 @@ def load_model_checkpoint(
             "include_chord_duration": False,
             "include_chord_offsets": False,
             "zero_hand_input": False,
+            "include_last_chord_head": False,
         },
         checkpoint_config.get("model", {}),
     )

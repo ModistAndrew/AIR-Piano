@@ -56,12 +56,14 @@ class _TinyModel(nn.Module):
         include_chord_duration: bool = False,
         include_chord_offsets: bool = False,
         zero_hand_input: bool = False,
+        include_last_chord_head: bool = False,
     ) -> None:
         super().__init__()
         self.causal_frame_attention = causal_frame_attention
         self.include_chord_duration = include_chord_duration
         self.include_chord_offsets = include_chord_offsets
         self.zero_hand_input = zero_hand_input
+        self.include_last_chord_head = include_last_chord_head
         self.bias = nn.Parameter(torch.tensor(0.0))
 
     def forward(self, hands, hand_presence, chords, frame_mask, chord_mask):
@@ -77,6 +79,7 @@ class TestInferenceTest(unittest.TestCase):
             duration = root / "duration.pt"
             offsets = root / "offsets.pt"
             zero_hand = root / "zero_hand.pt"
+            last_chord_head = root / "last_chord_head.pt"
             legacy = root / "legacy.pt"
             torch.save(
                 {
@@ -110,6 +113,15 @@ class TestInferenceTest(unittest.TestCase):
                 },
                 zero_hand,
             )
+            torch.save(
+                {
+                    "model": _TinyModel().state_dict(),
+                    "config": {
+                        "model": {"include_last_chord_head": True}
+                    },
+                },
+                last_chord_head,
+            )
             torch.save({"model": _TinyModel().state_dict()}, legacy)
 
             def instantiate_model(config):
@@ -124,6 +136,9 @@ class TestInferenceTest(unittest.TestCase):
                         config.include_chord_offsets
                     ),
                     zero_hand_input=bool(config.zero_hand_input),
+                    include_last_chord_head=bool(
+                        config.include_last_chord_head
+                    ),
                 )
 
             with patch.object(
@@ -143,6 +158,11 @@ class TestInferenceTest(unittest.TestCase):
                 zero_hand_model = inference_stage.load_model_checkpoint(
                     zero_hand, torch.device("cpu")
                 )
+                last_chord_head_model = (
+                    inference_stage.load_model_checkpoint(
+                        last_chord_head, torch.device("cpu")
+                    )
+                )
                 legacy_model = inference_stage.load_model_checkpoint(
                     legacy, torch.device("cpu")
                 )
@@ -151,10 +171,12 @@ class TestInferenceTest(unittest.TestCase):
             self.assertTrue(duration_model.include_chord_duration)
             self.assertTrue(offset_model.include_chord_offsets)
             self.assertTrue(zero_hand_model.zero_hand_input)
+            self.assertTrue(last_chord_head_model.include_last_chord_head)
             self.assertFalse(legacy_model.causal_frame_attention)
             self.assertFalse(legacy_model.include_chord_duration)
             self.assertFalse(legacy_model.include_chord_offsets)
             self.assertFalse(legacy_model.zero_hand_input)
+            self.assertFalse(legacy_model.include_last_chord_head)
 
     def test_uses_configured_checkpoint_and_dumps_test_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

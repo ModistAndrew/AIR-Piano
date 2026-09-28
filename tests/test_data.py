@@ -1580,6 +1580,51 @@ class SlicingAndTargetTest(unittest.TestCase):
             ),
         )
 
+    def test_dataset_collates_optional_auxiliary_target(self) -> None:
+        chords = (
+            _chord(0, (_note(0, 0.2, 0.3, 60),)),
+            _chord(1, (_note(1, 0.5, 0.7, 64),)),
+        )
+        song = _song(chords, frame_count=10, fps=10.0)
+        dataset = AlignmentDataset(
+            [song],
+            FutureChordSlicer(
+                mode="chord",
+                fps=10.0,
+                segment_frames=2,
+                stride_frames=2,
+                crop_before_first_chord=True,
+                crop_to_chord_bounds=True,
+            ),
+            TargetGenerator(
+                ChordOnsetEvents(), TriangularSoftener(radius_seconds=0.2)
+            ),
+            auxiliary_target_generator=TargetGenerator(
+                ChordOnsetEvents(),
+                TriangularSoftener(radius_seconds=0.2),
+                target_mode="last_chord",
+            ),
+        )
+
+        sample = dataset[0]
+        self.assertEqual(
+            sample["auxiliary_target"].shape,
+            sample["target"].shape,
+        )
+        self.assertTrue(
+            bool(
+                (
+                    sample["auxiliary_target"].sum(dim=-1)
+                    == 1.0
+                ).all()
+            )
+        )
+        batch = collate_alignment_batch([sample, sample])
+        self.assertEqual(
+            batch["auxiliary_target"].shape,
+            batch["target"].shape,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
