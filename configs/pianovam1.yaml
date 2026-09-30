@@ -13,7 +13,7 @@ data:
   raw_wilor_root: ${data.processed_root}/wilor
   hand_root: ${data.processed_root}/airpiano_wilor_2p5d_30fps
   splits:
-    train: assets/splits/pianovam/remaining_1.txt
+    train: assets/splits/pianovam_remaining_1.txt
 
 preprocess:
   video_to_ragged:

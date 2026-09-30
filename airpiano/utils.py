@@ -21,6 +21,15 @@ def resolve_path(value: str | Path) -> Path:
     return path.resolve()
 
 
+def resolve_split_output_dir(
+    output_dir: str | Path,
+    split_file: str | Path,
+) -> Path:
+    """Append the split filename stem to an inference output directory."""
+
+    return resolve_path(output_dir) / Path(str(split_file)).stem
+
+
 def write_json(path: str | Path, value: Any) -> None:
     """Write one JSON document, creating its parent directory."""
 

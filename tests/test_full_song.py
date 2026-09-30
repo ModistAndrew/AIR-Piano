@@ -336,6 +336,10 @@ class FullSongStageTest(unittest.TestCase):
                         "alignment_threshold": 0.2,
                         "advance_after_chords": 2,
                     },
+                    "evaluation": {
+                        "root": "${full_song.output_dir}",
+                        "output_path": "${evaluation.root}.json",
+                    },
                 }
             )
 
@@ -379,7 +383,13 @@ class FullSongStageTest(unittest.TestCase):
                 label="full-song",
                 components=components,
             )
-            output_dir = project / "full_song"
+            output_dir = project / "full_song" / "songs"
+            self.assertEqual(Path(config.full_song.output_dir), output_dir)
+            self.assertEqual(Path(config.evaluation.root), output_dir)
+            self.assertEqual(
+                Path(config.evaluation.output_path),
+                output_dir.with_suffix(".json"),
+            )
             self.assertEqual(
                 [item.args[1].record_id for item in infer.call_args_list],
                 ["subject/performance.v1", "second.take"],

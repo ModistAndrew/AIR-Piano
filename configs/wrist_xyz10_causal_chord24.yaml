@@ -16,7 +16,7 @@ model:
   causal_frame_attention: true
 
 full_song:
-  split_file: assets/splits/pianomotion10mseg/valid.txt
+  split_file: assets/splits/pianomotion10mseg_valid.txt
   checkpoint: ${output.dir}/checkpoints/last.pt
   output_dir: ${output.dir}/full_song
   overwrite: false

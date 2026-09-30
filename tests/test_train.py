@@ -147,7 +147,7 @@ class TrainTest(unittest.TestCase):
         )
         self.assertEqual(
             str(config.test.output_dir),
-            "outputs/baseline/inference/test",
+            "outputs/baseline/test",
         )
         self.assertFalse(bool(config.test.overwrite))
         self.assertNotIn("realtime", config)
@@ -294,9 +294,9 @@ class TrainTest(unittest.TestCase):
         self.assertEqual(
             {key: str(value) for key, value in extended.data.splits.items()},
             {
-                "train": "assets/splits/extended/train.txt",
-                "valid": "assets/splits/extended/valid.txt",
-                "test": "assets/splits/extended/test.txt",
+                "train": "assets/splits/extended_train.txt",
+                "valid": "assets/splits/extended_valid.txt",
+                "test": "assets/splits/extended_test.txt",
             },
         )
         self.assertTrue(bool(extended.model.causal_frame_attention))
@@ -358,9 +358,9 @@ class TrainTest(unittest.TestCase):
         self.assertEqual(
             {name: str(path) for name, path in config.data.splits.items()},
             {
-                "train": "assets/splits/pianovam/train.txt",
-                "valid": "assets/splits/pianovam/valid.txt",
-                "test": "assets/splits/pianovam/test.txt",
+                "train": "assets/splits/pianovam_train.txt",
+                "valid": "assets/splits/pianovam_valid.txt",
+                "test": "assets/splits/pianovam_test.txt",
             },
         )
         self.assertEqual(canonicalizer.target_fps, 30.0)
@@ -434,9 +434,9 @@ class TrainTest(unittest.TestCase):
         self.assertEqual(
             {name: str(path) for name, path in config.data.splits.items()},
             {
-                "train": "assets/splits/full/train.txt",
-                "valid": "assets/splits/full/valid.txt",
-                "test": "assets/splits/full/test.txt",
+                "train": "assets/splits/full_train.txt",
+                "valid": "assets/splits/full_valid.txt",
+                "test": "assets/splits/full_test.txt",
             },
         )
         self.assertEqual(components["slicer"].fps, 30.0)
@@ -470,7 +470,7 @@ class TrainTest(unittest.TestCase):
         self.assertNotIn("root", config.full_song)
         self.assertEqual(
             str(config.full_song.split_file),
-            "assets/splits/pianomotion10mseg/valid.txt",
+            "assets/splits/pianomotion10mseg_valid.txt",
         )
         self.assertEqual(
             str(config.full_song.output_dir),
@@ -506,7 +506,7 @@ class TrainTest(unittest.TestCase):
             f"outputs/{name}/checkpoints/last.pt",
         )
         self.assertEqual(
-            str(config.test.output_dir), f"outputs/{name}/inference/test"
+            str(config.test.output_dir), f"outputs/{name}/test"
         )
         self.assertFalse(bool(config.model.causal_frame_attention))
         self.assertEqual(float(config.dataset.random_hand_shift_seconds), 2.0)
@@ -534,9 +534,9 @@ class TrainTest(unittest.TestCase):
         root = "/storage/jinxuan/data/AirPianoFull"
         processed_root = "/storage2/jinxuan/data/AirPianoFull"
         expected_splits = {
-            "train": "assets/splits/extended/train.txt",
-            "valid": "assets/splits/extended/valid.txt",
-            "test": "assets/splits/extended/test.txt",
+            "train": "assets/splits/extended_train.txt",
+            "valid": "assets/splits/extended_valid.txt",
+            "test": "assets/splits/extended_test.txt",
         }
         expected_hand_roots = {
             "causal_chord24_extended": (
@@ -696,9 +696,9 @@ class TrainTest(unittest.TestCase):
         self.assertEqual(
             {key: str(value) for key, value in config.data.splits.items()},
             {
-                "train": "assets/splits/pianovam/train.txt",
-                "valid": "assets/splits/pianovam/valid.txt",
-                "test": "assets/splits/pianovam/test.txt",
+                "train": "assets/splits/pianovam_train.txt",
+                "valid": "assets/splits/pianovam_valid.txt",
+                "test": "assets/splits/pianovam_test.txt",
             },
         )
         self.assertEqual(
@@ -758,9 +758,9 @@ class TrainTest(unittest.TestCase):
                     for key, value in config.data.splits.items()
                 },
                 {
-                    "train": "assets/splits/pianovam/train.txt",
-                    "valid": "assets/splits/pianovam/valid.txt",
-                    "test": "assets/splits/pianovam/test.txt",
+                    "train": "assets/splits/pianovam_train.txt",
+                    "valid": "assets/splits/pianovam_valid.txt",
+                    "test": "assets/splits/pianovam_test.txt",
                 },
             )
             self.assertNotIn("beat_root", config.data)
@@ -1025,7 +1025,7 @@ class TrainTest(unittest.TestCase):
             )
             self.assertEqual(
                 str(config.test.output_dir),
-                f"outputs/{name}/inference/test",
+                f"outputs/{name}/test",
             )
             self.assertNotIn("realtime", config)
             self.assertEqual(
@@ -1077,7 +1077,7 @@ class TrainTest(unittest.TestCase):
             f"outputs/{name}/checkpoints/last.pt",
         )
         self.assertEqual(
-            str(config.test.output_dir), f"outputs/{name}/inference/test"
+            str(config.test.output_dir), f"outputs/{name}/test"
         )
         self.assertTrue(bool(config.model.causal_frame_attention))
         self.assertFalse(bool(config.model.zero_hand_input))
@@ -1112,7 +1112,7 @@ class TrainTest(unittest.TestCase):
             f"outputs/{name}/checkpoints/last.pt",
         )
         self.assertEqual(
-            str(config.test.output_dir), f"outputs/{name}/inference/test"
+            str(config.test.output_dir), f"outputs/{name}/test"
         )
         self.assertTrue(bool(config.model.causal_frame_attention))
         self.assertFalse(bool(config.model.zero_hand_input))
@@ -1200,9 +1200,9 @@ class TrainTest(unittest.TestCase):
         self.assertEqual(
             {key: str(value) for key, value in config.data.splits.items()},
             {
-                "train": "assets/splits/extended/train.txt",
-                "valid": "assets/splits/extended/valid.txt",
-                "test": "assets/splits/extended/test.txt",
+                "train": "assets/splits/extended_train.txt",
+                "valid": "assets/splits/extended_valid.txt",
+                "test": "assets/splits/extended_test.txt",
             },
         )
         self.assertTrue(bool(config.model.include_chord_duration))

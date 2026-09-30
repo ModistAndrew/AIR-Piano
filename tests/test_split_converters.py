@@ -28,14 +28,18 @@ class SplitConverterTest(unittest.TestCase):
             self.assertEqual(counts, {"train": 1, "valid": 1, "test": 1})
             for name in ("train", "valid"):
                 self.assertEqual(
-                    (output / f"{name}.txt").read_text(encoding="utf-8"),
+                    (output / f"pianomotion10m_{name}.txt").read_text(
+                        encoding="utf-8"
+                    ),
                     "PianoMotion10M/subject/video\n",
                 )
             self.assertEqual(
-                (output / "test_full.txt").read_text(encoding="utf-8"),
+                (output / "pianomotion10m_test_full.txt").read_text(
+                    encoding="utf-8"
+                ),
                 "PianoMotion10M/subject/video\n",
             )
-            self.assertFalse((output / "test.txt").exists())
+            self.assertFalse((output / "pianomotion10m_test.txt").exists())
 
     def test_pianovam_records_include_dataset_prefix(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -66,7 +70,7 @@ class SplitConverterTest(unittest.TestCase):
 
             self.assertEqual(counts, {"train": 1, "valid": 0, "test": 0})
             self.assertEqual(
-                (output / "train.txt").read_text(encoding="utf-8"),
+                (output / "pianovam_train.txt").read_text(encoding="utf-8"),
                 f"PianoVAM_v1/{record_id}\n",
             )
 

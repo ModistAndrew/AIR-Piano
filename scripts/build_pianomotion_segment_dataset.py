@@ -30,8 +30,10 @@ DEFAULT_RECORDS_PATH = Path(
     "processed_pianomotionnew_wilor_2p5d_30fps/"
     "PianoMotion10M/records.json"
 )
-DEFAULT_VALID_SPLIT = PROJECT_ROOT / "assets" / "splits" / "extended" / "valid.txt"
-DEFAULT_SPLIT_OUTPUT = PROJECT_ROOT / "assets" / "splits" / "pianomotion10mseg"
+DEFAULT_VALID_SPLIT = (
+    PROJECT_ROOT / "assets" / "splits" / "extended_valid.txt"
+)
+DEFAULT_SPLIT_OUTPUT = PROJECT_ROOT / "assets" / "splits"
 
 
 class SegmentDatasetError(RuntimeError):
@@ -547,7 +549,7 @@ def write_outputs(
     }
     for name, values in split_values.items():
         _atomic_write(
-            split_output_root / f"{name}.txt",
+            split_output_root / f"pianomotion10mseg_{name}.txt",
             "".join(f"{value}\n" for value in values),
         )
 

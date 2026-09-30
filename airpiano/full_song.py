@@ -13,7 +13,7 @@ from .model.loss import alignment_probabilities, alignment_probability_loss
 from .model.transformer import AirPianoTransformer
 from .song_input import iter_split_songs
 from .train import _autocast, _forward
-from .utils import resolve_path, write_json
+from .utils import resolve_path, resolve_split_output_dir, write_json
 
 
 @torch.no_grad()
@@ -124,7 +124,11 @@ def full_song(cfg: DictConfig) -> None:
 
     if cfg.full_song.split_file is None:
         raise ValueError("full_song.split_file must be set")
-    output_dir = resolve_path(cfg.full_song.output_dir)
+    output_dir = resolve_split_output_dir(
+        cfg.full_song.output_dir,
+        cfg.full_song.split_file,
+    )
+    cfg.full_song.output_dir = str(output_dir)
     checkpoint = resolve_path(cfg.full_song.checkpoint)
     device = torch.device(str(cfg.device))
     components = data.build_data_components(cfg)

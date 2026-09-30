@@ -93,10 +93,10 @@ The alignment loss is selected by `alignment_loss`; BCE remains the default.
 | `configs/wrist_xyz10_causal_chord24_chord_duration_relative.yaml` | Wrist-relative, causal 24-chord model with song-scaled duration tokens. |
 | `scripts/convert_legacy_splits.py` | One-time conversion of the original PianoMotion split lists to generalized record stems. |
 | `scripts/convert_pianovam_splits.py` | Generate AirPiano splits from PianoVAM's canonical v1.1 metadata. |
-| `assets/splits/pianomotion10m/` | Ignored, locally generated train, validation, and test record stems used by the baseline. |
-| `assets/splits/pianovam/` | Ignored, locally generated PianoVAM train, validation, and test record stems. |
-| `assets/splits/full/` | Combined train split plus PianoMotion validation and test stems. |
-| `assets/splits/extended/` | Expanded combined train split with the same validation and test stems. |
+| `assets/splits/pianomotion10m_*.txt` | Ignored, locally generated train, validation, and test record stems used by the baseline. |
+| `assets/splits/pianovam_*.txt` | Ignored, locally generated PianoVAM train, validation, and test record stems. |
+| `assets/splits/full_*.txt` | Combined train split plus PianoMotion validation and test stems. |
+| `assets/splits/extended_*.txt` | Expanded combined train split with the same validation and test stems. |
 | `third_party/WiLoR/` | Full vendored snapshot of the official WiLoR source tree. |
 | `assets/wilor/` | Ignored, locally copied WiLoR, detector, and MANO binary assets. |
 | `airpiano/preprocessing/pipeline.py` | Config-owned offline record traversal and preprocessing orchestration. |
@@ -298,18 +298,25 @@ presence never affects pairing.
 
 ### Converted baseline splits
 
+All split lists are direct children of `assets/splits/`. A collection that has
+only `all.txt` is flattened to `<collection>.txt`; a collection with multiple
+lists uses `<collection>_<split>.txt`. Thus the former `PianoYTSeg/all.txt` is
+`PianoYTSeg.txt`, while `pianomotion10m/test.txt` is
+`pianomotion10m_test.txt`.
+
 The complete `assets/` directory is ignored by Git. A prepared workstation has
 these local files selected by `baseline.yaml`, but a fresh checkout must
 generate them before preprocessing or training:
 
 ```text
-assets/splits/pianomotion10m/train.txt    882 records
-assets/splits/pianomotion10m/valid.txt    101 records
-assets/splits/pianomotion10m/test.txt      13 records
-assets/splits/pianomotion10m/test_full.txt 983 records
+assets/splits/pianomotion10m_train.txt    882 records
+assets/splits/pianomotion10m_valid.txt    101 records
+assets/splits/pianomotion10m_test.txt      13 records
+assets/splits/pianomotion10m_test_full.txt 983 records
 ```
 
-To reproduce `train.txt`, `valid.txt`, and the complete source `test_full.txt`
+To reproduce `pianomotion10m_train.txt`, `pianomotion10m_valid.txt`, and the
+complete source `pianomotion10m_test_full.txt`
 from the original PianoMotion lists at the script's default source root:
 
 ```bash
@@ -326,8 +333,8 @@ conda run -n v2n python scripts/convert_legacy_splits.py \
 
 The converter preserves first-seen order, removes duplicates, prefixes every
 stem with `PianoMotion10M/`, and writes newline-terminated files. It deliberately
-does not overwrite the 13-record held-out `test.txt`. Runtime split readers
-accept only generalized, dataset-prefixed stems.
+does not overwrite the 13-record held-out `pianomotion10m_test.txt`. Runtime
+split readers accept only generalized, dataset-prefixed stems.
 
 ### PianoVAM splits and 30 Hz preparation
 
@@ -337,7 +344,7 @@ roots are intentionally separate:
 ```text
 source:     /storage/jinxuan/data/AirPianoFull
 processed:  /storage2/jinxuan/data/AirPianoFull
-splits:     <AirPiano>/assets/splits/pianovam
+splits:     <AirPiano>/assets/splits/pianovam_*.txt
 ```
 
 PianoVAM's `metadata.json` is the authoritative synchronization-aware split
@@ -345,7 +352,7 @@ source. Generate the ignored local lists with:
 
 ```bash
 conda run -n v2n python scripts/convert_pianovam_splits.py
-wc -l assets/splits/pianovam/*.txt
+wc -l assets/splits/pianovam_*.txt
 ```
 
 The converter sorts record IDs, prefixes them with `PianoVAM_v1/`, requires the
@@ -367,7 +374,7 @@ conda run -n v2n python run.py --config-name pianovam --cfg job --resolve
 df -h /storage2
 nvidia-smi --query-gpu=index,name,memory.total,memory.free --format=csv
 
-head -n 1 assets/splits/pianovam/train.txt \
+head -n 1 assets/splits/pianovam_train.txt \
   > /tmp/airpiano_pianovam_smoke.txt
 conda run -n v2n python run.py --config-name pianovam \
   stage=preprocess preprocess.task=all \
@@ -897,8 +904,8 @@ outputs/baseline/
 ├── checkpoints/
 │   ├── best.pt
 │   └── last.pt
-├── inference/
-│   └── test/
+├── test/
+│   └── pianomotion10m_test/
 │       ├── Real/
 │       │   └── star/
 │       │       ├── window_000000__f000000000.npz
@@ -920,7 +927,7 @@ Test and full-song resolve each split stem through the shared modality roots:
 <data.raw_wilor_root>/<stem>/
 <data.hand_root>/<stem>.npz
 
-<full_song.output_dir>/
+<configured full_song.output_dir>/<split_file_stem>/
 ├── Real/star.npz
 └── full_song_loss.json
 ```
@@ -994,9 +1001,9 @@ Each slice NPZ contains:
 identify the real slice extents. With a one-item batch they are the real frame
 and chord counts.
 
-Artifact filenames replace `/` and `\\` in the record ID with `__`, then append
-`__f<frame_start as nine digits>.npz`. Canonical files and inference artifacts
-are unchanged by the generalized path migration.
+Test artifacts preserve the record ID as directories, then use
+`window_<zero-based ordinal as six digits>__f<frame_start as nine digits>.npz`.
+The ordinal prevents collisions when two windows share a frame start.
 
 Full-song artifacts use the same schema with `frame_start=0`, all-true masks,
 and `[all frames, all chords]` probability and target arrays. At each frame,
@@ -1130,7 +1137,7 @@ df -h /storage2
 conda run -n v2n python run.py \
   --config-name wrist_xyz10_wrist_delta \
   stage=preprocess preprocess.task=ragged_to_canonical \
-  'preprocess.split_files=[assets/splits/pianomotion10m/train.txt,assets/splits/pianomotion10m/valid.txt,assets/splits/pianomotion10m/test_full.txt]'
+  'preprocess.split_files=[assets/splits/pianomotion10m_train.txt,assets/splits/pianomotion10m_valid.txt,assets/splits/pianomotion10m_test_full.txt]'
 ```
 
 Generate the PianoVAM cache from its three configured splits:
@@ -1490,13 +1497,18 @@ directory or split without retraining:
 
 ```bash
 conda run -n v2n python run.py stage=test \
-  test.split_file=assets/splits/PianoYTSeg/all.txt \
+  test.split_file=assets/splits/PianoYTSeg.txt \
   test.checkpoint=checkpoints/best.pt \
-  test.output_dir=inference/test-best
+  'test.output_dir=${output.dir}/test-best'
 ```
 
 The split path is relative to the AirPiano repository root unless absolute.
-Artifact and checkpoint paths follow the normal configured path resolution.
+The configured `test.output_dir` is a parent directory; test appends the split
+filename stem. For example, `PianoYTSeg.txt` writes below
+`${output.dir}/test-best/PianoYTSeg/`. The effective `test.output_dir` is updated
+to that split-specific directory so an ordered visualize or sonify stage follows
+the current split. Artifact and checkpoint paths otherwise follow the normal
+configured path resolution.
 For each split stem, test requires MIDI, reuses an existing canonical hand
 cache, otherwise canonicalizes a completed raw WiLoR cache, and falls back to
 video-to-WiLoR only when raw data is unavailable. When `data.beat_root` is
@@ -1508,14 +1520,15 @@ The checkpoint is loaded once. Windows are written below a directory matching
 the complete record ID, for example:
 
 ```text
-outputs/baseline/inference/test/Real/star/
+outputs/baseline/test/pianomotion10m_test/Real/star/
 ├── window_000000__f000000000.npz
 └── window_000001__f000000105.npz
 ```
 
 Window ordinals are zero-based per record and keep equal frame starts from
-colliding. One weighted `test_loss.json` is written at `test.output_dir`. A
-rerun overwrites matching artifacts but does not remove stale files, so use a
+colliding. One weighted `test_loss.json` is written in the split-specific
+output directory. A rerun overwrites matching artifacts but does not remove
+stale files, so use a
 fresh output directory when migrating an existing flat artifact tree.
 
 The removed realtime command maps directly to test:
@@ -1557,8 +1570,8 @@ causal frame attention:
 ```bash
 conda run -n v2n python run.py --config-name causal_chord24 \
   stage=full-song \
-  full_song.split_file=assets/splits/PianoYTSeg/all.txt \
-  'full_song.output_dir=${output.dir}/eval/PianoYTSeg'
+  full_song.split_file=assets/splits/PianoYTSeg.txt \
+  'full_song.output_dir=${output.dir}/eval'
 ```
 
 For every arriving video frame, the controller forwards only the current frame
@@ -1570,10 +1583,14 @@ the final score window is reached, it remains active through the end of the
 video. Override `full_song.alignment_threshold` or
 `full_song.advance_after_chords` to change the trailing trigger width.
 
-Outputs are written directly under `full_song.output_dir`, which defaults to
-`${output.dir}/full_song`. Each record ID becomes a hierarchy-preserving NPZ
+The configured `full_song.output_dir`, which defaults to
+`${output.dir}/full_song`, is a parent directory. Full-song appends the split
+filename stem, so `PianoYTSeg.txt` writes to
+`${output.dir}/full_song/PianoYTSeg/`. The effective config value is updated to
+that directory, allowing a following evaluation stage to use it through
+`${full_song.output_dir}`. Each record ID becomes a hierarchy-preserving NPZ
 path: `Real/star` becomes `Real/star.npz`. Weighted aggregate loss remains in
-`full_song_loss.json` at the output root.
+`full_song_loss.json` at the split-specific output root.
 
 ### Full-song evaluation
 
@@ -1584,8 +1601,8 @@ and reports frame- and chord-level alignment metrics:
 ```bash
 conda run -n v2n python run.py --config-name causal_chord24 \
   'stage=[full-song,evaluation]' \
-  full_song.split_file=assets/splits/PianoYTSeg/all.txt \
-  'full_song.output_dir=${output.dir}/eval/PianoYTSeg' \
+  full_song.split_file=assets/splits/PianoYTSeg.txt \
+  'full_song.output_dir=${output.dir}/eval' \
   'evaluation.root=${full_song.output_dir}'
 ```
 
@@ -1601,8 +1618,8 @@ Evaluate any existing artifact tree independently:
 ```bash
 conda run -n v2n python run.py --config-name causal_chord24 \
   stage=evaluation \
-  evaluation.root=outputs/causal_chord24/inference/test \
-  evaluation.output_path=outputs/causal_chord24/inference/test.json
+  evaluation.root=outputs/causal_chord24/test/pianomotion10m_test \
+  evaluation.output_path=outputs/causal_chord24/test/pianomotion10m_test.json
 ```
 
 For evaluated frames `F`, ground-truth chords `G`, and detected chords
@@ -1620,7 +1637,7 @@ evaluation artifacts.
 
 ### Visualize and sonify batches
 
-Both stages recursively scan `*.npz` files under `inference/test` by default:
+Both stages recursively scan `*.npz` files under `test` by default:
 
 ```bash
 conda run -n v2n python run.py stage=visualize
@@ -1630,11 +1647,11 @@ conda run -n v2n python run.py stage=sonify sonify.threshold=0.2
 For a test window, all derived files are written beside it:
 
 ```text
-outputs/baseline/inference/test/Real/star/window_000000__f000000000.png
-outputs/baseline/inference/test/Real/star/window_000000__f000000000.mid
-outputs/baseline/inference/test/Real/star/window_000000__f000000000.gt.mid
-outputs/baseline/inference/test/onset_delta_summary.json
-outputs/baseline/inference/test/onset_delta_summary.png
+outputs/baseline/test/pianomotion10m_test/Real/star/window_000000__f000000000.png
+outputs/baseline/test/pianomotion10m_test/Real/star/window_000000__f000000000.mid
+outputs/baseline/test/pianomotion10m_test/Real/star/window_000000__f000000000.gt.mid
+outputs/baseline/test/pianomotion10m_test/onset_delta_summary.json
+outputs/baseline/test/pianomotion10m_test/onset_delta_summary.png
 ```
 
 NPZ files are processed recursively in sorted order. Dotted basenames and
@@ -1644,7 +1661,7 @@ repository root:
 
 ```bash
 conda run -n v2n python run.py stage=visualize \
-  visualize.root=outputs/baseline/inference/test-best
+  visualize.root=outputs/baseline/test-best
 
 conda run -n v2n python run.py stage=sonify \
   sonify.root=/absolute/path/to/artifacts
@@ -1685,7 +1702,7 @@ the parent of the record directories and use the configured MIDI root:
 
 ```bash
 conda run -n v2n python run.py stage=sonify \
-  sonify.root=outputs/baseline/inference/test-custom \
+  sonify.root=outputs/baseline/test-custom \
   sonify.midi_root=/data/AirPianoFull/MIDI
 ```
 
@@ -1717,15 +1734,15 @@ Hydra `key=value` syntax.
 | `data.video_root` | `${data.root}/Video` | `<dataset>/<stem>.mp4` source videos. |
 | `data.raw_wilor_root` | `${data.processed_root}/wilor` | `<dataset>/<stem>/` current-schema raw caches. |
 | `data.hand_root` | `${data.processed_root}/airpiano_wilor_2p5d_30fps` | `<dataset>/<stem>.npz` canonical files. |
-| `data.splits.*` | `assets/splits/pianomotion10m/*.txt` | Ignored local dataset-prefixed stems. |
+| `data.splits.*` | `assets/splits/pianomotion10m_*.txt` | Ignored local dataset-prefixed stems. |
 
 The `pianovam` preset uses the same shared roots with
-`assets/splits/pianovam/*.txt`. It requests 30 Hz first-due sampling before
+`assets/splits/pianovam_*.txt`. It requests 30 Hz first-due sampling before
 WiLoR for missing raw records and retains the baseline 30 Hz canonical rate,
 210-frame, 105-stride, 128-chord, and pose-transform settings.
 
 The training/evaluation-only `full` preset uses the same shared modality roots
-with `assets/splits/full/*.txt`; dataset-prefixed stems select the corpus.
+with `assets/splits/full_*.txt`; dataset-prefixed stems select the corpus.
 
 ### WiLoR and canonicalization
 
@@ -1824,21 +1841,21 @@ loss intentionally remains fixed in code.
 | `wandb.dir` | `${output.dir}/logs` | W&B parent directory. |
 | `test.split_file` | `${data.splits.test}` | Root-relative record stems consumed by `stage=test`; relative list paths resolve from the repository root. |
 | `test.checkpoint` | `${output.dir}/checkpoints/last.pt` | Checkpoint loaded by `stage=test`. |
-| `test.output_dir` | `${output.dir}/inference/test` | Test artifact and loss directory. |
+| `test.output_dir` | `${output.dir}/test` | Parent directory; the test split filename stem is appended at runtime. |
 | `test.overwrite` | `false` | Raw and canonical preprocessing reuse policy for split preparation. |
-| `full_song.split_file` | `assets/splits/pianomotion10mseg/valid.txt` | Ordered record list for causal full-song inference. |
+| `full_song.split_file` | `assets/splits/pianomotion10mseg_valid.txt` | Ordered record list for causal full-song inference. |
 | `full_song.checkpoint` | `${output.dir}/checkpoints/last.pt` | Causal AirPiano checkpoint loaded once for the stage. |
-| `full_song.output_dir` | `${output.dir}/full_song` | Full-song inference artifact and aggregate loss directory. |
+| `full_song.output_dir` | `${output.dir}/full_song` | Parent directory; the full-song split filename stem is appended at runtime. |
 | `full_song.overwrite` | `false` | Raw and canonical preprocessing reuse policy. |
 | `full_song.alignment_threshold` | `0.2` | Inclusive running-peak confidence required by any trailing trigger chord. |
 | `full_song.advance_after_chords` | slicer stride | Number of trailing chord slots checked to trigger advancement. |
-| `visualize.root` | `${output.dir}/inference/test` | Filesystem tree recursively scanned for NPZs and receiving adjacent PNG files. |
+| `visualize.root` | `${test.output_dir}` | Filesystem tree recursively scanned for NPZs and receiving adjacent PNG files. |
 | `evaluation.root` | `${full_song.output_dir}` | Filesystem tree recursively scanned for inference NPZs. |
 | `evaluation.output_path` | `${evaluation.root}.json` | Persistent metrics report; override when evaluating an artifact directory whose sibling path is unsuitable. |
 | `evaluation.onset_threshold` | `${sonify.threshold}` | Inclusive peak threshold below which a chord prediction is null. |
 | `evaluation.tolerances_frames` | `[0, 2, 4, 8, 16]` | Inclusive frame tolerances reported by `C-AR`. |
 | `evaluation.remove_inference_artifacts` | `false` | Remove discovered NPZs after successful report serialization; loss JSON files and directories remain. |
-| `sonify.root` | `${output.dir}/inference/test` | Filesystem tree recursively scanned for NPZs and receiving adjacent MIDI sidecars plus final onset-delta JSON and PNG summaries. |
+| `sonify.root` | `${test.output_dir}` | Filesystem tree recursively scanned for NPZs and receiving adjacent MIDI sidecars plus final onset-delta JSON and PNG summaries. |
 | `sonify.midi_root` | `${data.midi_root}` | Root used with the artifact `record_id` to locate source MIDI. |
 | `sonify.threshold` | `0.2` | Inclusive chord peak threshold. |
 | `sonify.chord_tolerance_seconds` | Dataset chord tolerance | Retained for call compatibility; onset reports use each NPZ target's peak frame. |
@@ -1960,7 +1977,7 @@ Useful inspections:
 
 ```bash
 # Count generalized split records.
-wc -l assets/splits/pianomotion10m/*.txt
+wc -l assets/splits/pianomotion10m_*.txt
 
 # Verify the ignored local WiLoR binaries.
 sha256sum assets/wilor/wilor_final.ckpt assets/wilor/detector.pt \

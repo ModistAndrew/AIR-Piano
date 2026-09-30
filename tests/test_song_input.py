@@ -334,7 +334,7 @@ class SplitSongInputTest(unittest.TestCase):
             checkpoint.parent.mkdir(parents=True)
             checkpoint.write_bytes(b"checkpoint loading is patched")
 
-            output_root = project / "inference" / "test"
+            output_root = project / "test" / "runtime"
             run_order: list[tuple[str, str]] = []
             test_case = self
 
@@ -432,6 +432,9 @@ class SplitSongInputTest(unittest.TestCase):
             ):
                 inference.test(config)
 
+            self.assertEqual(Path(config.test.output_dir), output_root)
+            self.assertEqual(Path(config.visualize.root), output_root)
+            self.assertEqual(Path(config.sonify.root), output_root)
             self.assertEqual(
                 targets,
                 [

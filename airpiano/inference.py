@@ -22,6 +22,7 @@ from .song_input import iter_split_songs
 from .train import _autocast, _forward, _tensor_to_device
 from .utils import (
     resolve_path,
+    resolve_split_output_dir,
     write_json,
     write_npz,
 )
@@ -198,7 +199,11 @@ def test(cfg: DictConfig) -> None:
     if cfg.test.split_file is None:
         raise ValueError("test.split_file must be set")
     checkpoint = resolve_path(cfg.test.checkpoint)
-    output_dir = resolve_path(cfg.test.output_dir)
+    output_dir = resolve_split_output_dir(
+        cfg.test.output_dir,
+        cfg.test.split_file,
+    )
+    cfg.test.output_dir = str(output_dir)
     components = data.build_data_components(cfg)
     songs = [
         song

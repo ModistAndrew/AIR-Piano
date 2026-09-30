@@ -9,6 +9,6 @@ data:
   root: /storage/jinxuan/data/AirPianoFull
   processed_root: /storage2/jinxuan/data/AirPianoFull
   splits:
-    train: assets/splits/extended/train.txt
-    valid: assets/splits/extended/valid.txt
-    test: assets/splits/extended/test.txt
+    train: assets/splits/extended_train.txt
+    valid: assets/splits/extended_valid.txt
+    test: assets/splits/extended_test.txt

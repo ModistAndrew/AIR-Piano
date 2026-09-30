@@ -11,7 +11,7 @@ from typing import Any
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DATASET_NAME = "PianoVAM_v1"
 DEFAULT_DATA_ROOT = Path("/storage/jinxuan/data/AirPianoFull")
-DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "assets" / "splits" / "pianovam"
+DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "assets" / "splits"
 SPLIT_NAMES = ("train", "valid", "test")
 ALLOWED_SOURCE_SPLITS = {
     "train",
@@ -74,7 +74,7 @@ def convert_splits(data_root: Path, output_root: Path) -> dict[str, int]:
     output_root.mkdir(parents=True, exist_ok=True)
     for split_name, record_ids in split_records.items():
         record_ids.sort()
-        (output_root / f"{split_name}.txt").write_text(
+        (output_root / f"pianovam_{split_name}.txt").write_text(
             "".join(f"{record_id}\n" for record_id in record_ids),
             encoding="utf-8",
         )

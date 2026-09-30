@@ -239,7 +239,8 @@ class TestInferenceTest(unittest.TestCase):
             load_checkpoint.assert_called_once_with(
                 checkpoint.resolve(), torch.device("cpu")
             )
-            inference_dir = output / "inference" / "custom-test"
+            inference_dir = output / "inference" / "custom-test" / "test"
+            self.assertEqual(Path(config.test.output_dir), inference_dir)
             metrics = json.loads((inference_dir / "test_loss.json").read_text())
             self.assertGreater(metrics["test_loss"], 0.0)
             artifacts = sorted(inference_dir.rglob("*.npz"))

@@ -15,7 +15,7 @@ DATASET_NAME = "PianoMotion10M"
 DEFAULT_SOURCE_ROOT = Path(
     "/storage/jinxuan/data/AirPianoFull/Metadata/PianoMotion10M"
 )
-DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "assets" / "splits" / "pianomotion10m"
+DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "assets" / "splits"
 SPLIT_NAMES = ("train", "valid", "test")
 OUTPUT_NAMES = {"train": "train", "valid": "valid", "test": "test_full"}
 
@@ -50,7 +50,7 @@ def convert_splits(source_root: Path, output_root: Path) -> dict[str, int]:
     return {
         name: convert_split(
             source_root / f"{name}.txt",
-            output_root / f"{OUTPUT_NAMES[name]}.txt",
+            output_root / f"pianomotion10m_{OUTPUT_NAMES[name]}.txt",
         )
         for name in SPLIT_NAMES
     }
