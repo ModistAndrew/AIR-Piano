@@ -28,4 +28,5 @@ evaluation:
   output_path: ${evaluation.root}.json
   onset_threshold: ${sonify.threshold}
   tolerances_frames: [0, 2, 4, 8, 16]
+  summary_only: true
   remove_inference_artifacts: false

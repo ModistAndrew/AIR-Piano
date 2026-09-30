@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import io
 import json
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -61,11 +63,13 @@ def _write_artifact(
     *,
     record_id: str = "subject/take",
     frame_start: int = 0,
+    fps: float = 10.0,
 ) -> None:
     artifact = _artifact(
         [1, 4, 7],
         record_id=record_id,
         frame_start=frame_start,
+        fps=fps,
     )
     path.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
@@ -186,7 +190,12 @@ class AlignmentMetricTest(unittest.TestCase):
 
 class EvaluationStageTest(unittest.TestCase):
     @staticmethod
-    def _config(root: Path, remove: bool) -> object:
+    def _config(
+        root: Path,
+        remove: bool,
+        *,
+        summary_only: bool = True,
+    ) -> object:
         return OmegaConf.create(
             {
                 "evaluation": {
@@ -195,6 +204,7 @@ class EvaluationStageTest(unittest.TestCase):
                     "onset_threshold": 0.5,
                     "tolerances_frames": list(TOLERANCES),
                     "remove_inference_artifacts": remove,
+                    "summary_only": summary_only,
                 }
             }
         )
@@ -208,7 +218,7 @@ class EvaluationStageTest(unittest.TestCase):
         ]
         _write_artifact(paths[0], record_id="subject/a", frame_start=0)
         _write_artifact(paths[1], record_id="subject/a", frame_start=5)
-        _write_artifact(paths[2], record_id="subject/b", frame_start=0)
+        _write_artifact(paths[2], record_id="subject/b", frame_start=0, fps=5.0)
         (root / "artifacts" / "test_loss.json").write_text(
             '{"test_loss": 0.25}\n',
             encoding="utf-8",
@@ -221,7 +231,7 @@ class EvaluationStageTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             paths = self._populate(root)
-            config = self._config(root, False)
+            config = self._config(root, False, summary_only=False)
 
             evaluation_stage.evaluation(config)
 
@@ -229,16 +239,48 @@ class EvaluationStageTest(unittest.TestCase):
             report = json.loads(
                 (root / "metrics.json").read_text(encoding="utf-8")
             )
-            self.assertEqual(report["schema_version"], "airpiano-evaluation-v2")
+            self.assertEqual(report["schema_version"], "airpiano-evaluation-v3")
             self.assertEqual(report["artifact_count"], 3)
+            self.assertAlmostEqual(report["average_duration_seconds"], 4 / 3)
+            self.assertEqual(report["total_duration_seconds"], 4.0)
+            self.assertFalse(report["summary_only"])
             self.assertEqual(report["unique_record_count"], 2)
             self.assertEqual(report["unique_record_ids"], ["subject/a", "subject/b"])
             self.assertEqual(report["micro"]["ground_truth_chord_count"], 9)
             self.assertEqual(report["macro"]["artifact_count"], 3)
             self.assertFalse(report["inference_artifacts_removed"])
             self.assertEqual(
+                [item["duration_seconds"] for item in report["artifacts"]],
+                [1.0, 1.0, 2.0],
+            )
+            self.assertEqual(
                 [item["artifact_path"] for item in report["artifacts"]],
                 ["first.npz", "nested/second.npz", "nested/third.npz"],
+            )
+
+    def test_summary_only_omits_artifact_details_and_progress(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._populate(root)
+            output = io.StringIO()
+
+            with redirect_stdout(output):
+                evaluation_stage.evaluation(self._config(root, False))
+
+            report = json.loads(
+                (root / "metrics.json").read_text(encoding="utf-8")
+            )
+            self.assertTrue(report["summary_only"])
+            self.assertAlmostEqual(report["average_duration_seconds"], 4 / 3)
+            self.assertEqual(report["total_duration_seconds"], 4.0)
+            self.assertNotIn("artifacts", report)
+            self.assertNotIn("unique_record_ids", report)
+            console = output.getvalue()
+            self.assertNotIn("evaluation 1/3", console)
+            self.assertIn("evaluation micro:", console)
+            self.assertIn("evaluation macro:", console)
+            self.assertIn(
+                "evaluation average_duration_seconds=", console
             )
 
     def test_cleanup_removes_only_npzs_after_report_write(self) -> None:

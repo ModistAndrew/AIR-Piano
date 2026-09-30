@@ -1631,9 +1631,14 @@ inclusive. Ground truth is the earliest positive maximum in each target
 column; all-zero columns are excluded. Null predictions lower `C-AR` and
 coverage but do not enter MAE.
 
-The JSON contains per-artifact results, pooled micro metrics, and
-equal-artifact macro metrics. Overlapping test windows remain separate
-evaluation artifacts.
+Artifact duration is the number of valid frames divided by its stored FPS. The
+JSON reports both `average_duration_seconds` and `total_duration_seconds`.
+
+`evaluation.summary_only=true` is the default. It suppresses per-artifact
+console progress and omits `artifacts` and `unique_record_ids` from the JSON,
+leaving the compact metadata plus pooled micro and equal-artifact macro
+results. Set it to `false` to restore detailed per-artifact output. Overlapping
+test windows remain separate evaluation artifacts in either aggregation mode.
 
 ### Visualize and sonify batches
 
@@ -1854,6 +1859,7 @@ loss intentionally remains fixed in code.
 | `evaluation.output_path` | `${evaluation.root}.json` | Persistent metrics report; override when evaluating an artifact directory whose sibling path is unsuitable. |
 | `evaluation.onset_threshold` | `${sonify.threshold}` | Inclusive peak threshold below which a chord prediction is null. |
 | `evaluation.tolerances_frames` | `[0, 2, 4, 8, 16]` | Inclusive frame tolerances reported by `C-AR`. |
+| `evaluation.summary_only` | `true` | Print and serialize final micro/macro summaries without per-artifact details; set false for verbose output. |
 | `evaluation.remove_inference_artifacts` | `false` | Remove discovered NPZs after successful report serialization; loss JSON files and directories remain. |
 | `sonify.root` | `${test.output_dir}` | Filesystem tree recursively scanned for NPZs and receiving adjacent MIDI sidecars plus final onset-delta JSON and PNG summaries. |
 | `sonify.midi_root` | `${data.midi_root}` | Root used with the artifact `record_id` to locate source MIDI. |

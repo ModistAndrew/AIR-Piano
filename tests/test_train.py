@@ -487,6 +487,7 @@ class TrainTest(unittest.TestCase):
         self.assertEqual(
             list(config.evaluation.tolerances_frames), [0, 2, 4, 8, 16]
         )
+        self.assertTrue(bool(config.evaluation.summary_only))
         self.assertFalse(bool(config.evaluation.remove_inference_artifacts))
 
     def test_wrist_chord24_random_hand_shift_config(self) -> None:

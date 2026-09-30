@@ -230,6 +230,7 @@ def evaluation(cfg: DictConfig) -> None:
     tolerances = tuple(int(value) for value in cfg.evaluation.tolerances_frames)
     onset_threshold = float(cfg.evaluation.onset_threshold)
     remove_artifacts = bool(cfg.evaluation.remove_inference_artifacts)
+    summary_only = bool(cfg.evaluation.summary_only)
     artifact_paths = sorted(
         path for path in artifact_root.rglob("*.npz") if path.is_file()
     )
@@ -251,34 +252,48 @@ def evaluation(cfg: DictConfig) -> None:
                 "frame_start": artifact.frame_start,
                 "fps": artifact.fps,
                 "frame_count": int(artifact.frame_mask.sum()),
+                "duration_seconds": (
+                    int(artifact.frame_mask.sum()) / artifact.fps
+                ),
                 "chord_count": int(artifact.chord_mask.sum()),
                 "metrics": item_metrics,
             }
         )
-        print(
-            f"evaluation {index}/{len(artifact_paths)}: "
-            f"{artifact.record_id} frame_start={artifact.frame_start} "
-            f"ChordAcc={item_metrics['chord_acc']} "
-            f"coverage={item_metrics['chord_coverage']}",
-            flush=True,
-        )
+        if not summary_only:
+            print(
+                f"evaluation {index}/{len(artifact_paths)}: "
+                f"{artifact.record_id} frame_start={artifact.frame_start} "
+                f"ChordAcc={item_metrics['chord_acc']} "
+                f"coverage={item_metrics['chord_coverage']}",
+                flush=True,
+            )
 
     item_metrics = [report["metrics"] for report in reports]
     micro, macro = aggregate_alignment_metrics(item_metrics, tolerances)
     unique_record_ids = sorted({report["record_id"] for report in reports})
+    total_duration_seconds = sum(
+        float(report["duration_seconds"]) for report in reports
+    )
+    average_duration_seconds = (
+        total_duration_seconds / len(reports) if reports else None
+    )
     summary = {
-        "schema_version": "airpiano-evaluation-v2",
+        "schema_version": "airpiano-evaluation-v3",
         "artifact_root": str(artifact_root),
         "onset_threshold": onset_threshold,
         "tolerances_frames": list(tolerances),
         "artifact_count": len(reports),
+        "average_duration_seconds": average_duration_seconds,
+        "total_duration_seconds": total_duration_seconds,
+        "summary_only": summary_only,
         "unique_record_count": len(unique_record_ids),
-        "unique_record_ids": unique_record_ids,
         "inference_artifacts_removed": remove_artifacts,
         "micro": micro,
         "macro": macro,
-        "artifacts": reports,
     }
+    if not summary_only:
+        summary["unique_record_ids"] = unique_record_ids
+        summary["artifacts"] = reports
     write_json(metrics_path, summary)
 
     if remove_artifacts:
@@ -290,6 +305,12 @@ def evaluation(cfg: DictConfig) -> None:
             write_json(metrics_path, summary)
             raise
 
+    print(f"evaluation micro: {micro}", flush=True)
+    print(f"evaluation macro: {macro}", flush=True)
+    print(
+        f"evaluation average_duration_seconds={average_duration_seconds}",
+        flush=True,
+    )
     print(f"wrote evaluation metrics {metrics_path}", flush=True)
     if remove_artifacts:
         print(
