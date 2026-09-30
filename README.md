@@ -1965,10 +1965,19 @@ sonification, artifact tests, and documentation in the same change.
 
 ## Validation and troubleshooting
 
-Run the complete discovered suite and static import checks after any change:
+For ordinary localized changes, run only the smallest relevant unittest module
+or test case. Replace the example module with the one affected by the edit:
 
 ```bash
 cd /storage/jinxuan/workspace/AirPiano
+conda run -n v2n python -m unittest tests.test_evaluation
+```
+
+Reserve full discovery and repository-wide static checks for broad or high-risk
+changes, release-level validation, an explicit request, or evidence that the
+focused tests are insufficient:
+
+```bash
 conda run -n v2n python -m unittest discover -v
 conda run -n v2n python -m compileall -q airpiano scripts tests run.py
 conda run -n v2n python run.py --cfg job --resolve
@@ -1976,8 +1985,9 @@ test -f third_party/WiLoR/license.txt
 test ! -e third_party/WiLoR/.git
 ```
 
-Do not hard-code a test count; use the exit status because the suite evolves.
-Do not run bulk preprocessing or full training merely to validate a code change.
+Do not rerun unchanged checks during the same task. Do not hard-code a test
+count; use the exit status because the suite evolves. Do not run bulk
+preprocessing or full training merely to validate a code change.
 
 Useful inspections:
 
@@ -2044,6 +2054,7 @@ conda run -n v2n python -c \
    them.
 9. Keep low-level Hydra components narrow and let each stage handler own its
    root configuration and orchestration.
-10. Run focused tests during development, then full unit discovery,
-    `compileall`, resolved Hydra config, and vendored-source checks before
-    claiming success. Report exactly what was and was not run.
+10. Run the smallest relevant focused tests for localized changes. Reserve full
+    unit discovery and repository-wide checks for broad/high-risk changes,
+    release validation, explicit requests, or inadequate focused coverage.
+    Report exactly what was and was not run.

@@ -43,7 +43,9 @@
 
 - Establish the reproduction path and likely root cause using relevant evidence before fixing a bug. Prefer a minimal reproduction where practical.
 - Fix the root cause. Distinguish code defects from dependency, interpreter, configuration, and environment problems.
-- Run focused validation proportional to the change: reproduce and verify bug fixes, check relevant feature behavior, and preserve existing behavior during refactoring.
+- Run the smallest focused validation proportional to the change: reproduce and verify bug fixes, check the directly affected feature behavior, and preserve existing behavior during refactoring.
+- Do not run full unittest discovery for a narrow or localized change. Reserve it for broad or high-risk changes, release-level validation, an explicit user request, or evidence that focused tests are insufficient.
+- Avoid rerunning unchanged checks during the same task unless later edits could affect their result.
 - Clearly distinguish validation that passed, failed, or was not run. Explain blockers and unconfirmed assumptions; never claim unexecuted checks passed.
 
 ## Safety
