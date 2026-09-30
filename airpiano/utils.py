@@ -38,10 +38,3 @@ def write_npz(path: str | Path, **arrays: Any) -> None:
     output = Path(path)
     output.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(output, **arrays)
-
-
-def safe_record_name(record_id: str, frame_start: int) -> str:
-    """Return the deterministic filename used for an inference slice."""
-
-    record = record_id.replace("\\", "__").replace("/", "__")
-    return f"{record}__f{frame_start:09d}.npz"

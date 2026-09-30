@@ -1,4 +1,4 @@
-"""Realtime preprocessing and inference for synchronized video/MIDI pairs."""
+"""Split-driven preparation of synchronized MIDI and hand data."""
 
 from __future__ import annotations
 
@@ -11,9 +11,8 @@ from omegaconf import DictConfig
 
 from . import data
 from .data.files import read_record_stems
-from .inference import infer_dataset
 from .preprocessing.canonical import raw_cache_has_markers
-from .utils import resolve_path, write_json
+from .utils import resolve_path
 
 
 def iter_split_songs(
@@ -21,18 +20,15 @@ def iter_split_songs(
     split_file: str | Path,
     *,
     overwrite: bool,
-    label: str = "realtime",
+    label: str,
     components: dict[str, Any] | None = None,
 ) -> Iterator[tuple[int, int, data.Song, dict[str, Any]]]:
-    """Preprocess and stream split records through configured modality roots."""
+    """Prepare and load split records through configured modality roots."""
 
     split_path = resolve_path(split_file)
     records = read_record_stems([split_path])
     if not records:
-        print(
-            f"[{label}] no records in {split_path}",
-            flush=True,
-        )
+        print(f"[{label}] no records in {split_path}", flush=True)
         return
 
     video_root = resolve_path(cfg.data.video_root)
@@ -54,8 +50,18 @@ def iter_split_songs(
             print(f"[{label} skip] {record_id}: missing MIDI {midi_path}")
             continue
 
+        beat_path = None
+        if beat_root is not None:
+            beat_path = beat_root / f"{record_id}.txt"
+            if not beat_path.is_file():
+                print(
+                    f"[{label} skip] {record_id}: missing beats {beat_path}",
+                    flush=True,
+                )
+                continue
+
         print(
-            f"{label} {index}/{len(records)}: preprocess {record_id}",
+            f"{label} {index}/{len(records)}: prepare {record_id}",
             flush=True,
         )
         raw_dir = raw_root / record_id
@@ -82,19 +88,12 @@ def iter_split_songs(
                 output_path=canonical_path,
                 overwrite=overwrite,
             )
-        candidate_beat_path = (
-            beat_root / f"{record_id}.txt" if beat_root is not None else None
-        )
+
         pair = data.FilePair(
             record_id=record_id,
             midi_path=midi_path,
             hand_path=canonical_path,
-            beat_path=(
-                candidate_beat_path
-                if candidate_beat_path is not None
-                and candidate_beat_path.is_file()
-                else None
-            ),
+            beat_path=beat_path,
         )
         song = components["file_loader"].reader.read(
             pair,
@@ -104,29 +103,4 @@ def iter_split_songs(
         yield index, len(records), song, components
 
 
-def realtime(cfg: DictConfig) -> None:
-    """Preprocess and infer every record in the configured split."""
-
-    if cfg.realtime.split_file is None:
-        raise ValueError("realtime.split_file must be set")
-    output_root = resolve_path(cfg.realtime.output_dir)
-    checkpoint = resolve_path(cfg.realtime.checkpoint)
-    overwrite = bool(cfg.realtime.overwrite)
-
-    for index, record_count, song, components in iter_split_songs(
-        cfg,
-        cfg.realtime.split_file,
-        overwrite=overwrite,
-    ):
-        output_dir = output_root / song.record_id
-        dataset = data.AlignmentDataset(
-            songs=[song],
-            slicer=components["slicer"],
-            target_generator=components["target_generator"],
-        )
-        loss = infer_dataset(cfg, dataset, checkpoint, output_dir)
-        write_json(output_dir / "realtime_loss.json", {"loss": loss})
-        print(
-            f"realtime {index}/{record_count}: {song.record_id} loss={loss:.8f}",
-            flush=True,
-        )
+__all__ = ["iter_split_songs"]

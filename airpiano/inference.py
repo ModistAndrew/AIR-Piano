@@ -18,10 +18,10 @@ from .model.loss import (
     masked_alignment_loss,
 )
 from .model.transformer import AirPianoTransformer
+from .song_input import iter_split_songs
 from .train import _autocast, _forward, _tensor_to_device
 from .utils import (
     resolve_path,
-    safe_record_name,
     write_json,
     write_npz,
 )
@@ -83,6 +83,7 @@ def dump_inference(
     output_dir.mkdir(parents=True, exist_ok=True)
     total_loss = 0.0
     total_valid = 0
+    window_indices: dict[str, int] = {}
     for batch in loader:
         target_device = _tensor_to_device(batch["target"], device)
         frame_mask_device = _tensor_to_device(batch["frame_mask"], device)
@@ -118,8 +119,15 @@ def dump_inference(
 
             record_id = str(_batch_value(batch, "record_id", index))
             frame_start = int(_batch_value(batch, "frame_start", index))
+            window_index = window_indices.get(record_id, 0)
+            window_indices[record_id] = window_index + 1
             write_inference_artifact(
-                output_dir / safe_record_name(record_id, frame_start),
+                output_dir
+                / record_id
+                / (
+                    f"window_{window_index:06d}"
+                    f"__f{frame_start:09d}.npz"
+                ),
                 probability=probabilities[index].cpu().numpy(),
                 target=batch["target"][index].cpu().numpy(),
                 frame_mask=batch["frame_mask"][index].cpu().numpy(),
@@ -163,7 +171,7 @@ def infer_dataset(
     checkpoint: str | Path,
     output_dir: str | Path,
 ) -> float:
-    """Run checkpoint inference over one dataset for test or realtime."""
+    """Load one checkpoint and run inference over a prepared dataset."""
 
     device = torch.device(str(cfg.device))
     loader = data.make_loader(
@@ -185,14 +193,27 @@ def infer_dataset(
 
 
 def test(cfg: DictConfig) -> None:
-    """Load the configured checkpoint and dump every test-set slice."""
+    """Prepare the configured split and dump every test window."""
 
+    if cfg.test.split_file is None:
+        raise ValueError("test.split_file must be set")
     checkpoint = resolve_path(cfg.test.checkpoint)
     output_dir = resolve_path(cfg.test.output_dir)
-    dataset = data.build_dataset(
-        cfg,
-        "test",
-        split_file=str(cfg.test.split_file),
+    components = data.build_data_components(cfg)
+    songs = [
+        song
+        for _, _, song, _ in iter_split_songs(
+            cfg,
+            cfg.test.split_file,
+            overwrite=bool(cfg.test.overwrite),
+            label="test",
+            components=components,
+        )
+    ]
+    dataset = data.AlignmentDataset(
+        songs=songs,
+        slicer=components["slicer"],
+        target_generator=components["target_generator"],
     )
     loss = infer_dataset(cfg, dataset, checkpoint, output_dir)
     write_json(output_dir / "test_loss.json", {"test_loss": loss})

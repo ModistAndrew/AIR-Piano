@@ -49,6 +49,14 @@ class _TinyCategoricalDataset(_TinyDataset):
         return sample
 
 
+class _DuplicateFrameDataset(_TinyDataset):
+    def __getitem__(self, index: int):
+        sample = super().__getitem__(index)
+        sample["record_id"] = "subject/session.v1/take.03"
+        sample["frame_start"] = 0
+        return sample
+
+
 class _TinyModel(nn.Module):
     def __init__(
         self,
@@ -176,14 +184,35 @@ class TestInferenceTest(unittest.TestCase):
                         "output_dir": str(
                             output / "inference" / "custom-test"
                         ),
+                        "overwrite": False,
                     },
                 }
             )
+            components = {
+                "slicer": object(),
+                "target_generator": object(),
+            }
+            songs = [object(), object()]
 
             with (
                 patch.object(
                     data,
-                    "build_dataset",
+                    "build_data_components",
+                    return_value=components,
+                ) as build_components,
+                patch.object(
+                    inference_stage,
+                    "iter_split_songs",
+                    return_value=iter(
+                        [
+                            (1, 2, songs[0], components),
+                            (2, 2, songs[1], components),
+                        ]
+                    ),
+                ) as prepare_songs,
+                patch.object(
+                    data,
+                    "AlignmentDataset",
                     return_value=_TinyDataset(),
                 ) as build_dataset,
                 patch.object(
@@ -194,10 +223,18 @@ class TestInferenceTest(unittest.TestCase):
             ):
                 inference_stage.test(config)
 
-            build_dataset.assert_called_once_with(
+            build_components.assert_called_once_with(config)
+            prepare_songs.assert_called_once_with(
                 config,
-                "test",
-                split_file="assets/splits/custom/test.txt",
+                "assets/splits/custom/test.txt",
+                overwrite=False,
+                label="test",
+                components=components,
+            )
+            build_dataset.assert_called_once_with(
+                songs=songs,
+                slicer=components["slicer"],
+                target_generator=components["target_generator"],
             )
             load_checkpoint.assert_called_once_with(
                 checkpoint.resolve(), torch.device("cpu")
@@ -205,8 +242,15 @@ class TestInferenceTest(unittest.TestCase):
             inference_dir = output / "inference" / "custom-test"
             metrics = json.loads((inference_dir / "test_loss.json").read_text())
             self.assertGreater(metrics["test_loss"], 0.0)
-            artifacts = sorted(inference_dir.glob("*.npz"))
+            artifacts = sorted(inference_dir.rglob("*.npz"))
             self.assertEqual(len(artifacts), 2)
+            self.assertEqual(
+                [path.relative_to(inference_dir).as_posix() for path in artifacts],
+                [
+                    "subject/song0/window_000000__f000000000.npz",
+                    "subject/song1/window_000000__f000000002.npz",
+                ],
+            )
             with np.load(artifacts[0], allow_pickle=False) as artifact:
                 self.assertEqual(
                     str(artifact["schema_version"]), "airpiano-inference-v1"
@@ -236,13 +280,41 @@ class TestInferenceTest(unittest.TestCase):
             )
 
             self.assertAlmostEqual(loss, float(np.log(2.0)), places=6)
-            artifacts = sorted(output.glob("*.npz"))
+            artifacts = sorted(output.rglob("*.npz"))
             self.assertEqual(len(artifacts), 2)
             with np.load(artifacts[0], allow_pickle=False) as artifact:
                 np.testing.assert_allclose(
                     artifact["probability"].sum(axis=-1), 1.0
                 )
                 np.testing.assert_allclose(artifact["probability"], 0.5)
+
+    def test_window_ordinals_prevent_same_frame_start_collisions(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            loader = data.make_loader(
+                _DuplicateFrameDataset(),
+                batch_size=2,
+                shuffle=False,
+                seed=1,
+                device=torch.device("cpu"),
+            )
+
+            inference_stage.dump_inference(
+                _TinyModel(),
+                loader,
+                torch.device("cpu"),
+                output,
+                bf16=False,
+            )
+
+            record_dir = output / "subject/session.v1/take.03"
+            self.assertEqual(
+                [path.name for path in sorted(record_dir.glob("*.npz"))],
+                [
+                    "window_000000__f000000000.npz",
+                    "window_000001__f000000000.npz",
+                ],
+            )
 
 
 if __name__ == "__main__":

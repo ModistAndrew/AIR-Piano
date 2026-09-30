@@ -1,4 +1,4 @@
-"""Load the compact NPZ contract shared by test and realtime inference."""
+"""Load the compact NPZ contract shared by inference stages."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Integration test for the config-owned realtime workflow."""
+"""Tests for shared split-song preparation and merged test inference."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ import torch
 from omegaconf import OmegaConf
 from torch import nn
 
-import airpiano.realtime as realtime_stage
+import airpiano.song_input as song_input_stage
 from airpiano import data, inference
 from airpiano.preprocessing.canonical import CANONICAL_SCHEMA_VERSION
 from airpiano.render.artifact import load_artifact
@@ -36,29 +36,27 @@ class _TinyModel(nn.Module):
         return self.bias.expand(batch, frames, chords.shape[1])
 
 
-class RealtimeTest(unittest.TestCase):
+class SplitSongInputTest(unittest.TestCase):
     def test_empty_split_does_not_construct_components(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             project = Path(directory)
             split = project / "empty.txt"
             split.write_text("", encoding="utf-8")
-            config = OmegaConf.create(
-                {
-                    "output": {"dir": str(project)},
-                    "realtime": {
-                        "split_file": str(split),
-                        "checkpoint": "checkpoints/last.pt",
-                        "output_dir": str(project / "output"),
-                        "overwrite": False,
-                    },
-                }
-            )
+            config = OmegaConf.create({})
             with (
-                patch.object(realtime_stage, "instantiate") as instantiate,
+                patch.object(song_input_stage, "instantiate") as instantiate,
                 patch.object(data, "build_data_components") as build_components,
             ):
-                realtime_stage.realtime(config)
+                rows = list(
+                    song_input_stage.iter_split_songs(
+                        config,
+                        split,
+                        overwrite=False,
+                        label="test",
+                    )
+                )
 
+            self.assertEqual(rows, [])
             instantiate.assert_not_called()
             build_components.assert_not_called()
 
@@ -106,13 +104,14 @@ class RealtimeTest(unittest.TestCase):
 
             canonicalizer = Canonicalizer()
             with patch.object(
-                realtime_stage, "instantiate", return_value=canonicalizer
+                song_input_stage, "instantiate", return_value=canonicalizer
             ) as instantiate:
                 rows = list(
-                    realtime_stage.iter_split_songs(
+                    song_input_stage.iter_split_songs(
                         config,
                         split,
                         overwrite=False,
+                        label="test",
                         components=components,
                     )
                 )
@@ -162,15 +161,16 @@ class RealtimeTest(unittest.TestCase):
             )
 
             with patch.object(
-                realtime_stage,
+                song_input_stage,
                 "instantiate",
                 return_value=canonicalizer,
             ) as instantiate:
                 rows = list(
-                    realtime_stage.iter_split_songs(
+                    song_input_stage.iter_split_songs(
                         config,
                         split,
                         overwrite=False,
+                        label="test",
                         components=components,
                     )
                 )
@@ -213,21 +213,22 @@ class RealtimeTest(unittest.TestCase):
                     raise ValueError("malformed cache")
 
             with patch.object(
-                realtime_stage,
+                song_input_stage,
                 "instantiate",
                 return_value=MalformedCanonicalizer(),
             ):
                 with self.assertRaisesRegex(ValueError, "malformed cache"):
                     list(
-                        realtime_stage.iter_split_songs(
+                        song_input_stage.iter_split_songs(
                             config,
                             split,
                             overwrite=False,
+                            label="test",
                             components={"unused": object()},
                         )
                     )
 
-    def test_realtime_forwards_available_beat_files(self) -> None:
+    def test_configured_beat_files_are_required(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             for name in ("midi", "beats", "raw", "canonical"):
@@ -275,30 +276,29 @@ class RealtimeTest(unittest.TestCase):
             canonicalizer = SimpleNamespace(run=lambda *args, **kwargs: None)
 
             with patch.object(
-                realtime_stage,
+                song_input_stage,
                 "instantiate",
                 return_value=canonicalizer,
             ):
                 rows = list(
-                    realtime_stage.iter_split_songs(
+                    song_input_stage.iter_split_songs(
                         config,
                         split,
                         overwrite=False,
+                        label="test",
                         components=components,
                     )
                 )
 
         self.assertEqual(
             rows,
-            [(1, 2, song, components), (2, 2, song, components)],
+            [(1, 2, song, components)],
         )
-        self.assertEqual(len(pairs), 2)
+        self.assertEqual(len(pairs), 1)
         self.assertEqual(pairs[0].record_id, "complete")
         self.assertEqual(pairs[0].beat_path, beat_path)
-        self.assertEqual(pairs[1].record_id, "missing-beats")
-        self.assertIsNone(pairs[1].beat_path)
 
-    def test_composes_preprocessors_and_dumps_renderable_artifact(self) -> None:
+    def test_test_stage_prepares_split_and_dumps_nested_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             project = root / "project"
@@ -334,7 +334,7 @@ class RealtimeTest(unittest.TestCase):
             checkpoint.parent.mkdir(parents=True)
             checkpoint.write_bytes(b"checkpoint loading is patched")
 
-            output_root = project / "realtime"
+            output_root = project / "inference" / "test"
             run_order: list[tuple[str, str]] = []
             test_case = self
 
@@ -395,7 +395,7 @@ class RealtimeTest(unittest.TestCase):
             config.output.dir = str(project)
             config.train.batch_size = 1
             config.train.bf16 = False
-            config.realtime.split_file = str(split)
+            config.test.split_file = str(split)
             config.data.video_root = str(video_root)
             config.data.midi_root = str(midi_root)
             config.data.raw_wilor_root = str(raw_root)
@@ -403,7 +403,7 @@ class RealtimeTest(unittest.TestCase):
             config.dataset.file_loader.pairer._target_ = (
                 "airpiano.data.files.RelativeStemPairer"
             )
-            config.realtime.overwrite = True
+            config.test.overwrite = True
 
             targets: list[str] = []
 
@@ -419,7 +419,7 @@ class RealtimeTest(unittest.TestCase):
             printed = io.StringIO()
             with (
                 patch.object(
-                    realtime_stage,
+                    song_input_stage,
                     "instantiate",
                     side_effect=instantiate_preprocessor,
                 ),
@@ -430,7 +430,7 @@ class RealtimeTest(unittest.TestCase):
                 ) as load_checkpoint,
                 redirect_stdout(printed),
             ):
-                realtime_stage.realtime(config)
+                inference.test(config)
 
             self.assertEqual(
                 targets,
@@ -448,16 +448,17 @@ class RealtimeTest(unittest.TestCase):
                     ("canonical", "take.03"),
                 ],
             )
-            self.assertEqual(load_checkpoint.call_count, 2)
-            for checkpoint_call in load_checkpoint.call_args_list:
-                self.assertEqual(
-                    checkpoint_call.args,
-                    (checkpoint.resolve(), torch.device("cpu")),
-                )
+            load_checkpoint.assert_called_once_with(
+                checkpoint.resolve(), torch.device("cpu")
+            )
             for stem in stems:
                 output_dir = output_root / stem
                 artifacts = sorted(output_dir.glob("*.npz"))
                 self.assertEqual(len(artifacts), 1)
+                self.assertEqual(
+                    artifacts[0].name,
+                    "window_000000__f000000000.npz",
+                )
                 with np.load(artifacts[0], allow_pickle=False) as payload:
                     self.assertEqual(str(payload["record_id"]), stem)
                 artifact = load_artifact(artifacts[0])
@@ -478,10 +479,10 @@ class RealtimeTest(unittest.TestCase):
                 )
                 self.assertGreater(heatmap.stat().st_size, 0)
                 self.assertGreater(sonification.stat().st_size, 0)
-                metrics = json.loads(
-                    (output_dir / "realtime_loss.json").read_text()
-                )
-                self.assertGreater(metrics["loss"], 0.0)
+            metrics = json.loads(
+                (output_root / "test_loss.json").read_text()
+            )
+            self.assertGreater(metrics["test_loss"], 0.0)
             self.assertIn("video-only", printed.getvalue())
             self.assertIn("midi-only", printed.getvalue())
 

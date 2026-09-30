@@ -146,13 +146,11 @@ class TrainTest(unittest.TestCase):
             "outputs/baseline/checkpoints/last.pt",
         )
         self.assertEqual(
-            str(config.realtime.checkpoint),
-            "outputs/baseline/checkpoints/last.pt",
+            str(config.test.output_dir),
+            "outputs/baseline/inference/test",
         )
-        self.assertEqual(
-            str(config.realtime.output_dir),
-            "outputs/baseline/realtime",
-        )
+        self.assertFalse(bool(config.test.overwrite))
+        self.assertNotIn("realtime", config)
 
     def test_smoothed_config_constructs_opt_in_postprocessor(self) -> None:
         config_directory = Path(__file__).parents[1] / "configs"
@@ -468,7 +466,7 @@ class TrainTest(unittest.TestCase):
         self.assertEqual(slicer.stride_frames, 12)
         self.assertEqual(int(config.full_song.advance_after_chords), 12)
         self.assertEqual(float(config.full_song.alignment_threshold), 0.2)
-        self.assertNotIn("root", config.realtime)
+        self.assertNotIn("realtime", config)
         self.assertNotIn("root", config.full_song)
         self.assertEqual(
             str(config.full_song.split_file),
@@ -1029,10 +1027,7 @@ class TrainTest(unittest.TestCase):
                 str(config.test.output_dir),
                 f"outputs/{name}/inference/test",
             )
-            self.assertEqual(
-                str(config.realtime.output_dir),
-                f"outputs/{name}/realtime",
-            )
+            self.assertNotIn("realtime", config)
             self.assertEqual(
                 str(config.full_song.output_dir),
                 f"outputs/{name}/full_song",

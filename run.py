@@ -12,7 +12,6 @@ from airpiano.evaluation import evaluation
 from airpiano.full_song import full_song
 from airpiano.inference import test
 from airpiano.preprocessing.pipeline import preprocess
-from airpiano.realtime import realtime
 from airpiano.render.sonify import sonify
 from airpiano.render.visualize import visualize
 from airpiano.train import train
@@ -24,7 +23,6 @@ STAGES: dict[str, StageHandler] = {
     "preprocess": preprocess,
     "train": train,
     "test": test,
-    "realtime": realtime,
     "full-song": full_song,
     "evaluation": evaluation,
     "visualize": visualize,

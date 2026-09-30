@@ -27,16 +27,16 @@ class RunTest(unittest.TestCase):
         self.assertIn("ragged_to_canonical", result.stdout)
 
     def test_dispatch_passes_the_same_config_to_only_the_selected_handler(self) -> None:
-        config = OmegaConf.create({"stage": "realtime", "sentinel": {"value": 1}})
+        config = OmegaConf.create({"stage": "test", "sentinel": {"value": 1}})
         handlers = {name: Mock() for name in app.STAGES}
 
         with patch.object(app, "STAGES", handlers):
             app.main.__wrapped__(config)
 
-        handlers["realtime"].assert_called_once_with(config)
-        self.assertIs(handlers["realtime"].call_args.args[0], config)
+        handlers["test"].assert_called_once_with(config)
+        self.assertIs(handlers["test"].call_args.args[0], config)
         for name, handler in handlers.items():
-            if name != "realtime":
+            if name != "test":
                 handler.assert_not_called()
 
     def test_dispatches_full_song_stage(self) -> None:
@@ -87,7 +87,7 @@ class RunTest(unittest.TestCase):
         handlers["preprocess"].assert_called_once_with(config)
         handlers["train"].assert_called_once_with(config)
         handlers["test"].assert_called_once_with(config)
-        for name in ("realtime", "evaluation", "visualize", "sonify"):
+        for name in ("evaluation", "visualize", "sonify"):
             handlers[name].assert_not_called()
 
     def test_dispatches_full_song_then_evaluation(self) -> None:
@@ -105,7 +105,7 @@ class RunTest(unittest.TestCase):
 
     def test_stage_list_stops_after_a_handler_failure(self) -> None:
         config = OmegaConf.create(
-            {"stage": ["preprocess", "train", "realtime"]}
+            {"stage": ["preprocess", "train", "full-song"]}
         )
         handlers = {name: Mock() for name in app.STAGES}
         handlers["train"].side_effect = RuntimeError("training failed")
@@ -117,9 +117,14 @@ class RunTest(unittest.TestCase):
         handlers["preprocess"].assert_called_once_with(config)
         handlers["train"].assert_called_once_with(config)
         handlers["test"].assert_not_called()
-        handlers["realtime"].assert_not_called()
+        handlers["full-song"].assert_not_called()
         handlers["visualize"].assert_not_called()
         handlers["sonify"].assert_not_called()
+
+    def test_removed_realtime_stage_is_unknown(self) -> None:
+        self.assertNotIn("realtime", app.STAGES)
+        with self.assertRaises(KeyError):
+            app.main.__wrapped__(OmegaConf.create({"stage": "realtime"}))
 
     def test_unknown_stage_fails_at_dispatch_lookup(self) -> None:
         with self.assertRaises(KeyError):

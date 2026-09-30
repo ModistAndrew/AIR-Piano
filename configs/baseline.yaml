@@ -129,11 +129,6 @@ test:
   split_file: ${data.splits.test}
   checkpoint: ${output.dir}/checkpoints/last.pt
   output_dir: ${output.dir}/inference/test
-
-realtime:
-  split_file: null
-  checkpoint: ${output.dir}/checkpoints/last.pt
-  output_dir: ${output.dir}/realtime
   overwrite: false
 
 wandb:

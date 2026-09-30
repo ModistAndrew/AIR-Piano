@@ -387,8 +387,8 @@ class FullSongStageTest(unittest.TestCase):
             self.assertEqual(
                 [item.args[5] for item in infer.call_args_list],
                 [
-                    output_dir / "subject__performance.v1__f000000000.npz",
-                    output_dir / "second.take__f000000000.npz",
+                    output_dir / "subject/performance.v1.npz",
+                    output_dir / "second.take.npz",
                 ],
             )
             self.assertEqual(

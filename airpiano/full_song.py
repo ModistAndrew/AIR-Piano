@@ -11,9 +11,9 @@ from . import data
 from .inference import load_model_checkpoint, write_inference_artifact
 from .model.loss import alignment_probabilities, alignment_probability_loss
 from .model.transformer import AirPianoTransformer
-from .realtime import iter_split_songs
+from .song_input import iter_split_songs
 from .train import _autocast, _forward
-from .utils import resolve_path, safe_record_name, write_json
+from .utils import resolve_path, write_json
 
 
 @torch.no_grad()
@@ -153,7 +153,7 @@ def full_song(cfg: DictConfig) -> None:
             slicer,
             target_generator,
             device,
-            output_dir / safe_record_name(song.record_id, 0),
+            output_dir / f"{song.record_id}.npz",
             bf16=bool(cfg.train.bf16),
             alignment_threshold=float(cfg.full_song.alignment_threshold),
             advance_after_chords=advance_after_chords,
