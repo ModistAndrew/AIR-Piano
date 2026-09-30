@@ -608,19 +608,19 @@ manifest snapshot are intentionally excluded.
 
 ### Raw schema compatibility policy
 
-Runtime has no raw-cache compatibility layer. Any manifest whose schema is not
-`airpiano-wilor-ragged-v1`, including `pianomotion-wilor-v1`, raises a
-schema-mismatch `ValueError` in both producer reuse checks and canonicalization.
-Runtime never reuses or converts a legacy manifest.
+The raw producer writes only `airpiano-wilor-ragged-v1`. Canonicalization also
+accepts the verified, storage-compatible `pianomotion-wilor-v1` schema used by
+the legacy PianoMotion cache. Unknown schemas still raise a schema-mismatch
+`ValueError`.
 
-The consolidated PianoMotion cache contains the already migrated
-`airpiano-wilor-ragged-v1` manifests. Unknown and legacy schemas remain
-rejected; storage layout does not relax the producer or canonicalizer.
+Legacy support is read-only: producer reuse and partial-cache resumption still
+require `airpiano-wilor-ragged-v1`. This prevents the current producer from
+silently extending or rewriting a legacy manifest. The evaluation stage can
+canonicalize a complete compatible legacy cache directly.
 
 Existing canonical NPZs remain valid training inputs and are trusted when
-`overwrite=false`. However, a missing canonical file cannot be rebuilt from an
-incompatible raw cache. Either preserve the existing canonical result or
-generate current raw data from its source video in a clean root:
+`overwrite=false`. To create current-schema raw data instead, generate it from
+the source video in a clean root:
 
 ```bash
 conda run -n v2n python run.py stage=preprocess \
@@ -629,10 +629,9 @@ conda run -n v2n python run.py stage=preprocess \
 ```
 
 Using a fresh raw root is safest when old data must be retained. To replace one
-incompatible raw destination in place, use a one-record split with
+legacy raw destination in place, use a one-record split with
 `preprocess.task=video_to_ragged preprocess.overwrite=true`, then canonicalize
-it separately. The corpus migration utility is the only supported bulk
-conversion of the known legacy signature.
+it separately.
 
 ### Ragged cache to canonical pose
 
@@ -1756,7 +1755,7 @@ with `assets/splits/full/*.txt`; dataset-prefixed stems select the corpus.
 | `chunk_frames` | `512` | Effective cached frames per resumable chunk. |
 | `fast` | `false` | Enable upstream half/skip-block fast path. |
 | `compile` | `false` | Compile the backbone when fast mode is used. |
-| `ragged_to_canonical._target_` | `airpiano.preprocessing.canonical.WiLoRToCanonical` | Current raw schema to canonical NPZ. |
+| `ragged_to_canonical._target_` | `airpiano.preprocessing.canonical.WiLoRToCanonical` | Current or compatible legacy raw schema to canonical NPZ. |
 | `ragged_to_canonical.selector` | `null` | Optional ragged-detection selector; `smoothed` uses lowest wrist V followed by a `0.75` confidence cutoff. |
 | `ragged_to_canonical.postprocessor` | `null` | Optional canonical-rate `(pose, presence, fps) -> (pose, presence)` step after resampling. |
 | `ragged_to_canonical.minimum_presence` | `null` | Optional final mean-presence gate evaluated after resampling and before writing. |
@@ -1998,7 +1997,7 @@ conda run -n v2n python -c \
 | Missing split file | Generate PianoMotion lists with `scripts/convert_legacy_splits.py` or PianoVAM lists with `scripts/convert_pianovam_splits.py`, matching the selected config. |
 | Missing checkpoint, detector, or MANO file | Copy the three ignored `assets/wilor` binaries as independent regular files after accepting their licenses, then verify their hashes. |
 | `ffprobe`/`ffmpeg` not found or video decode fails | Verify both system executables. OpenCV is primary except AV1; FFmpeg is the fallback. |
-| Raw schema mismatch mentioning `pianomotion-wilor-v1` | Runtime intentionally rejects that cache. For the legacy PianoMotion corpus, run the documented migration; otherwise preserve canonical output or regenerate raw from video in a clean root. |
+| Raw schema mismatch mentioning `pianomotion-wilor-v1` | Canonicalization accepts this verified legacy schema, but the raw producer does not reuse or resume it. Run `ragged_to_canonical`/evaluation directly, or regenerate current raw data from video in a clean root. |
 | `[preprocess missing] ... incomplete ragged cache` | The raw directory, manifest, or success marker is absent. Resume video extraction or verify roots/stems. |
 | JSON, NumPy, key, or indexing error after both markers exist | A purportedly complete cache is corrupt or malformed. Native failure is intentional; inspect/regenerate it. |
 | Pairing reports `paired=0` | Split stems, modality roots, or canonical files do not line up. Remember extensions are appended to the full stem. |
@@ -2025,9 +2024,9 @@ conda run -n v2n python -c \
 5. Use `v2n`, GPU 1 by default, and inspect logical CUDA numbering.
 6. Verify licensed assets, video/MIDI roots, generalized split stems, and free
    disk/RAM before starting preprocessing or training.
-7. Runtime must reject unsupported raw schemas. Use the explicit PianoMotion
-   migration utility only for its recognized legacy corpus; otherwise choose a
-   fresh raw root rather than adding silent compatibility.
+7. Canonicalization accepts only the current raw schema and the explicitly
+   verified legacy PianoMotion schema. The producer remains current-schema-only;
+   use a fresh raw root when regenerating legacy data.
 8. Preserve record-stem, raw chunk, canonical tensor, model input, checkpoint,
    and inference artifact contracts unless explicitly authorized to version
    them.

@@ -16,6 +16,10 @@ from airpiano.utils import resolve_path, write_npz
 
 
 RAW_SCHEMA_VERSION = "airpiano-wilor-ragged-v1"
+LEGACY_RAW_SCHEMA_VERSION = "pianomotion-wilor-v1"
+SUPPORTED_RAW_SCHEMA_VERSIONS = frozenset(
+    {RAW_SCHEMA_VERSION, LEGACY_RAW_SCHEMA_VERSION}
+)
 CANONICAL_SCHEMA_VERSION = "airpiano-wilor-canonical-v1"
 TARGET_FPS = 30.0
 
@@ -390,14 +394,14 @@ class WiLoRToCanonical:
     def _read_raw_sequence(
         self, raw_directory: Path
     ) -> tuple[np.ndarray, np.ndarray, float]:
-        manifest = json.loads(
-            (raw_directory / "manifest.json").read_text(encoding="utf-8")
-        )
-        if manifest["schema_version"] != RAW_SCHEMA_VERSION:
+        manifest_path = raw_directory / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        schema_version = manifest["schema_version"]
+        if schema_version not in SUPPORTED_RAW_SCHEMA_VERSIONS:
             raise ValueError(
-                f"raw WiLoR cache schema mismatch at "
-                f"{raw_directory / 'manifest.json'}: expected "
-                f"{RAW_SCHEMA_VERSION!r}, found {manifest['schema_version']!r}"
+                f"raw WiLoR cache schema mismatch at {manifest_path}: expected "
+                f"one of {sorted(SUPPORTED_RAW_SCHEMA_VERSIONS)!r}, found "
+                f"{schema_version!r}"
             )
         frame_count = int(manifest["decoded_frame_count"])
         source_fps = float(manifest["video"]["fps"])

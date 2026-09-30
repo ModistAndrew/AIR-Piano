@@ -14,6 +14,7 @@ from omegaconf import OmegaConf
 from airpiano.preprocessing import pipeline
 from airpiano.preprocessing.canonical import (
     CANONICAL_SCHEMA_VERSION,
+    LEGACY_RAW_SCHEMA_VERSION,
     RAW_SCHEMA_VERSION,
     InsufficientHandPresenceError,
     LowestWristHandSelector,
@@ -654,15 +655,39 @@ class PreprocessingTest(unittest.TestCase):
             with self.assertRaises(json.JSONDecodeError):
                 WiLoRToCanonical().run(raw, root / "output.npz")
 
-    def test_canonicalizer_rejects_legacy_raw_schema(self) -> None:
+    def test_canonicalizer_accepts_compatible_legacy_raw_schema(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            current_raw = root / "current_raw"
+            legacy_raw = root / "legacy_raw"
+            current_output = root / "current.npz"
+            legacy_output = root / "legacy.npz"
+            _write_raw_cache(current_raw)
+            _write_raw_cache(
+                legacy_raw,
+                schema_version=LEGACY_RAW_SCHEMA_VERSION,
+            )
+
+            WiLoRToCanonical().run(current_raw, current_output)
+            WiLoRToCanonical().run(legacy_raw, legacy_output)
+
+            with (
+                np.load(current_output, allow_pickle=False) as current,
+                np.load(legacy_output, allow_pickle=False) as legacy,
+            ):
+                self.assertEqual(set(current.files), set(legacy.files))
+                for name in current.files:
+                    np.testing.assert_array_equal(current[name], legacy[name])
+
+    def test_canonicalizer_rejects_unknown_raw_schema(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             raw = root / "raw"
-            _write_raw_cache(raw, schema_version="pianomotion-wilor-v1")
+            _write_raw_cache(raw, schema_version="unknown-wilor-v1")
 
             with self.assertRaisesRegex(
                 ValueError,
-                "airpiano-wilor-ragged-v1.*pianomotion-wilor-v1",
+                "schema mismatch.*unknown-wilor-v1",
             ):
                 WiLoRToCanonical().run(raw, root / "output.npz")
 
