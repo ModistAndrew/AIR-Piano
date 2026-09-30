@@ -1,4 +1,4 @@
-"""Tests for split-based full-song evaluation."""
+"""Tests for artifact-based alignment evaluation."""
 
 from __future__ import annotations
 
@@ -6,8 +6,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 import numpy as np
 from omegaconf import OmegaConf
@@ -16,7 +15,6 @@ import airpiano.evaluation as evaluation_stage
 from airpiano.evaluation import (
     aggregate_alignment_metrics,
     calculate_alignment_metrics,
-    iter_evaluation_songs,
 )
 from airpiano.render.artifact import InferenceArtifact
 
@@ -27,33 +25,52 @@ TOLERANCES = (0, 2, 4, 8, 16)
 def _artifact(
     predicted_frames: list[int | None],
     *,
+    target_frames: list[int | None] | None = None,
     frame_count: int = 10,
     fps: float = 10.0,
     threshold: float = 0.5,
+    record_id: str = "subject/take",
+    frame_start: int = 0,
 ) -> InferenceArtifact:
     chord_count = len(predicted_frames)
     probability = np.zeros((frame_count, chord_count), dtype=np.float32)
+    target = np.zeros_like(probability)
+    if target_frames is None:
+        target_frames = list(range(1, 3 * chord_count + 1, 3))
     for chord_slot, frame in enumerate(predicted_frames):
         if frame is not None:
             probability[frame, chord_slot] = threshold
+    for chord_slot, frame in enumerate(target_frames):
+        if frame is not None:
+            target[frame, chord_slot] = 1.0
     return InferenceArtifact(
         probability=probability,
-        target=np.zeros_like(probability),
+        target=target,
         frame_mask=np.ones(frame_count, dtype=np.bool_),
         chord_mask=np.ones(chord_count, dtype=np.bool_),
         chord_pitches=np.zeros((chord_count, 128), dtype=np.bool_),
         chord_ids=np.arange(chord_count, dtype=np.int64),
         fps=fps,
-        record_id="subject/take",
-        frame_start=0,
+        record_id=record_id,
+        frame_start=frame_start,
     )
 
 
-def _write_artifact(path: Path) -> None:
-    artifact = _artifact([1, 4, 7])
+def _write_artifact(
+    path: Path,
+    *,
+    record_id: str = "subject/take",
+    frame_start: int = 0,
+) -> None:
+    artifact = _artifact(
+        [1, 4, 7],
+        record_id=record_id,
+        frame_start=frame_start,
+    )
     path.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
         path,
+        schema_version=np.asarray("airpiano-inference-v1"),
         probability=artifact.probability,
         target=artifact.target,
         frame_mask=artifact.frame_mask,
@@ -63,6 +80,7 @@ def _write_artifact(path: Path) -> None:
         fps=np.asarray(artifact.fps),
         record_id=np.asarray(artifact.record_id),
         frame_start=np.asarray(artifact.frame_start),
+        loss=np.asarray(0.25),
     )
 
 
@@ -72,7 +90,6 @@ class AlignmentMetricTest(unittest.TestCase):
         artifact.probability[2, 0] = 0.5
         metrics = calculate_alignment_metrics(
             artifact,
-            [0.1, 0.4, 0.7],
             onset_threshold=0.5,
             tolerances_frames=TOLERANCES,
         )
@@ -86,7 +103,6 @@ class AlignmentMetricTest(unittest.TestCase):
     def test_missing_chord_lowers_coverage_and_ratios(self) -> None:
         metrics = calculate_alignment_metrics(
             _artifact([1, None, 8]),
-            [0.1, 0.4, 0.7],
             onset_threshold=0.5,
             tolerances_frames=TOLERANCES,
         )
@@ -101,7 +117,6 @@ class AlignmentMetricTest(unittest.TestCase):
     def test_tolerances_are_inclusive_and_alignment_stays_monotonic(self) -> None:
         metrics = calculate_alignment_metrics(
             _artifact([1, 8, 3]),
-            [0.1, 0.4, 0.7],
             onset_threshold=0.5,
             tolerances_frames=TOLERANCES,
         )
@@ -112,16 +127,35 @@ class AlignmentMetricTest(unittest.TestCase):
         self.assertEqual(metrics["c_ar"]["4"], 1.0)
         self.assertAlmostEqual(metrics["onset_mae_frames"], 8 / 3)
 
-    def test_micro_and_macro_use_different_record_weighting(self) -> None:
+    def test_target_uses_earliest_positive_peak_and_excludes_zero_columns(
+        self,
+    ) -> None:
+        artifact = _artifact(
+            [1, 0],
+            target_frames=[1, None],
+            frame_count=4,
+            frame_start=20,
+        )
+        artifact.target[2, 0] = 1.0
+        metrics = calculate_alignment_metrics(
+            artifact,
+            onset_threshold=0.5,
+            tolerances_frames=TOLERANCES,
+        )
+
+        self.assertEqual(metrics["ground_truth_chord_count"], 1)
+        self.assertEqual(metrics["detected_chord_count"], 1)
+        self.assertEqual(metrics["onset_mae_frames"], 0.0)
+        self.assertEqual(metrics["chord_acc"], 1.0)
+
+    def test_micro_and_macro_use_different_artifact_weighting(self) -> None:
         first = calculate_alignment_metrics(
             _artifact([1, None, 8]),
-            [0.1, 0.4, 0.7],
             onset_threshold=0.5,
             tolerances_frames=TOLERANCES,
         )
         second = calculate_alignment_metrics(
             _artifact([1], frame_count=3),
-            [0.1],
             onset_threshold=0.5,
             tolerances_frames=TOLERANCES,
         )
@@ -131,13 +165,12 @@ class AlignmentMetricTest(unittest.TestCase):
 
         self.assertAlmostEqual(micro["chord_coverage"], 3 / 4)
         self.assertAlmostEqual(macro["chord_coverage"], 5 / 6)
-        self.assertEqual(macro["record_count"], 2)
-        self.assertEqual(macro["onset_mae_record_count"], 2)
+        self.assertEqual(macro["artifact_count"], 2)
+        self.assertEqual(macro["onset_mae_artifact_count"], 2)
 
     def test_no_detections_keep_zero_rates_and_null_mae(self) -> None:
         metrics = calculate_alignment_metrics(
             _artifact([None]),
-            [0.1],
             onset_threshold=0.5,
             tolerances_frames=TOLERANCES,
         )
@@ -148,217 +181,97 @@ class AlignmentMetricTest(unittest.TestCase):
         self.assertIsNone(micro["onset_mae_frames"])
         self.assertEqual(macro["chord_coverage"], 0.0)
         self.assertIsNone(macro["onset_mae_frames"])
-        self.assertEqual(macro["onset_mae_record_count"], 0)
-
-
-class EvaluationInputTest(unittest.TestCase):
-    def test_streams_canonical_records_and_lazily_falls_back_to_video(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            records = ["subject/a", "subject/b"]
-            for record in records:
-                video = root / "video" / f"{record}.mp4"
-                midi = root / "midi" / f"{record}.mid"
-                video.parent.mkdir(parents=True, exist_ok=True)
-                midi.parent.mkdir(parents=True, exist_ok=True)
-                video.touch()
-                midi.touch()
-            beat = root / "beats" / "subject/b.txt"
-            beat.parent.mkdir(parents=True)
-            beat.touch()
-
-            config = OmegaConf.create(
-                {
-                    "data": {
-                        "video_root": str(root / "video"),
-                        "midi_root": str(root / "midi"),
-                        "raw_wilor_root": str(root / "raw"),
-                        "hand_root": str(root / "hands"),
-                        "beat_root": str(root / "beats"),
-                    },
-                    "preprocess": {
-                        "ragged_to_canonical": {"kind": "canonical"},
-                        "video_to_ragged": {"kind": "video"},
-                    },
-                }
-            )
-            canonical = Mock()
-            canonical.run.side_effect = [
-                root / "hands/subject/a.npz",
-                FileNotFoundError("raw missing"),
-                root / "hands/subject/b.npz",
-            ]
-            video = Mock()
-            reader = Mock(side_effect=lambda pair, *_: pair)
-            components = {
-                "file_loader": SimpleNamespace(
-                    reader=SimpleNamespace(read=reader)
-                ),
-                "midi_loader": object(),
-                "hand_loader": object(),
-            }
-
-            with patch.object(
-                evaluation_stage,
-                "instantiate",
-                side_effect=[canonical, video],
-            ) as instantiate:
-                loaded = list(
-                    iter_evaluation_songs(
-                        config,
-                        records,
-                        overwrite=False,
-                        components=components,
-                    )
-                )
-
-            self.assertEqual([item[0] for item in loaded], [1, 2])
-            self.assertEqual(instantiate.call_count, 2)
-            video.run.assert_called_once_with(
-                root / "video/subject/b.mp4",
-                root / "raw/subject/b",
-                False,
-            )
-            self.assertIsNone(loaded[0][2].beat_path)
-            self.assertEqual(loaded[1][2].beat_path, beat)
+        self.assertEqual(macro["onset_mae_artifact_count"], 0)
 
 
 class EvaluationStageTest(unittest.TestCase):
     @staticmethod
     def _config(root: Path, remove: bool) -> object:
-        split = root / "splits" / "valid.txt"
-        split.parent.mkdir(parents=True)
-        split.write_text("subject/take\n", encoding="utf-8")
         return OmegaConf.create(
             {
-                "device": "cpu",
-                "alignment_loss": "bce",
-                "train": {"bf16": False},
                 "evaluation": {
-                    "split_file": str(split),
-                    "output_dir": str(root / "eval"),
-                    "checkpoint": str(root / "last.pt"),
-                    "overwrite": False,
-                    "alignment_threshold": 0.2,
-                    "advance_after_chords": 2,
+                    "root": str(root / "artifacts"),
+                    "output_path": str(root / "metrics.json"),
                     "onset_threshold": 0.5,
                     "tolerances_frames": list(TOLERANCES),
                     "remove_inference_artifacts": remove,
-                },
+                }
             }
         )
 
     @staticmethod
-    def _song() -> object:
-        return SimpleNamespace(
-            record_id="subject/take",
-            hands=np.zeros((10, 1), dtype=np.float32),
-            chords=[
-                SimpleNamespace(time=0.1),
-                SimpleNamespace(time=0.4),
-                SimpleNamespace(time=0.7),
-            ],
-            fps=10.0,
+    def _populate(root: Path) -> list[Path]:
+        paths = [
+            root / "artifacts" / "first.npz",
+            root / "artifacts" / "nested" / "second.npz",
+            root / "artifacts" / "nested" / "third.npz",
+        ]
+        _write_artifact(paths[0], record_id="subject/a", frame_start=0)
+        _write_artifact(paths[1], record_id="subject/a", frame_start=5)
+        _write_artifact(paths[2], record_id="subject/b", frame_start=0)
+        (root / "artifacts" / "test_loss.json").write_text(
+            '{"test_loss": 0.25}\n',
+            encoding="utf-8",
         )
+        return paths
 
-    def _run(self, root: Path, remove: bool) -> Path:
-        config = self._config(root, remove)
-        song = self._song()
+    def test_recursively_evaluates_each_artifact_and_preserves_by_default(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            paths = self._populate(root)
+            config = self._config(root, False)
 
-        def infer(*args, **kwargs):
-            del kwargs
-            _write_artifact(Path(args[5]))
-            return 0.25, 30, 2
-
-        with (
-            patch.object(
-                evaluation_stage.data,
-                "build_data_components",
-                return_value={"slicer": object(), "target_generator": object()},
-            ),
-            patch.object(
-                evaluation_stage,
-                "load_model_checkpoint",
-                return_value=object(),
-            ) as load_model,
-            patch.object(
-                evaluation_stage,
-                "iter_evaluation_songs",
-                return_value=iter([(1, 1, song)]),
-            ),
-            patch.object(
-                evaluation_stage,
-                "infer_full_song",
-                side_effect=infer,
-            ) as infer_song,
-        ):
             evaluation_stage.evaluation(config)
 
-        load_model.assert_called_once()
-        infer_song.assert_called_once()
-        return root / "eval" / "valid.json"
+            self.assertTrue(all(path.is_file() for path in paths))
+            report = json.loads(
+                (root / "metrics.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(report["schema_version"], "airpiano-evaluation-v2")
+            self.assertEqual(report["artifact_count"], 3)
+            self.assertEqual(report["unique_record_count"], 2)
+            self.assertEqual(report["unique_record_ids"], ["subject/a", "subject/b"])
+            self.assertEqual(report["micro"]["ground_truth_chord_count"], 9)
+            self.assertEqual(report["macro"]["artifact_count"], 3)
+            self.assertFalse(report["inference_artifacts_removed"])
+            self.assertEqual(
+                [item["artifact_path"] for item in report["artifacts"]],
+                ["first.npz", "nested/second.npz", "nested/third.npz"],
+            )
 
-    def test_writes_split_metrics_and_optionally_removes_artifacts(self) -> None:
-        for remove in (True, False):
-            with self.subTest(
-                remove=remove
-            ), tempfile.TemporaryDirectory() as directory:
-                root = Path(directory)
-                metrics_path = self._run(root, remove)
-                artifact_dir = root / "eval" / "valid"
-                self.assertTrue(metrics_path.is_file())
-                self.assertEqual(artifact_dir.exists(), not remove)
-                report = json.loads(metrics_path.read_text(encoding="utf-8"))
-                self.assertEqual(report["split_name"], "valid")
-                self.assertEqual(report["full_song_loss"], 0.25)
-                self.assertEqual(report["micro"]["chord_acc"], 1.0)
-                self.assertEqual(report["inference_artifacts_removed"], remove)
+    def test_cleanup_removes_only_npzs_after_report_write(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            paths = self._populate(root)
+            config = self._config(root, True)
+
+            evaluation_stage.evaluation(config)
+
+            self.assertTrue((root / "metrics.json").is_file())
+            self.assertTrue((root / "artifacts" / "test_loss.json").is_file())
+            self.assertTrue(all(not path.exists() for path in paths))
+            report = json.loads(
+                (root / "metrics.json").read_text(encoding="utf-8")
+            )
+            self.assertTrue(report["inference_artifacts_removed"])
 
     def test_write_failure_preserves_inference_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            paths = self._populate(root)
             config = self._config(root, True)
-            song = self._song()
 
-            def infer(*args, **kwargs):
-                del kwargs
-                _write_artifact(Path(args[5]))
-                return 0.25, 30, 2
-
-            with (
-                patch.object(
-                    evaluation_stage.data,
-                    "build_data_components",
-                    return_value={
-                        "slicer": object(),
-                        "target_generator": object(),
-                    },
-                ),
-                patch.object(
-                    evaluation_stage,
-                    "load_model_checkpoint",
-                    return_value=object(),
-                ),
-                patch.object(
-                    evaluation_stage,
-                    "iter_evaluation_songs",
-                    return_value=iter([(1, 1, song)]),
-                ),
-                patch.object(
-                    evaluation_stage,
-                    "infer_full_song",
-                    side_effect=infer,
-                ),
-                patch.object(
-                    evaluation_stage,
-                    "write_json",
-                    side_effect=OSError("write failed"),
-                ),
+            with patch.object(
+                evaluation_stage,
+                "write_json",
+                side_effect=OSError("write failed"),
             ):
                 with self.assertRaisesRegex(OSError, "write failed"):
                     evaluation_stage.evaluation(config)
 
-            self.assertTrue((root / "eval" / "valid").is_dir())
+            self.assertTrue(all(path.is_file() for path in paths))
 
 
 if __name__ == "__main__":

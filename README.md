@@ -1499,15 +1499,17 @@ conda run -n v2n python run.py stage=test
 ```
 
 Choose another compatible checkpoint and, optionally, another artifact
-directory without retraining:
+directory or split without retraining:
 
 ```bash
 conda run -n v2n python run.py stage=test \
+  test.split_file=assets/splits/PianoYTSeg/all.txt \
   test.checkpoint=checkpoints/best.pt \
   test.output_dir=inference/test-best
 ```
 
-Both paths are relative to `outputs/baseline/` unless given as absolute paths.
+The split path is relative to the AirPiano repository root unless absolute.
+Artifact and checkpoint paths follow the normal configured path resolution.
 The stage writes `test_loss.json` beside its per-slice NPZ files and does not
 open a W&B run.
 
@@ -1531,60 +1533,55 @@ online factor of 10.
 
 ### Realtime batch
 
-Place synchronized pairs in the configured root's `video/` and `midi/`
-directories. Matching is by the complete basename, so dotted names are
-preserved:
+Realtime reads root-relative record stems from `realtime.split_file`, using
+the same modality roots as train and test. For example, this split entry:
 
 ```text
-<runtime-root>/
-├── video/performance.v2.mp4
-├── midi/performance.v2.mid
-├── wilor/performance.v2/
-└── airpiano_wilor_2p5d_30fps/performance.v2.npz
-
-<output.dir>/
-└── realtime/performance.v2/
+PianoYTSeg/-HKBJqNZAC8/-HKBJqNZAC8_seq_0000
 ```
 
-Run every direct pair with the default `last.pt` checkpoint:
+resolves to `<data.video_root>/<stem>.mp4`,
+`<data.midi_root>/<stem>.mid`, `<data.raw_wilor_root>/<stem>/`, and
+`<data.hand_root>/<stem>.npz`. Nested and dotted stems are preserved.
+
+Run realtime-style window inference on PianoYTSeg with the default `last.pt`
+checkpoint:
 
 ```bash
 conda run -n v2n python run.py stage=realtime \
-  realtime.root=/data/performance
+  realtime.split_file=assets/splits/PianoYTSeg/all.txt
 ```
 
-With the baseline config, outputs for this example are written below
-`outputs/baseline/realtime/performance.v2/`. Video or MIDI files without a
-matching counterpart are reported and skipped. Only direct files inside the
-two modality directories are scanned. Canonicalization is attempted first, so
-an existing canonical file or ragged cache avoids constructing WiLoR. If the
-ragged input is missing, realtime runs video-to-ragged and retries
-canonicalization. Components are reused across the sorted pairs. Override
-`realtime.output_dir` to select another inference destination.
-
-Select a different root or checkpoint as needed:
+Relative split paths resolve from the AirPiano repository root; absolute split
+paths are used unchanged. To relocate a standard installation, override the
+source and processed roots:
 
 ```bash
 conda run -n v2n python run.py stage=realtime \
-  realtime.root=/data/performance \
-  realtime.checkpoint=checkpoints/best.pt
+  realtime.split_file=/data/lists/custom.txt \
+  data.root=/data/AirPianoFull \
+  data.processed_root=/cache/AirPianoFull
 ```
 
-Each basename becomes `record_id`. Realtime calls the same configured
-`VideoToWiLoR`, `WiLoRToCanonical`, `HandLoader`, slicer, target generator, and
-checkpoint inference as the offline workflow. Every video/MIDI pair must
-describe the same performance and timeline.
+Individual modality roots can be overridden when the layout differs. Records
+missing MIDI are reported and skipped. An existing canonical cache is reusable
+without the source video; otherwise an existing raw cache is canonicalized.
+Video-to-WiLoR runs lazily only when both caches are unavailable, and a missing
+fallback video is reported and skipped. Malformed caches and inference errors
+remain fatal. Outputs retain each nested record ID under
+`realtime.output_dir`.
 
 ### Causal full-song inference
 
-The `full-song` stage accepts the same synchronized MP4/MID layout and
-preprocessing cache structure as `realtime`. It supports only chord-mode
-slicing and checkpoints trained with causal frame attention:
+The `full-song` stage uses the same split and modality-root semantics as
+`realtime`. It supports only chord-mode slicing and checkpoints trained with
+causal frame attention:
 
 ```bash
 conda run -n v2n python run.py --config-name causal_chord24 \
   stage=full-song \
-  full_song.root=/data/performance
+  full_song.split_file=assets/splits/PianoYTSeg/all.txt \
+  'full_song.output_dir=${output.dir}/eval/PianoYTSeg'
 ```
 
 For every arriving video frame, the controller forwards only the current frame
@@ -1597,32 +1594,51 @@ video. Override `full_song.alignment_threshold` or
 `full_song.advance_after_chords` to change the trailing trigger width.
 
 Outputs are written directly under `full_song.output_dir`, which defaults to
-`${output.dir}/full_song`, one NPZ per input basename, with a weighted aggregate
+`${output.dir}/full_song`, one NPZ per split record, with a weighted aggregate
 loss in `full_song_loss.json`.
 
 ### Full-song evaluation
 
-The `evaluation` stage runs causal full-song inference over every record in a
-split and reports frame- and chord-level alignment metrics:
+The `evaluation` stage is independent of inference. It recursively scans
+`evaluation.root` for inference NPZs produced by test, realtime, or full-song
+and reports frame- and chord-level alignment metrics:
 
 ```bash
 conda run -n v2n python run.py --config-name causal_chord24 \
-  stage=evaluation
+  'stage=[full-song,evaluation]' \
+  full_song.split_file=assets/splits/PianoYTSeg/all.txt \
+  'full_song.output_dir=${output.dir}/eval/PianoYTSeg' \
+  'evaluation.root=${full_song.output_dir}'
 ```
 
-The default split is `assets/splits/pianomotion10mseg/valid.txt`. Its stem
-controls the output names: inference artifacts are written under
-`${output.dir}/eval/valid/`, and the persistent report is
-`${output.dir}/eval/valid.json`. Artifacts are removed after the JSON is
-successfully written by default; set
-`evaluation.remove_inference_artifacts=false` to retain them.
+By default, the causal preset evaluates `${full_song.output_dir}` and writes
+`${evaluation.root}.json`. Producer-specific loss files such as
+`full_song_loss.json`, `realtime_loss.json`, and `test_loss.json` remain
+separate. Inference NPZs are preserved by default; set
+`evaluation.remove_inference_artifacts=true` to remove the discovered NPZs
+only after the metrics JSON is written successfully.
 
-`ChordAcc` compares the ground-truth and predicted active chord on every frame
-from the first ground-truth onset through the video end. `C-AR` reports the
-fraction of all ground-truth chords detected within 0, 2, 4, 8, and 16 frames.
-The report also contains onset MAE in frames and seconds, chord coverage,
-per-record results, pooled micro metrics, and equal-record macro metrics. Null
-predictions lower `C-AR` and coverage but do not enter onset MAE.
+Evaluate any existing artifact tree independently:
+
+```bash
+conda run -n v2n python run.py --config-name causal_chord24 \
+  stage=evaluation \
+  evaluation.root=outputs/causal_chord24/realtime \
+  evaluation.output_path=outputs/causal_chord24/realtime.json
+```
+
+For evaluated frames `F`, ground-truth chords `G`, and detected chords
+`D`, the report uses `ChordAcc = correct_active_frames / |F|`,
+`C-AR(delta) = |{g in G: |pred(g)-gt(g)| <= delta}| / |G|`,
+`coverage = |D| / |G|`, and
+`onset_MAE = sum(|pred(g)-gt(g)| for g in D) / |D|`. The tolerances are
+inclusive. Ground truth is the earliest positive maximum in each target
+column; all-zero columns are excluded. Null predictions lower `C-AR` and
+coverage but do not enter MAE.
+
+The JSON contains per-artifact results, pooled micro metrics, and
+equal-artifact macro metrics. Overlapping test and realtime windows remain
+separate evaluation artifacts.
 
 ### Visualize and sonify batches
 
@@ -1828,28 +1844,25 @@ loss intentionally remains fixed in code.
 | `wandb.name` | `${output.project_name}` | Run name shared with the local output directory. |
 | `wandb.entity` | `null` | Optional team/entity. |
 | `wandb.dir` | `${output.dir}/logs` | W&B parent directory. |
+| `test.split_file` | `${data.splits.test}` | Root-relative record stems consumed by `stage=test`; relative list paths resolve from the repository root. |
 | `test.checkpoint` | `${output.dir}/checkpoints/last.pt` | Checkpoint loaded by `stage=test`. |
 | `test.output_dir` | `${output.dir}/inference/test` | Test artifact and loss directory. |
-| `realtime.root` | `null` | AirPiano-relative or absolute root containing matching `video/*.mp4` and `midi/*.mid` files. |
+| `realtime.split_file` | `null` | Required split list for realtime-style window inference. |
 | `realtime.checkpoint` | `${output.dir}/checkpoints/last.pt` | Default AirPiano checkpoint. |
 | `realtime.output_dir` | `${output.dir}/realtime` | Per-record inference artifact and loss parent directory. |
 | `realtime.overwrite` | `false` | Raw and canonical preprocessing reuse policy. |
-| `full_song.root` | `null` | AirPiano-relative or absolute root containing matching `video/*.mp4` and `midi/*.mid` files. |
+| `full_song.split_file` | `assets/splits/pianomotion10mseg/valid.txt` | Ordered record list for causal full-song inference. |
 | `full_song.checkpoint` | `${output.dir}/checkpoints/last.pt` | Causal AirPiano checkpoint loaded once for the stage. |
 | `full_song.output_dir` | `${output.dir}/full_song` | Full-song inference artifact and aggregate loss directory. |
 | `full_song.overwrite` | `false` | Raw and canonical preprocessing reuse policy. |
 | `full_song.alignment_threshold` | `0.2` | Inclusive running-peak confidence required by any trailing trigger chord. |
 | `full_song.advance_after_chords` | slicer stride | Number of trailing chord slots checked to trigger advancement. |
 | `visualize.root` | `${output.dir}/inference/test` | Filesystem tree recursively scanned for NPZs and receiving adjacent PNG files. |
-| `evaluation.split_file` | `assets/splits/pianomotion10mseg/valid.txt` | Split evaluated by causal full-song inference; its filename stem selects output names. |
-| `evaluation.output_dir` | `${output.dir}/eval` | Parent of the temporary split artifact directory and persistent split JSON. |
-| `evaluation.checkpoint` | `${full_song.checkpoint}` | Causal checkpoint loaded once for the evaluation run. |
-| `evaluation.overwrite` | `${full_song.overwrite}` | Raw and canonical preprocessing reuse policy; inference NPZs are always rewritten. |
-| `evaluation.alignment_threshold` | `${full_song.alignment_threshold}` | Running-peak threshold used by the full-song window controller. |
-| `evaluation.advance_after_chords` | `${full_song.advance_after_chords}` | Number of trailing chord slots checked by the window controller. |
+| `evaluation.root` | `${full_song.output_dir}` | Filesystem tree recursively scanned for inference NPZs. |
+| `evaluation.output_path` | `${evaluation.root}.json` | Persistent metrics report; override when evaluating an artifact directory whose sibling path is unsuitable. |
 | `evaluation.onset_threshold` | `${sonify.threshold}` | Inclusive peak threshold below which a chord prediction is null. |
 | `evaluation.tolerances_frames` | `[0, 2, 4, 8, 16]` | Inclusive frame tolerances reported by `C-AR`. |
-| `evaluation.remove_inference_artifacts` | `true` | Remove the split's NPZ directory after its metrics JSON is written successfully. |
+| `evaluation.remove_inference_artifacts` | `false` | Remove discovered NPZs after successful report serialization; loss JSON files and directories remain. |
 | `sonify.root` | `${output.dir}/inference/test` | Filesystem tree recursively scanned for NPZs and receiving adjacent MIDI sidecars plus final onset-delta JSON and PNG summaries. |
 | `sonify.midi_root` | `${data.midi_root}` | Root used with the artifact `record_id` to locate source MIDI. |
 | `sonify.threshold` | `0.2` | Inclusive chord peak threshold. |

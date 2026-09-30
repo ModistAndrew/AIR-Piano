@@ -10,105 +10,112 @@ from hydra.utils import instantiate
 from omegaconf import DictConfig
 
 from . import data
+from .data.files import read_record_stems
 from .inference import infer_dataset
+from .preprocessing.canonical import raw_cache_has_markers
 from .utils import resolve_path, write_json
 
 
-def iter_realtime_songs(
+def iter_split_songs(
     cfg: DictConfig,
-    root: Path,
+    split_file: str | Path,
     *,
     overwrite: bool,
     label: str = "realtime",
     components: dict[str, Any] | None = None,
 ) -> Iterator[tuple[int, int, data.Song, dict[str, Any]]]:
-    """Preprocess paired files from root video/MIDI directories."""
+    """Preprocess and stream split records through configured modality roots."""
 
-    video_root = root / "video"
-    midi_root = root / "midi"
-    beat_root = root / "beats"
-    videos = {
-        path.name[: -len(".mp4")]: path
-        for path in video_root.glob("*.mp4")
-        if path.is_file()
-    }
-    midis = {
-        path.name[: -len(".mid")]: path
-        for path in midi_root.glob("*.mid")
-        if path.is_file()
-    }
-    beats = {
-        path.name[: -len(".txt")]: path
-        for path in beat_root.glob("*.txt")
-        if path.is_file()
-    }
-    for record_id in sorted(videos.keys() - midis.keys()):
-        print(f"[{label} missing] {record_id}: {midi_root / f'{record_id}.mid'}")
-    for record_id in sorted(midis.keys() - videos.keys()):
-        print(f"[{label} missing] {record_id}: {video_root / f'{record_id}.mp4'}")
-    record_ids = sorted(videos.keys() & midis.keys())
-    if not record_ids:
+    split_path = resolve_path(split_file)
+    records = read_record_stems([split_path])
+    if not records:
         print(
-            f"[{label}] no matching pairs under {video_root} and {midi_root}",
+            f"[{label}] no records in {split_path}",
             flush=True,
         )
         return
 
-    raw_root = root / resolve_path(cfg.data.raw_wilor_root).name
-    canonical_root = root / resolve_path(cfg.data.hand_root).name
-
-    # The expensive WiLoR component is constructed only after canonicalization
-    # shows that an existing canonical or ragged cache cannot be reused.
+    video_root = resolve_path(cfg.data.video_root)
+    midi_root = resolve_path(cfg.data.midi_root)
+    raw_root = resolve_path(cfg.data.raw_wilor_root)
+    canonical_root = resolve_path(cfg.data.hand_root)
+    beat_root = (
+        resolve_path(cfg.data.beat_root)
+        if cfg.data.get("beat_root") is not None
+        else None
+    )
     video_to_ragged = None
     ragged_to_canonical = instantiate(cfg.preprocess.ragged_to_canonical)
     components = components or data.build_data_components(cfg)
-    for index, record_id in enumerate(record_ids, 1):
+    for index, record_id in enumerate(records, 1):
+        video_path = video_root / f"{record_id}.mp4"
+        midi_path = midi_root / f"{record_id}.mid"
+        if not midi_path.is_file():
+            print(f"[{label} skip] {record_id}: missing MIDI {midi_path}")
+            continue
+
         print(
-            f"{label} {index}/{len(record_ids)}: preprocess {record_id}",
+            f"{label} {index}/{len(records)}: preprocess {record_id}",
             flush=True,
         )
         raw_dir = raw_root / record_id
         canonical_path = canonical_root / f"{record_id}.npz"
-        try:
+        reuse_canonical = canonical_path.exists() and not overwrite
+        if reuse_canonical or raw_cache_has_markers(raw_dir):
             ragged_to_canonical.run(
                 raw_record_dir=raw_dir,
                 output_path=canonical_path,
                 overwrite=overwrite,
             )
-        except FileNotFoundError:
+        else:
+            if not video_path.is_file():
+                print(
+                    f"[{label} skip] {record_id}: missing video {video_path}",
+                    flush=True,
+                )
+                continue
             if video_to_ragged is None:
                 video_to_ragged = instantiate(cfg.preprocess.video_to_ragged)
-            video_to_ragged.run(videos[record_id], raw_dir, overwrite)
+            video_to_ragged.run(video_path, raw_dir, overwrite)
             ragged_to_canonical.run(
                 raw_record_dir=raw_dir,
                 output_path=canonical_path,
                 overwrite=overwrite,
             )
+        candidate_beat_path = (
+            beat_root / f"{record_id}.txt" if beat_root is not None else None
+        )
         pair = data.FilePair(
             record_id=record_id,
-            midi_path=midis[record_id],
+            midi_path=midi_path,
             hand_path=canonical_path,
-            beat_path=beats.get(record_id),
+            beat_path=(
+                candidate_beat_path
+                if candidate_beat_path is not None
+                and candidate_beat_path.is_file()
+                else None
+            ),
         )
         song = components["file_loader"].reader.read(
             pair,
             components["midi_loader"],
             components["hand_loader"],
         )
-        yield index, len(record_ids), song, components
+        yield index, len(records), song, components
 
 
 def realtime(cfg: DictConfig) -> None:
-    """Preprocess and infer every direct video/MIDI pair in one root."""
+    """Preprocess and infer every record in the configured split."""
 
-    root = resolve_path(cfg.realtime.root)
+    if cfg.realtime.split_file is None:
+        raise ValueError("realtime.split_file must be set")
     output_root = resolve_path(cfg.realtime.output_dir)
     checkpoint = resolve_path(cfg.realtime.checkpoint)
     overwrite = bool(cfg.realtime.overwrite)
 
-    for index, record_count, song, components in iter_realtime_songs(
+    for index, record_count, song, components in iter_split_songs(
         cfg,
-        root,
+        cfg.realtime.split_file,
         overwrite=overwrite,
     ):
         output_dir = output_root / song.record_id

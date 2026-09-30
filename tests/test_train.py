@@ -468,22 +468,28 @@ class TrainTest(unittest.TestCase):
         self.assertEqual(slicer.stride_frames, 12)
         self.assertEqual(int(config.full_song.advance_after_chords), 12)
         self.assertEqual(float(config.full_song.alignment_threshold), 0.2)
+        self.assertNotIn("root", config.realtime)
+        self.assertNotIn("root", config.full_song)
+        self.assertEqual(
+            str(config.full_song.split_file),
+            "assets/splits/pianomotion10mseg/valid.txt",
+        )
         self.assertEqual(
             str(config.full_song.output_dir),
             "outputs/causal_chord24/full_song",
         )
         self.assertEqual(
-            str(config.evaluation.split_file),
-            "assets/splits/pianomotion10mseg/valid.txt",
+            str(config.evaluation.root),
+            "outputs/causal_chord24/full_song",
         )
         self.assertEqual(
-            str(config.evaluation.output_dir),
-            "outputs/causal_chord24/eval",
+            str(config.evaluation.output_path),
+            "outputs/causal_chord24/full_song.json",
         )
         self.assertEqual(
             list(config.evaluation.tolerances_frames), [0, 2, 4, 8, 16]
         )
-        self.assertTrue(bool(config.evaluation.remove_inference_artifacts))
+        self.assertFalse(bool(config.evaluation.remove_inference_artifacts))
 
     def test_wrist_chord24_random_hand_shift_config(self) -> None:
         config_directory = Path(__file__).parents[1] / "configs"
@@ -501,7 +507,9 @@ class TrainTest(unittest.TestCase):
             str(config.test.checkpoint),
             f"outputs/{name}/checkpoints/last.pt",
         )
-        self.assertEqual(str(config.test.output_dir), f"outputs/{name}/test")
+        self.assertEqual(
+            str(config.test.output_dir), f"outputs/{name}/inference/test"
+        )
         self.assertFalse(bool(config.model.causal_frame_attention))
         self.assertEqual(float(config.dataset.random_hand_shift_seconds), 2.0)
         self.assertEqual(slicer.mode, "chord")
@@ -1017,7 +1025,10 @@ class TrainTest(unittest.TestCase):
                 str(config.test.checkpoint),
                 f"outputs/{name}/checkpoints/last.pt",
             )
-            self.assertEqual(str(config.test.output_dir), f"outputs/{name}/test")
+            self.assertEqual(
+                str(config.test.output_dir),
+                f"outputs/{name}/inference/test",
+            )
             self.assertEqual(
                 str(config.realtime.output_dir),
                 f"outputs/{name}/realtime",
@@ -1070,7 +1081,9 @@ class TrainTest(unittest.TestCase):
             str(config.test.checkpoint),
             f"outputs/{name}/checkpoints/last.pt",
         )
-        self.assertEqual(str(config.test.output_dir), f"outputs/{name}/test")
+        self.assertEqual(
+            str(config.test.output_dir), f"outputs/{name}/inference/test"
+        )
         self.assertTrue(bool(config.model.causal_frame_attention))
         self.assertFalse(bool(config.model.zero_hand_input))
         self.assertEqual(slicer.mode, "chord")
@@ -1103,7 +1116,9 @@ class TrainTest(unittest.TestCase):
             str(config.test.checkpoint),
             f"outputs/{name}/checkpoints/last.pt",
         )
-        self.assertEqual(str(config.test.output_dir), f"outputs/{name}/test")
+        self.assertEqual(
+            str(config.test.output_dir), f"outputs/{name}/inference/test"
+        )
         self.assertTrue(bool(config.model.causal_frame_attention))
         self.assertFalse(bool(config.model.zero_hand_input))
         self.assertEqual(slicer.mode, "chord")

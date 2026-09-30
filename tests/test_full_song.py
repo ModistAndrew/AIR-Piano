@@ -327,7 +327,7 @@ class FullSongStageTest(unittest.TestCase):
                     "preprocess": {},
                     "train": {"bf16": False},
                     "full_song": {
-                        "root": str(project / "pairs"),
+                        "split_file": str(project / "songs.txt"),
                         "checkpoint": str(
                             project / "checkpoints" / "last.pt"
                         ),
@@ -352,7 +352,7 @@ class FullSongStageTest(unittest.TestCase):
                 ) as load_model,
                 patch.object(
                     full_song_stage,
-                    "iter_realtime_songs",
+                    "iter_split_songs",
                     return_value=iter(
                         [
                             (1, 2, songs[0], components),
@@ -374,7 +374,7 @@ class FullSongStageTest(unittest.TestCase):
             )
             load_songs.assert_called_once_with(
                 config,
-                (project / "pairs").resolve(),
+                str(project / "songs.txt"),
                 overwrite=True,
                 label="full-song",
                 components=components,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import random
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Any
 
 import torch
@@ -170,12 +171,15 @@ def build_dataset(
     split: str,
     *,
     components: dict[str, Any] | None = None,
+    split_file: str | Path | None = None,
 ) -> AlignmentDataset:
     """Eagerly load one split and precompute all slice/chord indices."""
 
     components = components or build_data_components(cfg)
     songs = components["file_loader"].load(
-        split_file=resolve_path(cfg.data.splits[split]),
+        split_file=resolve_path(
+            cfg.data.splits[split] if split_file is None else split_file
+        ),
         midi_root=resolve_path(cfg.data.midi_root),
         hand_root=resolve_path(cfg.data.hand_root),
         midi_loader=components["midi_loader"],

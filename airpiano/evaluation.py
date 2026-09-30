@@ -1,104 +1,16 @@
-"""Full-song inference and alignment metrics over a configured split."""
+"""Alignment metrics for stored inference artifacts."""
 
 from __future__ import annotations
 
-import shutil
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Iterable, Sequence
 from pathlib import Path
-from typing import Any
 
 import numpy as np
-import torch
-from hydra.utils import instantiate
 from omegaconf import DictConfig
 
-from . import data
-from .data.files import read_record_stems
-from .full_song import infer_full_song
-from .inference import load_model_checkpoint
 from .render.artifact import InferenceArtifact, load_artifact
 from .render.sonify import decode_chord_onsets
-from .utils import resolve_path, safe_record_name, write_json
-
-
-def iter_evaluation_songs(
-    cfg: DictConfig,
-    records: Sequence[str],
-    *,
-    overwrite: bool,
-    components: dict[str, Any],
-) -> Iterator[tuple[int, int, data.Song]]:
-    """Preprocess and stream split records using full-song semantics."""
-
-    video_root = resolve_path(cfg.data.video_root)
-    midi_root = resolve_path(cfg.data.midi_root)
-    raw_root = resolve_path(cfg.data.raw_wilor_root)
-    hand_root = resolve_path(cfg.data.hand_root)
-    beat_root = (
-        resolve_path(cfg.data.beat_root)
-        if cfg.data.get("beat_root") is not None
-        else None
-    )
-    ragged_to_canonical = instantiate(cfg.preprocess.ragged_to_canonical)
-    video_to_ragged = None
-
-    for index, record_id in enumerate(records, 1):
-        video_path = video_root / f"{record_id}.mp4"
-        midi_path = midi_root / f"{record_id}.mid"
-        reasons = []
-        if not video_path.is_file():
-            reasons.append(f"missing video {video_path}")
-        if not midi_path.is_file():
-            reasons.append(f"missing MIDI {midi_path}")
-        if reasons:
-            print(f"[evaluation skip] {record_id}: {'; '.join(reasons)}")
-            continue
-
-        print(
-            f"evaluation {index}/{len(records)}: preprocess {record_id}",
-            flush=True,
-        )
-        raw_dir = raw_root / record_id
-        hand_path = hand_root / f"{record_id}.npz"
-        try:
-            ragged_to_canonical.run(
-                raw_record_dir=raw_dir,
-                output_path=hand_path,
-                overwrite=overwrite,
-            )
-        except FileNotFoundError:
-            if video_to_ragged is None:
-                video_to_ragged = instantiate(cfg.preprocess.video_to_ragged)
-            video_to_ragged.run(video_path, raw_dir, overwrite)
-            ragged_to_canonical.run(
-                raw_record_dir=raw_dir,
-                output_path=hand_path,
-                overwrite=overwrite,
-            )
-
-        candidate_beat_path = (
-            beat_root / f"{record_id}.txt" if beat_root is not None else None
-        )
-        pair = data.FilePair(
-            record_id=record_id,
-            midi_path=midi_path,
-            hand_path=hand_path,
-            beat_path=(
-                candidate_beat_path
-                if candidate_beat_path is not None
-                and candidate_beat_path.is_file()
-                else None
-            ),
-        )
-        yield (
-            index,
-            len(records),
-            components["file_loader"].reader.read(
-                pair,
-                components["midi_loader"],
-                components["hand_loader"],
-            ),
-        )
+from .utils import resolve_path, write_json
 
 
 def _ratio(numerator: int, denominator: int) -> float | None:
@@ -121,73 +33,67 @@ def _active_chords(
     return active
 
 
+def _empty_metrics(tolerances: Sequence[int]) -> dict[str, object]:
+    return {
+        "chord_acc": None,
+        "c_ar": {str(value): None for value in tolerances},
+        "onset_mae_frames": None,
+        "onset_mae_seconds": None,
+        "chord_coverage": None,
+        "correct_frame_count": 0,
+        "evaluated_frame_count": 0,
+        "correct_chord_counts": {str(value): 0 for value in tolerances},
+        "detected_chord_count": 0,
+        "ground_truth_chord_count": 0,
+        "absolute_error_frames_sum": 0.0,
+        "absolute_error_seconds_sum": 0.0,
+    }
+
+
 def calculate_alignment_metrics(
     artifact: InferenceArtifact,
-    ground_truth_onset_seconds: Sequence[float],
     *,
     onset_threshold: float,
     tolerances_frames: Sequence[int],
 ) -> dict[str, object]:
-    """Calculate frame and chord alignment metrics for one full-song artifact."""
+    """Calculate frame and chord alignment metrics for one artifact."""
 
     tolerances = tuple(int(value) for value in tolerances_frames)
     valid_frames = np.flatnonzero(artifact.frame_mask)
-    valid_chords = np.flatnonzero(artifact.chord_mask)
-    if len(ground_truth_onset_seconds) != len(valid_chords):
-        raise ValueError(
-            "ground-truth onset count must match valid artifact chords"
-        )
-
     if valid_frames.size == 0:
-        return {
-            "chord_acc": None,
-            "c_ar": {str(value): None for value in tolerances},
-            "onset_mae_frames": None,
-            "onset_mae_seconds": None,
-            "chord_coverage": None,
-            "correct_frame_count": 0,
-            "evaluated_frame_count": 0,
-            "correct_chord_counts": {str(value): 0 for value in tolerances},
-            "detected_chord_count": 0,
-            "ground_truth_chord_count": 0,
-            "absolute_error_frames_sum": 0.0,
-            "absolute_error_seconds_sum": 0.0,
-        }
+        return _empty_metrics(tolerances)
 
+    valid_chords = np.flatnonzero(artifact.chord_mask)
     global_frames = artifact.frame_start + valid_frames
-    timeline_start = float(global_frames[0]) / artifact.fps
-    timeline_end = float(global_frames[-1] + 1) / artifact.fps
-    ground_truth_frames: dict[int, int] = {}
-    frame_times = global_frames.astype(np.float64) / artifact.fps
-    for chord_slot, onset_seconds in zip(
-        valid_chords, ground_truth_onset_seconds
-    ):
-        onset_seconds = float(onset_seconds)
-        if not timeline_start <= onset_seconds < timeline_end:
+    ground_truth_frames = {}
+    for chord_slot in valid_chords:
+        chord_slot = int(chord_slot)
+        scores = artifact.target[valid_frames, chord_slot]
+        if not np.any(scores > 0.0):
             continue
-        closest = int(np.argmin(np.abs(frame_times - onset_seconds)))
-        ground_truth_frames[int(chord_slot)] = int(global_frames[closest])
+        target_frame = int(valid_frames[int(np.argmax(scores))])
+        ground_truth_frames[chord_slot] = artifact.frame_start + target_frame
+
+    if not ground_truth_frames:
+        return _empty_metrics(tolerances)
 
     predicted_local_frames, _ = decode_chord_onsets(
         artifact,
         threshold=onset_threshold,
     )
     predicted_frames = {
-        int(chord_slot): artifact.frame_start + int(predicted_local_frames[chord_slot])
-        for chord_slot in valid_chords
+        chord_slot: artifact.frame_start
+        + int(predicted_local_frames[chord_slot])
+        for chord_slot in ground_truth_frames
         if predicted_local_frames[chord_slot] >= 0
     }
 
-    if ground_truth_frames:
-        first_onset = min(ground_truth_frames.values())
-        evaluated_frames = global_frames[global_frames >= first_onset]
-        real_active = _active_chords(evaluated_frames, ground_truth_frames)
-        predicted_active = _active_chords(evaluated_frames, predicted_frames)
-        correct_frame_count = int((real_active == predicted_active).sum())
-        evaluated_frame_count = len(evaluated_frames)
-    else:
-        correct_frame_count = 0
-        evaluated_frame_count = 0
+    first_onset = min(ground_truth_frames.values())
+    evaluated_frames = global_frames[global_frames >= first_onset]
+    real_active = _active_chords(evaluated_frames, ground_truth_frames)
+    predicted_active = _active_chords(evaluated_frames, predicted_frames)
+    correct_frame_count = int((real_active == predicted_active).sum())
+    evaluated_frame_count = len(evaluated_frames)
 
     absolute_errors = [
         abs(predicted_frames[chord_slot] - ground_truth_frame)
@@ -236,7 +142,7 @@ def aggregate_alignment_metrics(
     metrics: Sequence[dict[str, object]],
     tolerances_frames: Sequence[int],
 ) -> tuple[dict[str, object], dict[str, object]]:
-    """Return pooled micro metrics and equal-record macro metrics."""
+    """Return pooled micro metrics and equal-artifact macro metrics."""
 
     tolerances = tuple(int(value) for value in tolerances_frames)
     correct_frames = sum(int(item["correct_frame_count"]) for item in metrics)
@@ -280,16 +186,16 @@ def aggregate_alignment_metrics(
         "absolute_error_seconds_sum": error_seconds,
     }
 
-    chord_acc, chord_acc_records = _mean(
+    chord_acc, chord_acc_artifacts = _mean(
         item["chord_acc"] for item in metrics
     )
-    onset_mae_frames, onset_mae_records = _mean(
+    onset_mae_frames, onset_mae_artifacts = _mean(
         item["onset_mae_frames"] for item in metrics
     )
     onset_mae_seconds, _ = _mean(
         item["onset_mae_seconds"] for item in metrics
     )
-    chord_coverage, chord_records = _mean(
+    chord_coverage, chord_artifacts = _mean(
         item["chord_coverage"] for item in metrics
     )
     macro_c_ar = {}
@@ -304,94 +210,54 @@ def aggregate_alignment_metrics(
         "onset_mae_frames": onset_mae_frames,
         "onset_mae_seconds": onset_mae_seconds,
         "chord_coverage": chord_coverage,
-        "record_count": len(metrics),
-        "chord_acc_record_count": chord_acc_records,
-        "chord_metric_record_count": chord_records,
-        "onset_mae_record_count": onset_mae_records,
+        "artifact_count": len(metrics),
+        "chord_acc_artifact_count": chord_acc_artifacts,
+        "chord_metric_artifact_count": chord_artifacts,
+        "onset_mae_artifact_count": onset_mae_artifacts,
     }
     return micro, macro
 
 
-def _remove_artifact_directory(path: Path, output_dir: Path) -> None:
-    resolved_path = path.resolve()
-    resolved_output = output_dir.resolve()
-    if resolved_path.parent != resolved_output or resolved_path == resolved_output:
-        raise ValueError(f"unsafe evaluation artifact directory: {resolved_path}")
-    if resolved_path.exists():
-        shutil.rmtree(resolved_path)
-
-
 def evaluation(cfg: DictConfig) -> None:
-    """Run full-song inference and alignment metrics for one configured split."""
+    """Calculate alignment metrics for stored inference artifacts."""
 
-    split_file = resolve_path(cfg.evaluation.split_file)
-    split_name = split_file.stem
-    output_dir = resolve_path(cfg.evaluation.output_dir)
-    artifact_dir = output_dir / split_name
-    metrics_path = output_dir / f"{split_name}.json"
-    checkpoint = resolve_path(cfg.evaluation.checkpoint)
+    artifact_root = resolve_path(cfg.evaluation.root)
+    if not artifact_root.is_dir():
+        raise FileNotFoundError(
+            f"evaluation artifact root not found: {artifact_root}"
+        )
+    metrics_path = resolve_path(cfg.evaluation.output_path)
     tolerances = tuple(int(value) for value in cfg.evaluation.tolerances_frames)
     onset_threshold = float(cfg.evaluation.onset_threshold)
     remove_artifacts = bool(cfg.evaluation.remove_inference_artifacts)
-    records = read_record_stems([split_file])
+    artifact_paths = sorted(
+        path for path in artifact_root.rglob("*.npz") if path.is_file()
+    )
 
-    components = data.build_data_components(cfg)
-    device = torch.device(str(cfg.device))
-    model = load_model_checkpoint(checkpoint, device)
-    alignment_loss = str(cfg.get("alignment_loss", "bce"))
     reports = []
-    total_loss = 0.0
-    total_weight = 0
-
-    for index, record_count, song in iter_evaluation_songs(
-        cfg,
-        records,
-        overwrite=bool(cfg.evaluation.overwrite),
-        components=components,
-    ):
-        print(
-            f"evaluation {index}/{record_count}: infer {song.record_id} "
-            f"({len(song.hands)} frames, {len(song.chords)} chords)",
-            flush=True,
-        )
-        artifact_path = artifact_dir / safe_record_name(song.record_id, 0)
-        loss, loss_weight, shift_count = infer_full_song(
-            model,
-            song,
-            components["slicer"],
-            components["target_generator"],
-            device,
-            artifact_path,
-            bf16=bool(cfg.train.bf16),
-            alignment_threshold=float(cfg.evaluation.alignment_threshold),
-            advance_after_chords=int(cfg.evaluation.advance_after_chords),
-            alignment_loss=alignment_loss,
-        )
-        if loss_weight:
-            total_loss += loss * loss_weight
-            total_weight += loss_weight
+    for index, artifact_path in enumerate(artifact_paths, 1):
         artifact = load_artifact(artifact_path)
         item_metrics = calculate_alignment_metrics(
             artifact,
-            [chord.time for chord in song.chords],
             onset_threshold=onset_threshold,
             tolerances_frames=tolerances,
         )
         reports.append(
             {
-                "record_id": song.record_id,
-                "artifact_name": artifact_path.name,
-                "fps": song.fps,
-                "frame_count": len(song.hands),
-                "chord_count": len(song.chords),
-                "full_song_loss": loss,
-                "loss_weight": loss_weight,
-                "shift_count": shift_count,
+                "artifact_path": artifact_path.relative_to(
+                    artifact_root
+                ).as_posix(),
+                "record_id": artifact.record_id,
+                "frame_start": artifact.frame_start,
+                "fps": artifact.fps,
+                "frame_count": int(artifact.frame_mask.sum()),
+                "chord_count": int(artifact.chord_mask.sum()),
                 "metrics": item_metrics,
             }
         )
         print(
-            f"evaluation {index}/{record_count}: {song.record_id} "
+            f"evaluation {index}/{len(artifact_paths)}: "
+            f"{artifact.record_id} frame_start={artifact.frame_start} "
             f"ChordAcc={item_metrics['chord_acc']} "
             f"coverage={item_metrics['chord_coverage']}",
             flush=True,
@@ -399,27 +265,26 @@ def evaluation(cfg: DictConfig) -> None:
 
     item_metrics = [report["metrics"] for report in reports]
     micro, macro = aggregate_alignment_metrics(item_metrics, tolerances)
+    unique_record_ids = sorted({report["record_id"] for report in reports})
     summary = {
-        "schema_version": "airpiano-evaluation-v1",
-        "split_name": split_name,
-        "split_file": str(split_file),
-        "checkpoint": str(checkpoint),
-        "artifact_directory": str(artifact_dir.resolve()),
-        "inference_artifacts_removed": remove_artifacts,
+        "schema_version": "airpiano-evaluation-v2",
+        "artifact_root": str(artifact_root),
         "onset_threshold": onset_threshold,
         "tolerances_frames": list(tolerances),
-        "requested_record_count": len(records),
-        "evaluated_record_count": len(reports),
-        "skipped_record_count": len(records) - len(reports),
-        "full_song_loss": total_loss / total_weight if total_weight else None,
+        "artifact_count": len(reports),
+        "unique_record_count": len(unique_record_ids),
+        "unique_record_ids": unique_record_ids,
+        "inference_artifacts_removed": remove_artifacts,
         "micro": micro,
         "macro": macro,
-        "records": reports,
+        "artifacts": reports,
     }
     write_json(metrics_path, summary)
+
     if remove_artifacts:
         try:
-            _remove_artifact_directory(artifact_dir, output_dir)
+            for artifact_path in artifact_paths:
+                artifact_path.unlink()
         except OSError:
             summary["inference_artifacts_removed"] = False
             write_json(metrics_path, summary)
@@ -427,12 +292,15 @@ def evaluation(cfg: DictConfig) -> None:
 
     print(f"wrote evaluation metrics {metrics_path}", flush=True)
     if remove_artifacts:
-        print(f"removed inference artifacts {artifact_dir}", flush=True)
+        print(
+            f"removed {len(artifact_paths)} inference artifacts "
+            f"from {artifact_root}",
+            flush=True,
+        )
 
 
 __all__ = [
     "aggregate_alignment_metrics",
     "calculate_alignment_metrics",
     "evaluation",
-    "iter_evaluation_songs",
 ]

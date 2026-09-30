@@ -171,6 +171,7 @@ class TestInferenceTest(unittest.TestCase):
                     "dataset": {},
                     "train": {"batch_size": 1, "bf16": False},
                     "test": {
+                        "split_file": "assets/splits/custom/test.txt",
                         "checkpoint": str(checkpoint),
                         "output_dir": str(
                             output / "inference" / "custom-test"
@@ -193,7 +194,11 @@ class TestInferenceTest(unittest.TestCase):
             ):
                 inference_stage.test(config)
 
-            build_dataset.assert_called_once_with(config, "test")
+            build_dataset.assert_called_once_with(
+                config,
+                "test",
+                split_file="assets/splits/custom/test.txt",
+            )
             load_checkpoint.assert_called_once_with(
                 checkpoint.resolve(), torch.device("cpu")
             )

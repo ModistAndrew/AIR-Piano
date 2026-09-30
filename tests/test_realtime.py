@@ -37,15 +37,16 @@ class _TinyModel(nn.Module):
 
 
 class RealtimeTest(unittest.TestCase):
-    def test_empty_root_does_not_construct_components(self) -> None:
+    def test_empty_split_does_not_construct_components(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             project = Path(directory)
-            (project / "realtime").mkdir()
+            split = project / "empty.txt"
+            split.write_text("", encoding="utf-8")
             config = OmegaConf.create(
                 {
                     "output": {"dir": str(project)},
                     "realtime": {
-                        "root": str(project / "realtime"),
+                        "split_file": str(split),
                         "checkpoint": "checkpoints/last.pt",
                         "output_dir": str(project / "output"),
                         "overwrite": False,
@@ -64,10 +65,10 @@ class RealtimeTest(unittest.TestCase):
     def test_existing_canonical_does_not_construct_video_preprocessor(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            (root / "video").mkdir()
-            (root / "midi").mkdir()
-            (root / "canonical").mkdir()
-            (root / "video/take.mp4").touch()
+            for name in ("midi", "raw", "canonical"):
+                (root / name).mkdir()
+            split = root / "split.txt"
+            split.write_text("take\n", encoding="utf-8")
             (root / "midi/take.mid").touch()
             canonical_path = root / "canonical/take.npz"
             canonical_path.touch()
@@ -82,8 +83,10 @@ class RealtimeTest(unittest.TestCase):
             config = OmegaConf.create(
                 {
                     "data": {
-                        "raw_wilor_root": "/unused/raw",
-                        "hand_root": "/unused/canonical",
+                        "video_root": str(root / "video"),
+                        "midi_root": str(root / "midi"),
+                        "raw_wilor_root": str(root / "raw"),
+                        "hand_root": str(root / "canonical"),
                     },
                     "preprocess": {
                         "video_to_ragged": {"_target_": "example.Video"},
@@ -106,9 +109,9 @@ class RealtimeTest(unittest.TestCase):
                 realtime_stage, "instantiate", return_value=canonicalizer
             ) as instantiate:
                 rows = list(
-                    realtime_stage.iter_realtime_songs(
+                    realtime_stage.iter_split_songs(
                         config,
-                        root,
+                        split,
                         overwrite=False,
                         components=components,
                     )
@@ -120,14 +123,120 @@ class RealtimeTest(unittest.TestCase):
             self.assertEqual(canonical_calls, [canonical_path])
             self.assertEqual(rows, [(1, 1, song, components)])
 
+    def test_existing_raw_cache_is_canonicalized_without_video(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in ("midi", "raw/take", "canonical"):
+                (root / name).mkdir(parents=True)
+            split = root / "split.txt"
+            split.write_text("take\n", encoding="utf-8")
+            (root / "midi/take.mid").touch()
+            (root / "raw/take/manifest.json").touch()
+            (root / "raw/take/_SUCCESS").touch()
+            song = object()
+            components = {
+                "file_loader": SimpleNamespace(
+                    reader=SimpleNamespace(read=lambda *args: song)
+                ),
+                "midi_loader": object(),
+                "hand_loader": object(),
+            }
+            config = OmegaConf.create(
+                {
+                    "data": {
+                        "video_root": str(root / "video"),
+                        "midi_root": str(root / "midi"),
+                        "raw_wilor_root": str(root / "raw"),
+                        "hand_root": str(root / "canonical"),
+                    },
+                    "preprocess": {
+                        "video_to_ragged": {"_target_": "example.Video"},
+                        "ragged_to_canonical": {
+                            "_target_": "example.Canonical"
+                        },
+                    },
+                }
+            )
+            canonicalizer = SimpleNamespace(
+                run=lambda **kwargs: Path(kwargs["output_path"])
+            )
+
+            with patch.object(
+                realtime_stage,
+                "instantiate",
+                return_value=canonicalizer,
+            ) as instantiate:
+                rows = list(
+                    realtime_stage.iter_split_songs(
+                        config,
+                        split,
+                        overwrite=False,
+                        components=components,
+                    )
+                )
+
+            instantiate.assert_called_once_with(
+                config.preprocess.ragged_to_canonical
+            )
+            self.assertEqual(rows, [(1, 1, song, components)])
+
+    def test_malformed_completed_raw_cache_error_propagates(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in ("midi", "raw/take", "canonical"):
+                (root / name).mkdir(parents=True)
+            split = root / "split.txt"
+            split.write_text("take\n", encoding="utf-8")
+            (root / "midi/take.mid").touch()
+            (root / "raw/take/manifest.json").touch()
+            (root / "raw/take/_SUCCESS").touch()
+            config = OmegaConf.create(
+                {
+                    "data": {
+                        "video_root": str(root / "video"),
+                        "midi_root": str(root / "midi"),
+                        "raw_wilor_root": str(root / "raw"),
+                        "hand_root": str(root / "canonical"),
+                    },
+                    "preprocess": {
+                        "video_to_ragged": {"_target_": "example.Video"},
+                        "ragged_to_canonical": {
+                            "_target_": "example.Canonical"
+                        },
+                    },
+                }
+            )
+
+            class MalformedCanonicalizer:
+                def run(self, **kwargs):
+                    del kwargs
+                    raise ValueError("malformed cache")
+
+            with patch.object(
+                realtime_stage,
+                "instantiate",
+                return_value=MalformedCanonicalizer(),
+            ):
+                with self.assertRaisesRegex(ValueError, "malformed cache"):
+                    list(
+                        realtime_stage.iter_split_songs(
+                            config,
+                            split,
+                            overwrite=False,
+                            components={"unused": object()},
+                        )
+                    )
+
     def test_realtime_forwards_available_beat_files(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            for name in ("video", "midi", "beats", "canonical"):
+            for name in ("midi", "beats", "raw", "canonical"):
                 (root / name).mkdir()
+            split = root / "split.txt"
+            split.write_text("complete\nmissing-beats\n", encoding="utf-8")
             for record_id in ("complete", "missing-beats"):
-                (root / "video" / f"{record_id}.mp4").touch()
                 (root / "midi" / f"{record_id}.mid").touch()
+                (root / "canonical" / f"{record_id}.npz").touch()
             beat_path = root / "beats" / "complete.txt"
             beat_path.touch()
 
@@ -149,8 +258,11 @@ class RealtimeTest(unittest.TestCase):
             config = OmegaConf.create(
                 {
                     "data": {
-                        "raw_wilor_root": "/unused/raw",
-                        "hand_root": "/unused/canonical",
+                        "video_root": str(root / "video"),
+                        "midi_root": str(root / "midi"),
+                        "raw_wilor_root": str(root / "raw"),
+                        "hand_root": str(root / "canonical"),
+                        "beat_root": str(root / "beats"),
                     },
                     "preprocess": {
                         "video_to_ragged": {"_target_": "example.Video"},
@@ -168,9 +280,9 @@ class RealtimeTest(unittest.TestCase):
                 return_value=canonicalizer,
             ):
                 rows = list(
-                    realtime_stage.iter_realtime_songs(
+                    realtime_stage.iter_split_songs(
                         config,
-                        root,
+                        split,
                         overwrite=False,
                         components=components,
                     )
@@ -193,20 +305,31 @@ class RealtimeTest(unittest.TestCase):
             bundle = root / "runtime"
             video_root = bundle / "video"
             midi_root = bundle / "midi"
+            raw_root = bundle / "wilor"
+            hand_root = bundle / "airpiano_wilor_2p5d_30fps"
             video_root.mkdir(parents=True)
             midi_root.mkdir()
-            stems = ["alpha", "take.03"]
+            stems = ["artist/alpha", "take.03"]
             for stem in stems:
-                (video_root / f"{stem}.mp4").touch()
+                video = video_root / f"{stem}.mp4"
+                video.parent.mkdir(parents=True, exist_ok=True)
+                video.touch()
                 midi = mido.MidiFile(ticks_per_beat=480)
                 track = mido.MidiTrack()
                 midi.tracks.append(track)
                 track.append(mido.Message("note_on", note=60, velocity=64, time=0))
                 track.append(mido.Message("note_off", note=60, velocity=0, time=480))
-                midi.save(midi_root / f"{stem}.mid")
+                midi_path = midi_root / f"{stem}.mid"
+                midi_path.parent.mkdir(parents=True, exist_ok=True)
+                midi.save(midi_path)
             (video_root / "video-only.mp4").touch()
             midi = mido.MidiFile()
             midi.save(midi_root / "midi-only.mid")
+            split = root / "runtime.txt"
+            split.write_text(
+                "artist/alpha\ntake.03\nvideo-only\nmidi-only\n",
+                encoding="utf-8",
+            )
             checkpoint = project / "checkpoints" / "last.pt"
             checkpoint.parent.mkdir(parents=True)
             checkpoint.write_bytes(b"checkpoint loading is patched")
@@ -223,12 +346,14 @@ class RealtimeTest(unittest.TestCase):
                     overwrite=False,
                 ):
                     video = Path(video_path)
-                    record_id = video.name[: -len(".mp4")]
+                    record_id = (
+                        video.relative_to(video_root).as_posix()[: -len(".mp4")]
+                    )
                     test_case.assertEqual(
                         video, video_root / f"{record_id}.mp4"
                     )
                     test_case.assertEqual(
-                        Path(output_dir), bundle / "wilor" / record_id
+                        Path(output_dir), raw_root / record_id
                     )
                     test_case.assertTrue(overwrite)
                     Path(output_dir).mkdir(parents=True, exist_ok=True)
@@ -241,15 +366,15 @@ class RealtimeTest(unittest.TestCase):
                     if not (Path(raw_record_dir) / "manifest.json").is_file():
                         raise FileNotFoundError(raw_record_dir)
                     output = Path(output_path)
-                    record_id = output.name[: -len(".npz")]
+                    record_id = (
+                        output.relative_to(hand_root).as_posix()[: -len(".npz")]
+                    )
                     test_case.assertEqual(
-                        Path(raw_record_dir), bundle / "wilor" / record_id
+                        Path(raw_record_dir), raw_root / record_id
                     )
                     test_case.assertEqual(
                         output,
-                        bundle
-                        / "airpiano_wilor_2p5d_30fps"
-                        / f"{record_id}.npz",
+                        hand_root / f"{record_id}.npz",
                     )
                     test_case.assertTrue(overwrite)
                     output.parent.mkdir(parents=True, exist_ok=True)
@@ -270,7 +395,11 @@ class RealtimeTest(unittest.TestCase):
             config.output.dir = str(project)
             config.train.batch_size = 1
             config.train.bf16 = False
-            config.realtime.root = str(bundle)
+            config.realtime.split_file = str(split)
+            config.data.video_root = str(video_root)
+            config.data.midi_root = str(midi_root)
+            config.data.raw_wilor_root = str(raw_root)
+            config.data.hand_root = str(hand_root)
             config.dataset.file_loader.pairer._target_ = (
                 "airpiano.data.files.RelativeStemPairer"
             )
@@ -313,8 +442,8 @@ class RealtimeTest(unittest.TestCase):
             self.assertEqual(
                 run_order,
                 [
-                    ("video", "alpha"),
-                    ("canonical", "alpha"),
+                    ("video", "artist/alpha"),
+                    ("canonical", "artist/alpha"),
                     ("video", "take.03"),
                     ("canonical", "take.03"),
                 ],

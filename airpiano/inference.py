@@ -189,7 +189,11 @@ def test(cfg: DictConfig) -> None:
 
     checkpoint = resolve_path(cfg.test.checkpoint)
     output_dir = resolve_path(cfg.test.output_dir)
-    dataset = data.build_dataset(cfg, "test")
+    dataset = data.build_dataset(
+        cfg,
+        "test",
+        split_file=str(cfg.test.split_file),
+    )
     loss = infer_dataset(cfg, dataset, checkpoint, output_dir)
     write_json(output_dir / "test_loss.json", {"test_loss": loss})
     print(f"test_loss={loss:.8f}", flush=True)

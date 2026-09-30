@@ -11,7 +11,7 @@ from . import data
 from .inference import load_model_checkpoint, write_inference_artifact
 from .model.loss import alignment_probabilities, alignment_probability_loss
 from .model.transformer import AirPianoTransformer
-from .realtime import iter_realtime_songs
+from .realtime import iter_split_songs
 from .train import _autocast, _forward
 from .utils import resolve_path, safe_record_name, write_json
 
@@ -120,9 +120,10 @@ def infer_full_song(
 
 
 def full_song(cfg: DictConfig) -> None:
-    """Preprocess realtime-style inputs and infer one artifact per full song."""
+    """Preprocess split records and infer one artifact per full song."""
 
-    root = resolve_path(cfg.full_song.root)
+    if cfg.full_song.split_file is None:
+        raise ValueError("full_song.split_file must be set")
     output_dir = resolve_path(cfg.full_song.output_dir)
     checkpoint = resolve_path(cfg.full_song.checkpoint)
     device = torch.device(str(cfg.device))
@@ -134,9 +135,9 @@ def full_song(cfg: DictConfig) -> None:
     alignment_loss = str(cfg.get("alignment_loss", "bce"))
     total_loss = 0.0
     total_weight = 0
-    for index, record_count, song, _ in iter_realtime_songs(
+    for index, record_count, song, _ in iter_split_songs(
         cfg,
-        root,
+        cfg.full_song.split_file,
         overwrite=bool(cfg.full_song.overwrite),
         label="full-song",
         components=components,

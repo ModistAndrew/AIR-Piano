@@ -90,6 +90,19 @@ class RunTest(unittest.TestCase):
         for name in ("realtime", "evaluation", "visualize", "sonify"):
             handlers[name].assert_not_called()
 
+    def test_dispatches_full_song_then_evaluation(self) -> None:
+        config = OmegaConf.create({"stage": ["full-song", "evaluation"]})
+        calls = []
+        handlers = {
+            name: Mock(side_effect=lambda _config, name=name: calls.append(name))
+            for name in app.STAGES
+        }
+
+        with patch.object(app, "STAGES", handlers):
+            app.main.__wrapped__(config)
+
+        self.assertEqual(calls, ["full-song", "evaluation"])
+
     def test_stage_list_stops_after_a_handler_failure(self) -> None:
         config = OmegaConf.create(
             {"stage": ["preprocess", "train", "realtime"]}
