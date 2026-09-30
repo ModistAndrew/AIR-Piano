@@ -1601,6 +1601,30 @@ Outputs are written directly under `full_song.output_dir`, which defaults to
 `${output.dir}/full_song`, one NPZ per input basename, with a weighted aggregate
 loss in `full_song_loss.json`.
 
+### Full-song evaluation
+
+The `evaluation` stage runs causal full-song inference over every record in a
+split and reports frame- and chord-level alignment metrics:
+
+```bash
+conda run -n v2n python run.py --config-name causal_chord24 \
+  stage=evaluation
+```
+
+The default split is `assets/splits/pianomotion10mseg/valid.txt`. Its stem
+controls the output names: inference artifacts are written under
+`${output.dir}/eval/valid/`, and the persistent report is
+`${output.dir}/eval/valid.json`. Artifacts are removed after the JSON is
+successfully written by default; set
+`evaluation.remove_inference_artifacts=false` to retain them.
+
+`ChordAcc` compares the ground-truth and predicted active chord on every frame
+from the first ground-truth onset through the video end. `C-AR` reports the
+fraction of all ground-truth chords detected within 0, 2, 4, 8, and 16 frames.
+The report also contains onset MAE in frames and seconds, chord coverage,
+per-record results, pooled micro metrics, and equal-record macro metrics. Null
+predictions lower `C-AR` and coverage but do not enter onset MAE.
+
 ### Visualize and sonify batches
 
 Both stages recursively scan `*.npz` files under `inference/test` by default:
@@ -1818,6 +1842,15 @@ loss intentionally remains fixed in code.
 | `full_song.alignment_threshold` | `0.2` | Inclusive running-peak confidence required by any trailing trigger chord. |
 | `full_song.advance_after_chords` | slicer stride | Number of trailing chord slots checked to trigger advancement. |
 | `visualize.root` | `${output.dir}/inference/test` | Filesystem tree recursively scanned for NPZs and receiving adjacent PNG files. |
+| `evaluation.split_file` | `assets/splits/pianomotion10mseg/valid.txt` | Split evaluated by causal full-song inference; its filename stem selects output names. |
+| `evaluation.output_dir` | `${output.dir}/eval` | Parent of the temporary split artifact directory and persistent split JSON. |
+| `evaluation.checkpoint` | `${full_song.checkpoint}` | Causal checkpoint loaded once for the evaluation run. |
+| `evaluation.overwrite` | `${full_song.overwrite}` | Raw and canonical preprocessing reuse policy; inference NPZs are always rewritten. |
+| `evaluation.alignment_threshold` | `${full_song.alignment_threshold}` | Running-peak threshold used by the full-song window controller. |
+| `evaluation.advance_after_chords` | `${full_song.advance_after_chords}` | Number of trailing chord slots checked by the window controller. |
+| `evaluation.onset_threshold` | `${sonify.threshold}` | Inclusive peak threshold below which a chord prediction is null. |
+| `evaluation.tolerances_frames` | `[0, 2, 4, 8, 16]` | Inclusive frame tolerances reported by `C-AR`. |
+| `evaluation.remove_inference_artifacts` | `true` | Remove the split's NPZ directory after its metrics JSON is written successfully. |
 | `sonify.root` | `${output.dir}/inference/test` | Filesystem tree recursively scanned for NPZs and receiving adjacent MIDI sidecars plus final onset-delta JSON and PNG summaries. |
 | `sonify.midi_root` | `${data.midi_root}` | Root used with the artifact `record_id` to locate source MIDI. |
 | `sonify.threshold` | `0.2` | Inclusive chord peak threshold. |

@@ -11,7 +11,7 @@ from omegaconf import DictConfig
 
 from ..data.midi import MidoNoteReader
 from ..utils import resolve_path, write_json
-from .artifact import load_artifact
+from .artifact import InferenceArtifact, load_artifact
 
 
 def sonify(cfg: DictConfig) -> None:
@@ -111,6 +111,37 @@ def _chord_peak(
     return peak_frame, peak_score
 
 
+def decode_chord_onsets(
+    artifact: InferenceArtifact,
+    threshold: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return per-slot onset frames and peak probabilities.
+
+    Undetected and padded chord slots receive frame ``-1``. Peak ties select
+    the earliest valid frame, and a peak equal to ``threshold`` is detected.
+    """
+
+    onset_frames = np.full(len(artifact.chord_mask), -1, dtype=np.int64)
+    peak_probabilities = np.full(
+        len(artifact.chord_mask), np.nan, dtype=np.float64
+    )
+    valid_frames = np.flatnonzero(artifact.frame_mask)
+    if valid_frames.size == 0:
+        return onset_frames, peak_probabilities
+
+    for chord_slot in np.flatnonzero(artifact.chord_mask):
+        chord_slot = int(chord_slot)
+        peak_frame, peak_score = _chord_peak(
+            artifact.probability,
+            valid_frames,
+            chord_slot,
+        )
+        peak_probabilities[chord_slot] = peak_score
+        if peak_score >= threshold:
+            onset_frames[chord_slot] = peak_frame
+    return onset_frames, peak_probabilities
+
+
 def sonify_artifact(
     input_path: str | Path,
     output_path: str | Path,
@@ -129,17 +160,11 @@ def sonify_artifact(
     ticks_per_beat = 480
     tempo = 500_000
     events: list[tuple[int, int, int, int]] = []
-    valid_frames = np.flatnonzero(artifact.frame_mask)
+    onset_frames, _ = decode_chord_onsets(artifact, threshold)
 
     for chord in np.flatnonzero(artifact.chord_mask):
-        if valid_frames.size == 0:
-            break
-        peak_frame, peak_score = _chord_peak(
-            artifact.probability,
-            valid_frames,
-            int(chord),
-        )
-        if peak_score < threshold:
+        peak_frame = int(onset_frames[chord])
+        if peak_frame < 0:
             continue
 
         onset_seconds = peak_frame / artifact.fps
@@ -171,6 +196,10 @@ def calculate_onset_deltas(
     del midi_path, chord_tolerance_seconds
     artifact = load_artifact(input_path)
     valid_frames = np.flatnonzero(artifact.frame_mask)
+    onset_frames, peak_probabilities = decode_chord_onsets(
+        artifact,
+        threshold,
+    )
     chords = []
 
     for chord_slot in np.flatnonzero(artifact.chord_mask):
@@ -184,12 +213,9 @@ def calculate_onset_deltas(
         real_onset = (
             artifact.frame_start + target_frame
         ) / artifact.fps
-        peak_frame, peak_score = _chord_peak(
-            artifact.probability,
-            valid_frames,
-            chord_slot,
-        )
-        detected = peak_score >= threshold
+        peak_frame = int(onset_frames[chord_slot])
+        peak_score = float(peak_probabilities[chord_slot])
+        detected = peak_frame >= 0
         predicted_onset = (
             (artifact.frame_start + peak_frame) / artifact.fps
             if detected

@@ -51,6 +51,18 @@ class RunTest(unittest.TestCase):
             if name != "full-song":
                 handler.assert_not_called()
 
+    def test_dispatches_evaluation_stage(self) -> None:
+        config = OmegaConf.create({"stage": "evaluation"})
+        handlers = {name: Mock() for name in app.STAGES}
+
+        with patch.object(app, "STAGES", handlers):
+            app.main.__wrapped__(config)
+
+        handlers["evaluation"].assert_called_once_with(config)
+        for name, handler in handlers.items():
+            if name != "evaluation":
+                handler.assert_not_called()
+
     def test_dispatch_runs_stage_list_in_order_with_the_same_config(self) -> None:
         config = OmegaConf.create(
             {"stage": ["preprocess", "train", "test"], "sentinel": {"value": 1}}
@@ -75,7 +87,7 @@ class RunTest(unittest.TestCase):
         handlers["preprocess"].assert_called_once_with(config)
         handlers["train"].assert_called_once_with(config)
         handlers["test"].assert_called_once_with(config)
-        for name in ("realtime", "visualize", "sonify"):
+        for name in ("realtime", "evaluation", "visualize", "sonify"):
             handlers[name].assert_not_called()
 
     def test_stage_list_stops_after_a_handler_failure(self) -> None:

@@ -22,3 +22,14 @@ full_song:
   overwrite: false
   alignment_threshold: 0.2
   advance_after_chords: ${dataset.slicer.stride_frames}
+
+evaluation:
+  split_file: assets/splits/pianomotion10mseg/valid.txt
+  output_dir: ${output.dir}/eval
+  checkpoint: ${full_song.checkpoint}
+  overwrite: ${full_song.overwrite}
+  alignment_threshold: ${full_song.alignment_threshold}
+  advance_after_chords: ${full_song.advance_after_chords}
+  onset_threshold: ${sonify.threshold}
+  tolerances_frames: [0, 2, 4, 8, 16]
+  remove_inference_artifacts: true

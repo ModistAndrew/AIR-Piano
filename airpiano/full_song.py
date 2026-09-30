@@ -32,6 +32,12 @@ def infer_full_song(
 ) -> tuple[float, int, int]:
     """Infer one song online and return loss, loss weight, and shift count."""
 
+    if slicer.mode != "chord":
+        raise ValueError("full-song inference requires slicer.mode=chord")
+    if not model.causal_frame_attention:
+        raise ValueError(
+            "full-song inference requires a causal_frame_attention checkpoint"
+        )
     model.eval()
 
     frame_count = len(song.hands)

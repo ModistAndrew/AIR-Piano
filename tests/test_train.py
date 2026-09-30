@@ -472,6 +472,18 @@ class TrainTest(unittest.TestCase):
             str(config.full_song.output_dir),
             "outputs/causal_chord24/full_song",
         )
+        self.assertEqual(
+            str(config.evaluation.split_file),
+            "assets/splits/pianomotion10mseg/valid.txt",
+        )
+        self.assertEqual(
+            str(config.evaluation.output_dir),
+            "outputs/causal_chord24/eval",
+        )
+        self.assertEqual(
+            list(config.evaluation.tolerances_frames), [0, 2, 4, 8, 16]
+        )
+        self.assertTrue(bool(config.evaluation.remove_inference_artifacts))
 
     def test_wrist_chord24_random_hand_shift_config(self) -> None:
         config_directory = Path(__file__).parents[1] / "configs"
