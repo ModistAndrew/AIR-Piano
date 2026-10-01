@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import os
 import subprocess
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,10 +16,16 @@ from typing import Iterator, Sequence
 import cv2
 import numpy as np
 
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if __package__ in (None, ""):
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from airpiano.preprocessing.canonical import SUPPORTED_RAW_SCHEMA_VERSIONS
 from airpiano.utils import resolve_path
 
-from .cache import open_video_reader, read_manifest
-from .selection import select_best_hand_indices
+from airpiano.preprocessing.wilor.cache import open_video_reader
+from airpiano.preprocessing.wilor.selection import select_best_hand_indices
 
 
 HAND_NAMES = ("LEFT", "RIGHT")
@@ -29,6 +37,7 @@ HAND_CONNECTIONS = (
     (0, 13), (13, 14), (14, 15), (15, 16),
     (0, 17), (17, 18), (18, 19), (19, 20),
 )
+FINGERTIP_LABELS = {4: "T", 8: "I", 12: "M", 16: "R", 20: "P"}
 DEPTH_COLORS = cv2.applyColorMap(
     np.arange(256, dtype=np.uint8).reshape(-1, 1), cv2.COLORMAP_TURBO
 )[:, 0]
@@ -46,6 +55,21 @@ class RaggedFrame:
     keypoints_2d_full: np.ndarray
     absolute_z: np.ndarray
     selected_indices: np.ndarray
+
+
+def read_visualization_manifest(raw_cache_dir: Path) -> dict:
+    """Read either storage-compatible raw schema supported by visualization."""
+
+    path = raw_cache_dir / "manifest.json"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    schema_version = manifest["schema_version"]
+    if schema_version not in SUPPORTED_RAW_SCHEMA_VERSIONS:
+        raise ValueError(
+            f"raw WiLoR cache schema mismatch at {path}: expected one of "
+            f"{sorted(SUPPORTED_RAW_SCHEMA_VERSIONS)!r}, found "
+            f"{schema_version!r}"
+        )
+    return manifest
 
 
 def frame_bounds(
@@ -124,11 +148,14 @@ def iter_ragged_frames(
                 )
 
 
-def selected_depth_range(frames: Iterator[RaggedFrame]) -> tuple[float, float] | None:
-    """Return exact depth limits over only the two selected hand tracks."""
+def selected_depth_ranges(
+    frames: Iterator[RaggedFrame],
+) -> tuple[tuple[float, float] | None, tuple[float, float] | None]:
+    """Return absolute and wrist-relative limits for selected hand tracks."""
 
     minimum = math.inf
     maximum = -math.inf
+    relative_extent = 0.0
     for frame in frames:
         for detection in frame.selected_indices:
             if detection < 0:
@@ -136,7 +163,20 @@ def selected_depth_range(frames: Iterator[RaggedFrame]) -> tuple[float, float] |
             values = frame.absolute_z[int(detection)]
             minimum = min(minimum, float(values.min()))
             maximum = max(maximum, float(values.max()))
-    return None if minimum == math.inf else (minimum, maximum)
+            relative_extent = max(
+                relative_extent,
+                float(np.abs(values - values[0]).max()),
+            )
+    if minimum == math.inf:
+        return None, None
+    relative_extent = max(relative_extent, 1e-6)
+    return (minimum, maximum), (-relative_extent, relative_extent)
+
+
+def selected_depth_range(frames: Iterator[RaggedFrame]) -> tuple[float, float] | None:
+    """Return exact absolute-depth limits over selected hand tracks."""
+
+    return selected_depth_ranges(frames)[0]
 
 
 def depth_color(value: float, limits: tuple[float, float]) -> tuple[int, int, int]:
@@ -165,18 +205,122 @@ def _put_text(
     )
 
 
+def relative_depth_view_height(source_height: int) -> int:
+    """Choose an even-height panel while preserving an even output height."""
+
+    height = max(180, round(source_height * 0.32))
+    return height + (source_height + height) % 2
+
+
+def draw_relative_depth_view(
+    width: int,
+    height: int,
+    ragged: RaggedFrame,
+    limits: tuple[float, float] | None,
+) -> np.ndarray:
+    """Draw image-X versus camera-depth profiles with every wrist at zero."""
+
+    view = np.full((height, width, 3), (18, 20, 27), dtype=np.uint8)
+    _put_text(view, "WRIST-RELATIVE DEPTH", (12, 23), scale=0.52)
+    _put_text(
+        view,
+        "horizontal: image position   vertical: depth from wrist",
+        (12, 44),
+        color=(180, 185, 195),
+        scale=0.37,
+    )
+    if limits is None:
+        _put_text(view, "No selected hands", (12, 78), scale=0.45)
+        return view
+
+    minimum, maximum = limits
+    plot_top = 58
+    plot_bottom = height - 23
+    plot_height = max(1, plot_bottom - plot_top)
+
+    def depth_y(value: float) -> int:
+        fraction = (value - minimum) / (maximum - minimum)
+        return round(plot_top + fraction * plot_height)
+
+    for value, label in (
+        (minimum, f"near {minimum * 100:+.1f} cm"),
+        (0.0, "wrist 0 cm"),
+        (maximum, f"far {maximum * 100:+.1f} cm"),
+    ):
+        y = depth_y(value)
+        color = (100, 104, 115) if value == 0.0 else (55, 58, 67)
+        cv2.line(view, (0, y), (width - 1, y), color, 1, cv2.LINE_AA)
+        _put_text(view, label, (8, max(12, y - 4)), color=(180, 185, 195), scale=0.34)
+
+    line_width = max(1, round(min(width, height) / 400))
+    for slot, detection in enumerate(ragged.selected_indices):
+        if detection < 0:
+            continue
+        detection = int(detection)
+        x_values = np.rint(ragged.keypoints_2d_full[detection, :, 0]).astype(np.int32)
+        x_values = np.clip(x_values, 0, width - 1)
+        relative_z = ragged.absolute_z[detection] - ragged.absolute_z[detection, 0]
+        points = np.column_stack((
+            x_values,
+            np.asarray([depth_y(float(value)) for value in relative_z]),
+        )).astype(np.int32)
+        color = HAND_COLORS[slot]
+        for first, second in HAND_CONNECTIONS:
+            cv2.line(
+                view,
+                tuple(points[first]),
+                tuple(points[second]),
+                color,
+                line_width + 1,
+                cv2.LINE_AA,
+            )
+        for joint, point in enumerate(points):
+            radius = line_width + (4 if joint == 0 else 2)
+            cv2.circle(view, tuple(point), radius, color, -1, cv2.LINE_AA)
+            label = FINGERTIP_LABELS.get(joint)
+            if label is not None:
+                _put_text(
+                    view,
+                    label,
+                    (int(point[0]) + 4, int(point[1]) - 4),
+                    color=color,
+                    scale=0.32,
+                )
+        wrist = points[0]
+        _put_text(
+            view,
+            f"{HAND_NAMES[slot][0]} wrist",
+            (int(wrist[0]) + 7, int(wrist[1]) - 7),
+            color=color,
+            scale=0.36,
+        )
+    return view
+
+
 def draw_overlay(
     source_frame: np.ndarray,
     ragged: RaggedFrame,
     fps: float,
     limits: tuple[float, float] | None,
+    relative_limits: tuple[float, float] | None = None,
 ) -> np.ndarray:
-    """Draw candidates plus depth-colored selected skeletons on one BGR frame."""
+    """Draw the source overlay above a wrist-relative depth profile."""
 
     image = source_frame.copy()
     height, width = image.shape[:2]
     line_width = max(1, round(min(width, height) / 600))
     selected = {int(index) for index in ragged.selected_indices if index >= 0}
+    if relative_limits is None and selected:
+        relative_extent = max(
+            float(
+                np.abs(
+                    ragged.absolute_z[index] - ragged.absolute_z[index, 0]
+                ).max()
+            )
+            for index in selected
+        )
+        relative_extent = max(relative_extent, 1e-6)
+        relative_limits = (-relative_extent, relative_extent)
 
     for index, (box, score, handedness) in enumerate(zip(
         ragged.boxes_xyxy,
@@ -255,7 +399,13 @@ def draw_overlay(
             far, cv2.FONT_HERSHEY_SIMPLEX, 0.35, 1
         )[0][0]
         _put_text(image, far, (x0 + bar_width - text_width, y0 - 4), scale=0.35)
-    return image
+    depth_view = draw_relative_depth_view(
+        width,
+        relative_depth_view_height(height),
+        ragged,
+        relative_limits,
+    )
+    return np.concatenate((image, depth_view), axis=0)
 
 
 def _ffmpeg_command(
@@ -300,7 +450,7 @@ def render_ragged_video(
     if output.exists() and not overwrite:
         raise FileExistsError(output)
 
-    manifest = read_manifest(raw_cache)
+    manifest = read_visualization_manifest(raw_cache)
     chunks = tuple(dict(chunk) for chunk in manifest["chunks"])
     if not chunks:
         raise ValueError("raw WiLoR manifest has no published chunks")
@@ -310,7 +460,7 @@ def render_ragged_video(
         chunks, fps, start_seconds, duration_seconds
     )
     frame_count = end_frame - start_frame
-    limits = selected_depth_range(
+    limits, relative_limits = selected_depth_ranges(
         iter_ragged_frames(raw_cache, chunks, start_frame, end_frame)
     )
 
@@ -333,7 +483,9 @@ def render_ragged_video(
             video,
             temporary,
             int(metadata["width"]),
-            int(metadata["height"]),
+            int(metadata["height"]) + relative_depth_view_height(
+                int(metadata["height"])
+            ),
             fps,
             start_frame,
             frame_count,
@@ -363,7 +515,15 @@ def render_ragged_video(
                 raise ValueError(
                     f"source frame shape {source_frame.shape} != {expected_shape}"
                 )
-            process.stdin.write(draw_overlay(source_frame, ragged, fps, limits).tobytes())
+            process.stdin.write(
+                draw_overlay(
+                    source_frame,
+                    ragged,
+                    fps,
+                    limits,
+                    relative_limits,
+                ).tobytes()
+            )
             rendered_count += 1
         if rendered_count != frame_count:
             raise ValueError(

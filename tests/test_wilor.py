@@ -16,6 +16,7 @@ import numpy as np
 from airpiano.preprocessing import video as video_module
 from airpiano.preprocessing.wilor import backend as backend_module
 from airpiano.preprocessing.wilor import cache as cache_module
+from scripts import visualize as visualize_module
 
 
 def _empty_chunk(
@@ -88,6 +89,87 @@ class _Backend:
         if len(self.calls) == self.fail_on_call:
             raise RuntimeError("simulated interruption")
         return _empty_chunk(list(indices), list(timestamps))
+
+
+class VisualizationManifestTest(unittest.TestCase):
+    def test_accepts_current_and_legacy_raw_schemas(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            raw_cache = Path(directory)
+            manifest_path = raw_cache / "manifest.json"
+
+            for schema_version in (
+                "airpiano-wilor-ragged-v1",
+                "pianomotion-wilor-v1",
+            ):
+                manifest_path.write_text(
+                    json.dumps({"schema_version": schema_version}),
+                    encoding="utf-8",
+                )
+                manifest = visualize_module.read_visualization_manifest(raw_cache)
+                self.assertEqual(manifest["schema_version"], schema_version)
+
+    def test_rejects_unknown_raw_schema(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            raw_cache = Path(directory)
+            (raw_cache / "manifest.json").write_text(
+                json.dumps({"schema_version": "unknown-wilor-v1"}),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(
+                ValueError,
+                "schema mismatch.*unknown-wilor-v1",
+            ):
+                visualize_module.read_visualization_manifest(raw_cache)
+
+    def test_selected_depth_ranges_include_wrist_relative_scale(self) -> None:
+        absolute_z = np.ones((1, 21), dtype=np.float32)
+        absolute_z[0, 4] = 0.97
+        absolute_z[0, 8] = 1.05
+        frame = visualize_module.RaggedFrame(
+            frame_index=0,
+            timestamp_seconds=0.0,
+            boxes_xyxy=np.zeros((1, 4), dtype=np.float32),
+            detector_confidence=np.ones(1, dtype=np.float32),
+            is_right=np.zeros(1, dtype=np.uint8),
+            keypoints_2d_full=np.zeros((1, 21, 2), dtype=np.float32),
+            absolute_z=absolute_z,
+            selected_indices=np.asarray([0, -1], dtype=np.int64),
+        )
+
+        absolute, relative = visualize_module.selected_depth_ranges(iter([frame]))
+
+        np.testing.assert_allclose(absolute, (0.97, 1.05))
+        np.testing.assert_allclose(relative, (-0.05, 0.05), atol=1e-7)
+
+    def test_overlay_appends_wrist_relative_depth_view(self) -> None:
+        source = np.zeros((120, 320, 3), dtype=np.uint8)
+        keypoints = np.zeros((1, 21, 2), dtype=np.float32)
+        keypoints[0, :, 0] = np.linspace(80, 240, 21)
+        keypoints[0, :, 1] = 60
+        absolute_z = np.linspace(0.96, 1.04, 21, dtype=np.float32)[None]
+        ragged = visualize_module.RaggedFrame(
+            frame_index=0,
+            timestamp_seconds=0.0,
+            boxes_xyxy=np.asarray([[70, 40, 250, 80]], dtype=np.float32),
+            detector_confidence=np.ones(1, dtype=np.float32),
+            is_right=np.zeros(1, dtype=np.uint8),
+            keypoints_2d_full=keypoints,
+            absolute_z=absolute_z,
+            selected_indices=np.asarray([0, -1], dtype=np.int64),
+        )
+
+        output = visualize_module.draw_overlay(
+            source,
+            ragged,
+            fps=30.0,
+            limits=(0.96, 1.04),
+            relative_limits=(-0.08, 0.08),
+        )
+
+        panel_height = visualize_module.relative_depth_view_height(source.shape[0])
+        self.assertEqual(output.shape, (source.shape[0] + panel_height, 320, 3))
+        self.assertGreater(np.count_nonzero(output[source.shape[0]:]), 0)
 
 
 def _video_metadata(frame_count: int, fps: float = 30.0) -> dict[str, object]:

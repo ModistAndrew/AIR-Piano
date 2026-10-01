@@ -103,7 +103,7 @@ The alignment loss is selected by `alignment_loss`; BCE remains the default.
 | `airpiano/preprocessing/video.py` | Public `VideoToWiLoR` Hydra component. |
 | `airpiano/preprocessing/wilor/backend.py` | Headless model loading, baseline crop preprocessing, and batched inference. |
 | `airpiano/preprocessing/wilor/cache.py` | Video probing/decoding, atomic chunks/manifests, resumption, and completion. |
-| `airpiano/preprocessing/wilor/visualize.py` | Standalone native-video overlay for ragged detections and absolute depth. |
+| `scripts/visualize.py` | Standalone native-video overlay for ragged detections and wrist-relative depth. |
 | `airpiano/preprocessing/canonical.py` | Best-left/right selection and fixed-rate canonicalization. |
 | `airpiano/data/` | Relative-stem pairing, MIDI/hand loading, slicing, targets, eager datasets, and DataLoader construction. |
 | `airpiano/model/` | Fixed transformer layers, assembly, and masked BCE. |
@@ -126,7 +126,7 @@ Useful explicit imports are:
 from airpiano.preprocessing.pipeline import preprocess
 from airpiano.preprocessing.video import VideoToWiLoR
 from airpiano.preprocessing.canonical import PianoMotion10MPostprocessor, WiLoRCoordinateConverter, WiLoRToCanonical
-from airpiano.preprocessing.wilor.visualize import render_ragged_video
+from scripts.visualize import render_ragged_video
 from airpiano.data import build_data_components, build_dataset, make_loader
 from airpiano.train import train
 from airpiano.inference import test
@@ -577,10 +577,19 @@ draws inference heatmaps. It requires no WiLoR model and does not produce or
 modify pose caches:
 
 ```bash
-conda run -n v2n python -m airpiano.preprocessing.wilor.visualize \
+conda run -n v2n python scripts/visualize.py \
   --video /storage/jinxuan/data/AirPianoFull/Video/PianoMotion10M/442401135/BV1ED4y1D75s.mp4 \
   --raw-cache /storage2/jinxuan/data/AirPianoFull/wilor/PianoMotion10M/442401135/BV1ED4y1D75s \
   --output outputs/baseline/visualizations/wilor/BV1ED4y1D75s.mp4
+```
+
+For the PianoYTSeg example:
+
+```bash
+conda run -n v2n python scripts/visualize.py \
+  --video /storage/jinxuan/data/AirPianoFull/Video/PianoYTSeg/_3qnL9ddHuw/_3qnL9ddHuw_seq_0000.mp4 \
+  --raw-cache /storage2/jinxuan/data/AirPianoFull/wilor/PianoYTSeg/_3qnL9ddHuw/_3qnL9ddHuw_seq_0000 \
+  --output outputs/wilor_visualizations/_3qnL9ddHuw_seq_0000.mp4
 ```
 
 By default it renders every frame in the manifest's published chunk snapshot.
@@ -589,7 +598,7 @@ so overlays use exactly the frames processed by WiLoR.
 Use a half-open time excerpt when a full performance is unnecessary:
 
 ```bash
-conda run -n v2n python -m airpiano.preprocessing.wilor.visualize \
+conda run -n v2n python scripts/visualize.py \
   --video /absolute/path/to/source.mp4 \
   --raw-cache /absolute/path/to/raw_cache \
   --output /absolute/path/to/overlay.mp4 \
@@ -607,17 +616,20 @@ pred_keypoints_3d[..., 2] + pred_cam_t_full[..., 2]
 
 Bones use their endpoint mean depth. One exact selected-joint min/max range and
 numeric near/far legend are shared across the rendered interval, so color does
-not flicker between frames. Source audio for the interval is retained when it
-exists; silent videos remain silent. A cache with `status: processing` can be
-inspected through its already-published chunks, and chunks published after the
-manifest snapshot are intentionally excluded.
+not flicker between frames. A second panel below the source view plots image-X
+against each joint's depth relative to its wrist. Its symmetric interval-wide
+scale keeps the wrist at zero and makes nearer/farther fingertips directly
+comparable without frame-to-frame rescaling. Source audio for the interval is
+retained when it exists; silent videos remain silent. A cache with
+`status: processing` can be inspected through its already-published chunks,
+and chunks published after the manifest snapshot are intentionally excluded.
 
 ### Raw schema compatibility policy
 
-The raw producer writes only `airpiano-wilor-ragged-v1`. Canonicalization also
-accepts the verified, storage-compatible `pianomotion-wilor-v1` schema used by
-the legacy PianoMotion cache. Unknown schemas still raise a schema-mismatch
-`ValueError`.
+The raw producer writes only `airpiano-wilor-ragged-v1`. Canonicalization and
+the standalone raw visualizer also accept the verified, storage-compatible
+`pianomotion-wilor-v1` schema used by the legacy PianoMotion cache. Unknown
+schemas still raise a schema-mismatch `ValueError`.
 
 Legacy support is read-only: producer reuse and partial-cache resumption still
 require `airpiano-wilor-ragged-v1`. This prevents the current producer from
