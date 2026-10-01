@@ -33,6 +33,54 @@ def _active_chords(
     return active
 
 
+def _alignment_observations(
+    artifact: InferenceArtifact,
+    onset_threshold: float,
+) -> tuple[np.ndarray, dict[int, int | None]]:
+    """Return frame correctness and onset errors at relative indices."""
+
+    valid_frames = np.flatnonzero(artifact.frame_mask)
+    if valid_frames.size == 0:
+        return np.empty(0, dtype=np.bool_), {}
+
+    ground_truth_frames = {}
+    for chord_slot in np.flatnonzero(artifact.chord_mask):
+        chord_slot = int(chord_slot)
+        scores = artifact.target[valid_frames, chord_slot]
+        if not np.any(scores > 0.0):
+            continue
+        target_frame = int(valid_frames[int(np.argmax(scores))])
+        ground_truth_frames[chord_slot] = artifact.frame_start + target_frame
+
+    if not ground_truth_frames:
+        return np.empty(0, dtype=np.bool_), {}
+
+    predicted_local_frames, _ = decode_chord_onsets(
+        artifact,
+        threshold=onset_threshold,
+    )
+    predicted_frames = {
+        chord_slot: artifact.frame_start
+        + int(predicted_local_frames[chord_slot])
+        for chord_slot in ground_truth_frames
+        if predicted_local_frames[chord_slot] >= 0
+    }
+    global_frames = artifact.frame_start + valid_frames
+    first_onset = min(ground_truth_frames.values())
+    evaluated_frames = global_frames[global_frames >= first_onset]
+    real_active = _active_chords(evaluated_frames, ground_truth_frames)
+    predicted_active = _active_chords(evaluated_frames, predicted_frames)
+    chord_errors = {
+        chord_slot: (
+            abs(predicted_frames[chord_slot] - ground_truth_frame)
+            if chord_slot in predicted_frames
+            else None
+        )
+        for chord_slot, ground_truth_frame in ground_truth_frames.items()
+    }
+    return real_active == predicted_active, chord_errors
+
+
 def _empty_metrics(tolerances: Sequence[int]) -> dict[str, object]:
     return {
         "chord_acc": None,
@@ -50,57 +98,21 @@ def _empty_metrics(tolerances: Sequence[int]) -> dict[str, object]:
     }
 
 
-def calculate_alignment_metrics(
+def _metrics_from_observations(
     artifact: InferenceArtifact,
-    *,
-    onset_threshold: float,
-    tolerances_frames: Sequence[int],
+    frame_correct: np.ndarray,
+    chord_errors: dict[int, int | None],
+    tolerances: Sequence[int],
 ) -> dict[str, object]:
-    """Calculate frame and chord alignment metrics for one artifact."""
-
-    tolerances = tuple(int(value) for value in tolerances_frames)
-    valid_frames = np.flatnonzero(artifact.frame_mask)
-    if valid_frames.size == 0:
+    if not chord_errors:
         return _empty_metrics(tolerances)
-
-    valid_chords = np.flatnonzero(artifact.chord_mask)
-    global_frames = artifact.frame_start + valid_frames
-    ground_truth_frames = {}
-    for chord_slot in valid_chords:
-        chord_slot = int(chord_slot)
-        scores = artifact.target[valid_frames, chord_slot]
-        if not np.any(scores > 0.0):
-            continue
-        target_frame = int(valid_frames[int(np.argmax(scores))])
-        ground_truth_frames[chord_slot] = artifact.frame_start + target_frame
-
-    if not ground_truth_frames:
-        return _empty_metrics(tolerances)
-
-    predicted_local_frames, _ = decode_chord_onsets(
-        artifact,
-        threshold=onset_threshold,
-    )
-    predicted_frames = {
-        chord_slot: artifact.frame_start
-        + int(predicted_local_frames[chord_slot])
-        for chord_slot in ground_truth_frames
-        if predicted_local_frames[chord_slot] >= 0
-    }
-
-    first_onset = min(ground_truth_frames.values())
-    evaluated_frames = global_frames[global_frames >= first_onset]
-    real_active = _active_chords(evaluated_frames, ground_truth_frames)
-    predicted_active = _active_chords(evaluated_frames, predicted_frames)
-    correct_frame_count = int((real_active == predicted_active).sum())
-    evaluated_frame_count = len(evaluated_frames)
 
     absolute_errors = [
-        abs(predicted_frames[chord_slot] - ground_truth_frame)
-        for chord_slot, ground_truth_frame in ground_truth_frames.items()
-        if chord_slot in predicted_frames
+        int(error) for error in chord_errors.values() if error is not None
     ]
-    chord_count = len(ground_truth_frames)
+    correct_frame_count = int(frame_correct.sum())
+    evaluated_frame_count = len(frame_correct)
+    chord_count = len(chord_errors)
     detected_count = len(absolute_errors)
     correct_chord_counts = {
         str(tolerance): sum(error <= tolerance for error in absolute_errors)
@@ -136,6 +148,23 @@ def calculate_alignment_metrics(
         "absolute_error_frames_sum": absolute_error_frames_sum,
         "absolute_error_seconds_sum": absolute_error_seconds_sum,
     }
+
+
+def calculate_alignment_metrics(
+    artifact: InferenceArtifact,
+    *,
+    onset_threshold: float,
+    tolerances_frames: Sequence[int],
+) -> dict[str, object]:
+    """Calculate frame and chord alignment metrics for one artifact."""
+
+    tolerances = tuple(int(value) for value in tolerances_frames)
+    frame_correct, chord_errors = _alignment_observations(
+        artifact, onset_threshold
+    )
+    return _metrics_from_observations(
+        artifact, frame_correct, chord_errors, tolerances
+    )
 
 
 def aggregate_alignment_metrics(
@@ -218,6 +247,138 @@ def aggregate_alignment_metrics(
     return micro, macro
 
 
+def aggregate_indexed_alignment_metrics(
+    observations: Sequence[tuple[np.ndarray, dict[int, int | None]]],
+    tolerances_frames: Sequence[int],
+) -> dict[str, object]:
+    """Average frame and chord correctness at each relative index."""
+
+    tolerances = tuple(int(value) for value in tolerances_frames)
+    frame_count = max((len(frames) for frames, _ in observations), default=0)
+    chord_count = max(
+        (max(errors, default=-1) + 1 for _, errors in observations),
+        default=0,
+    )
+    frame_observation_counts = np.zeros(frame_count, dtype=np.int64)
+    frame_correct_counts = np.zeros(frame_count, dtype=np.int64)
+    chord_observation_counts = np.zeros(chord_count, dtype=np.int64)
+    chord_correct_counts = {
+        str(tolerance): np.zeros(chord_count, dtype=np.int64)
+        for tolerance in tolerances
+    }
+
+    for frame_correct, chord_errors in observations:
+        count = len(frame_correct)
+        frame_observation_counts[:count] += 1
+        frame_correct_counts[:count] += frame_correct.astype(np.int64)
+        for chord_slot, error in chord_errors.items():
+            chord_observation_counts[chord_slot] += 1
+            if error is None:
+                continue
+            for tolerance in tolerances:
+                if error <= tolerance:
+                    chord_correct_counts[str(tolerance)][chord_slot] += 1
+
+    frame_rates = np.divide(
+        frame_correct_counts,
+        frame_observation_counts,
+        out=np.full(frame_count, np.nan, dtype=np.float64),
+        where=frame_observation_counts > 0,
+    )
+    chord_rates = {
+        key: np.divide(
+            counts,
+            chord_observation_counts,
+            out=np.full(chord_count, np.nan, dtype=np.float64),
+            where=chord_observation_counts > 0,
+        )
+        for key, counts in chord_correct_counts.items()
+    }
+    return {
+        "frame_chord_acc": frame_rates,
+        "frame_observation_count": frame_observation_counts,
+        "chord_c_ar": chord_rates,
+        "chord_observation_count": chord_observation_counts,
+    }
+
+
+def plot_indexed_alignment_summary(
+    indexed_metrics: dict[str, object],
+    tolerances_frames: Sequence[int],
+    output_path: str | Path,
+) -> Path:
+    """Draw ChordAcc by frame index and C-AR by chord index."""
+
+    import os
+    import tempfile
+
+    matplotlib_config = Path(tempfile.gettempdir()) / "airpiano-matplotlib"
+    matplotlib_config.mkdir(parents=True, exist_ok=True)
+    os.environ.setdefault("MPLCONFIGDIR", str(matplotlib_config))
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.ticker import MaxNLocator
+
+    frame_rates = np.asarray(indexed_metrics["frame_chord_acc"])
+    chord_rates = indexed_metrics["chord_c_ar"]
+    chord_count = len(indexed_metrics["chord_observation_count"])
+    width = max(
+        8.0,
+        min(18.0, max(len(frame_rates) / 60.0, chord_count * 0.5)),
+    )
+    figure, axes = plt.subplots(
+        2,
+        1,
+        figsize=(width, 10.0),
+        constrained_layout=True,
+    )
+
+    frame_indices = np.arange(len(frame_rates))
+    if len(frame_rates):
+        axes[0].plot(frame_indices, frame_rates, color="#4c72b0")
+    else:
+        axes[0].text(0.5, 0.5, "No evaluated frames", ha="center", va="center")
+    axes[0].set_xlabel("Frame index from first ground-truth onset")
+    axes[0].set_ylabel("ChordAcc")
+    axes[0].set_title("ChordAcc by relative evaluated frame index")
+    axes[0].set_ylim(0.0, 1.0)
+    axes[0].xaxis.set_major_locator(MaxNLocator(integer=True))
+    axes[0].grid(alpha=0.25)
+
+    chord_indices = np.arange(chord_count)
+    plotted = False
+    for tolerance in tolerances_frames:
+        rates = np.asarray(chord_rates[str(int(tolerance))])
+        if not len(rates):
+            continue
+        axes[1].plot(
+            chord_indices,
+            rates,
+            marker="o",
+            markersize=3.0,
+            label=f"delta={int(tolerance)} frames",
+        )
+        plotted = True
+    if plotted:
+        axes[1].legend()
+    else:
+        axes[1].text(0.5, 0.5, "No evaluated chords", ha="center", va="center")
+    axes[1].set_xlabel("Relative chord index")
+    axes[1].set_ylabel("C-AR")
+    axes[1].set_title("C-AR by relative chord index")
+    axes[1].set_ylim(0.0, 1.0)
+    axes[1].xaxis.set_major_locator(MaxNLocator(integer=True))
+    axes[1].grid(alpha=0.25)
+
+    output = resolve_path(output_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    figure.savefig(output, dpi=180, bbox_inches="tight", facecolor="white")
+    plt.close(figure)
+    return output
+
+
 def evaluation(cfg: DictConfig) -> None:
     """Calculate alignment metrics for stored inference artifacts."""
 
@@ -227,6 +388,7 @@ def evaluation(cfg: DictConfig) -> None:
             f"evaluation artifact root not found: {artifact_root}"
         )
     metrics_path = resolve_path(cfg.evaluation.output_path)
+    plot_path = metrics_path.with_suffix(".png")
     tolerances = tuple(int(value) for value in cfg.evaluation.tolerances_frames)
     onset_threshold = float(cfg.evaluation.onset_threshold)
     remove_artifacts = bool(cfg.evaluation.remove_inference_artifacts)
@@ -236,12 +398,15 @@ def evaluation(cfg: DictConfig) -> None:
     )
 
     reports = []
+    indexed_observations = []
     for index, artifact_path in enumerate(artifact_paths, 1):
         artifact = load_artifact(artifact_path)
-        item_metrics = calculate_alignment_metrics(
-            artifact,
-            onset_threshold=onset_threshold,
-            tolerances_frames=tolerances,
+        frame_correct, chord_errors = _alignment_observations(
+            artifact, onset_threshold
+        )
+        indexed_observations.append((frame_correct, chord_errors))
+        item_metrics = _metrics_from_observations(
+            artifact, frame_correct, chord_errors, tolerances
         )
         reports.append(
             {
@@ -277,9 +442,16 @@ def evaluation(cfg: DictConfig) -> None:
     average_duration_seconds = (
         total_duration_seconds / len(reports) if reports else None
     )
+    indexed_metrics = aggregate_indexed_alignment_metrics(
+        indexed_observations, tolerances
+    )
+    summary_plot = plot_indexed_alignment_summary(
+        indexed_metrics, tolerances, plot_path
+    )
     summary = {
-        "schema_version": "airpiano-evaluation-v3",
+        "schema_version": "airpiano-evaluation-v4",
         "artifact_root": str(artifact_root),
+        "summary_plot_path": str(summary_plot),
         "onset_threshold": onset_threshold,
         "tolerances_frames": list(tolerances),
         "artifact_count": len(reports),
@@ -318,10 +490,13 @@ def evaluation(cfg: DictConfig) -> None:
             f"from {artifact_root}",
             flush=True,
         )
+    print(f"wrote evaluation summary chart {summary_plot}", flush=True)
 
 
 __all__ = [
     "aggregate_alignment_metrics",
+    "aggregate_indexed_alignment_metrics",
     "calculate_alignment_metrics",
     "evaluation",
+    "plot_indexed_alignment_summary",
 ]

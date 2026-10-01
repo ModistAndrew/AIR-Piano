@@ -172,6 +172,65 @@ class AlignmentMetricTest(unittest.TestCase):
         self.assertEqual(macro["artifact_count"], 2)
         self.assertEqual(macro["onset_mae_artifact_count"], 2)
 
+    def test_indexed_rates_and_plot_follow_relative_positions(self) -> None:
+        observations = [
+            evaluation_stage._alignment_observations(
+                _artifact([1, None, 9]), 0.5
+            ),
+            evaluation_stage._alignment_observations(
+                _artifact([1], frame_count=3), 0.5
+            ),
+        ]
+        indexed = evaluation_stage.aggregate_indexed_alignment_metrics(
+            observations, (0, 2)
+        )
+
+        np.testing.assert_array_equal(
+            indexed["frame_observation_count"],
+            [2, 2, 1, 1, 1, 1, 1, 1, 1],
+        )
+        np.testing.assert_allclose(
+            indexed["frame_chord_acc"],
+            [1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+        )
+        np.testing.assert_array_equal(
+            indexed["chord_observation_count"], [2, 1, 1]
+        )
+        np.testing.assert_allclose(indexed["chord_c_ar"]["0"], [1, 0, 0])
+        np.testing.assert_allclose(indexed["chord_c_ar"]["2"], [1, 0, 1])
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            chart = root / "summary.png"
+            with patch.dict(
+                "os.environ", {"MPLCONFIGDIR": str(root / "matplotlib")}
+            ):
+                import matplotlib.axes
+
+                original_plot = matplotlib.axes.Axes.plot
+                with patch.object(
+                    matplotlib.axes.Axes,
+                    "plot",
+                    autospec=True,
+                    side_effect=original_plot,
+                ) as plot:
+                    self.assertEqual(
+                        evaluation_stage.plot_indexed_alignment_summary(
+                            indexed, (0, 2), chart
+                        ),
+                        chart.resolve(),
+                    )
+                    self.assertTrue(chart.is_file())
+
+        self.assertEqual(plot.call_count, 3)
+        frame_call, exact_call, tolerant_call = plot.call_args_list
+        np.testing.assert_array_equal(frame_call.args[1], np.arange(9))
+        np.testing.assert_allclose(
+            frame_call.args[2], indexed["frame_chord_acc"]
+        )
+        np.testing.assert_allclose(exact_call.args[2], [1, 0, 0])
+        np.testing.assert_allclose(tolerant_call.args[2], [1, 0, 1])
+
     def test_no_detections_keep_zero_rates_and_null_mae(self) -> None:
         metrics = calculate_alignment_metrics(
             _artifact([None]),
@@ -239,7 +298,7 @@ class EvaluationStageTest(unittest.TestCase):
             report = json.loads(
                 (root / "metrics.json").read_text(encoding="utf-8")
             )
-            self.assertEqual(report["schema_version"], "airpiano-evaluation-v3")
+            self.assertEqual(report["schema_version"], "airpiano-evaluation-v4")
             self.assertEqual(report["artifact_count"], 3)
             self.assertAlmostEqual(report["average_duration_seconds"], 4 / 3)
             self.assertEqual(report["total_duration_seconds"], 4.0)
@@ -273,7 +332,13 @@ class EvaluationStageTest(unittest.TestCase):
             self.assertTrue(report["summary_only"])
             self.assertAlmostEqual(report["average_duration_seconds"], 4 / 3)
             self.assertEqual(report["total_duration_seconds"], 4.0)
+            self.assertEqual(
+                Path(report["summary_plot_path"]),
+                (root / "metrics.png").resolve(),
+            )
+            self.assertTrue((root / "metrics.png").is_file())
             self.assertNotIn("artifacts", report)
+            self.assertNotIn("indexed_metrics", report)
             self.assertNotIn("unique_record_ids", report)
             console = output.getvalue()
             self.assertNotIn("evaluation 1/3", console)
@@ -282,6 +347,7 @@ class EvaluationStageTest(unittest.TestCase):
             self.assertIn(
                 "evaluation average_duration_seconds=", console
             )
+            self.assertIn("wrote evaluation summary chart", console)
 
     def test_cleanup_removes_only_npzs_after_report_write(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -294,26 +360,33 @@ class EvaluationStageTest(unittest.TestCase):
             self.assertTrue((root / "metrics.json").is_file())
             self.assertTrue((root / "artifacts" / "test_loss.json").is_file())
             self.assertTrue(all(not path.exists() for path in paths))
+            self.assertTrue((root / "metrics.png").is_file())
             report = json.loads(
                 (root / "metrics.json").read_text(encoding="utf-8")
             )
             self.assertTrue(report["inference_artifacts_removed"])
 
-    def test_write_failure_preserves_inference_artifacts(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            paths = self._populate(root)
-            config = self._config(root, True)
+    def test_output_failure_preserves_inference_artifacts(self) -> None:
+        failures = (
+            ("plot_indexed_alignment_summary", "plot failed"),
+            ("write_json", "write failed"),
+        )
+        for function_name, message in failures:
+            with self.subTest(function_name=function_name):
+                with tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    paths = self._populate(root)
+                    config = self._config(root, True)
 
-            with patch.object(
-                evaluation_stage,
-                "write_json",
-                side_effect=OSError("write failed"),
-            ):
-                with self.assertRaisesRegex(OSError, "write failed"):
-                    evaluation_stage.evaluation(config)
+                    with patch.object(
+                        evaluation_stage,
+                        function_name,
+                        side_effect=OSError(message),
+                    ):
+                        with self.assertRaisesRegex(OSError, message):
+                            evaluation_stage.evaluation(config)
 
-            self.assertTrue(all(path.is_file() for path in paths))
+                    self.assertTrue(all(path.is_file() for path in paths))
 
 
 if __name__ == "__main__":
