@@ -11,6 +11,9 @@ from typing import Mapping
 import numpy as np
 from scipy.signal import savgol_filter
 
+from airpiano.preprocessing.skypiano import (
+    RAW_SCHEMA_VERSION as SKYPIANO_RAW_SCHEMA_VERSION,
+)
 from airpiano.preprocessing.wilor.selection import select_best_hand_indices
 from airpiano.utils import resolve_path, write_npz
 
@@ -18,7 +21,11 @@ from airpiano.utils import resolve_path, write_npz
 RAW_SCHEMA_VERSION = "airpiano-wilor-ragged-v1"
 LEGACY_RAW_SCHEMA_VERSION = "pianomotion-wilor-v1"
 SUPPORTED_RAW_SCHEMA_VERSIONS = frozenset(
-    {RAW_SCHEMA_VERSION, LEGACY_RAW_SCHEMA_VERSION}
+    {
+        RAW_SCHEMA_VERSION,
+        LEGACY_RAW_SCHEMA_VERSION,
+        SKYPIANO_RAW_SCHEMA_VERSION,
+    }
 )
 CANONICAL_SCHEMA_VERSION = "airpiano-wilor-canonical-v1"
 TARGET_FPS = 30.0
@@ -404,7 +411,11 @@ class WiLoRToCanonical:
                 f"{schema_version!r}"
             )
         frame_count = int(manifest["decoded_frame_count"])
-        source_fps = float(manifest["video"]["fps"])
+        source_fps = float(
+            manifest["motion"]["fps"]
+            if schema_version == SKYPIANO_RAW_SCHEMA_VERSION
+            else manifest["video"]["fps"]
+        )
 
         pose = np.zeros((frame_count, 2, 21, 3), dtype=np.float32)
         presence = np.zeros((frame_count, 2), dtype=np.bool_)

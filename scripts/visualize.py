@@ -21,7 +21,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if __package__ in (None, ""):
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from airpiano.preprocessing.canonical import SUPPORTED_RAW_SCHEMA_VERSIONS
+from airpiano.preprocessing.canonical import (
+    LEGACY_RAW_SCHEMA_VERSION,
+    RAW_SCHEMA_VERSION,
+)
 from airpiano.utils import resolve_path
 
 from airpiano.preprocessing.wilor.cache import open_video_reader
@@ -30,6 +33,9 @@ from airpiano.preprocessing.wilor.selection import select_best_hand_indices
 
 HAND_NAMES = ("LEFT", "RIGHT")
 HAND_COLORS = ((225, 90, 190), (55, 205, 255))  # BGR
+SUPPORTED_VISUALIZATION_SCHEMA_VERSIONS = frozenset(
+    {RAW_SCHEMA_VERSION, LEGACY_RAW_SCHEMA_VERSION}
+)
 HAND_CONNECTIONS = (
     (0, 1), (1, 2), (2, 3), (3, 4),
     (0, 5), (5, 6), (6, 7), (7, 8),
@@ -63,10 +69,10 @@ def read_visualization_manifest(raw_cache_dir: Path) -> dict:
     path = raw_cache_dir / "manifest.json"
     manifest = json.loads(path.read_text(encoding="utf-8"))
     schema_version = manifest["schema_version"]
-    if schema_version not in SUPPORTED_RAW_SCHEMA_VERSIONS:
+    if schema_version not in SUPPORTED_VISUALIZATION_SCHEMA_VERSIONS:
         raise ValueError(
             f"raw WiLoR cache schema mismatch at {path}: expected one of "
-            f"{sorted(SUPPORTED_RAW_SCHEMA_VERSIONS)!r}, found "
+            f"{sorted(SUPPORTED_VISUALIZATION_SCHEMA_VERSIONS)!r}, found "
             f"{schema_version!r}"
         )
     return manifest

@@ -1573,6 +1573,48 @@ PianoMotion top-camera convention. Existing outputs are reused; pass
 `--overwrite` to replace them. The configured `HandLoader` still applies the
 online factor of 10.
 
+#### Synthetic SKY-Piano ragged cache
+
+SKY-Piano's imputed 3D markers can also be stored in a raw, chunked cache for
+the 2.5D, wrist-relative XYZ, and camera-wrist-delta canonicalizers:
+
+```bash
+conda run -n v2n python scripts/convert_skypiano_wilor.py
+```
+
+The converter writes
+`assets/sky_piano/wilor/SKY-Piano/<record>/` using the explicit
+`airpiano-skypiano-ragged-v1` schema. It does not claim that the cache came
+from WiLoR inference and does not synthesize MANO parameters. Instead, it
+stores the local 3D marker joints, absolute virtual-camera wrists, projected
+2D joints, and tight projected boxes needed by the supported AirPiano
+canonicalizers.
+
+One shared 1920x1080 pinhole camera uses WiLoR's focal-length convention. Its
+translation is fitted to the 0.1--99.9 percentile bounds of all input hand
+joints and is saved in `SKY-Piano/_camera.json` and every record manifest. A
+hand is omitted when any projected joint lies outside the image. Existing
+complete outputs are reused; `--overwrite` replaces the entire `SKY-Piano`
+destination so records cannot retain mixed camera fits.
+
+The converter produces only the raw cache. Generate a 2.5D canonical root
+later with:
+
+```bash
+conda run -n v2n python run.py stage=preprocess \
+  preprocess.task=ragged_to_canonical \
+  'preprocess.split_files=[assets/splits/skypiano.txt]' \
+  data.raw_wilor_root=assets/sky_piano/wilor \
+  data.hand_root=assets/sky_piano/airpiano_wilor_2p5d_30fps
+```
+
+Use `--config-name wrist_xyz10` and
+`data.hand_root=assets/sky_piano/airpiano_wilor_wrist_xyz_30fps` for local 3D,
+or `--config-name wrist_xyz10_wrist_delta` and a distinct hand root for
+camera-space wrist deltas. Run these synthetic caches only with
+`preprocess.task=ragged_to_canonical`; the video-to-WiLoR producer deliberately
+accepts only its native raw schema.
+
 ### Causal full-song inference
 
 The `full-song` stage uses the same split and modality-root semantics as

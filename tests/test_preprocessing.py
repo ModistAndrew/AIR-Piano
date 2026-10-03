@@ -16,6 +16,7 @@ from airpiano.preprocessing.canonical import (
     CANONICAL_SCHEMA_VERSION,
     LEGACY_RAW_SCHEMA_VERSION,
     RAW_SCHEMA_VERSION,
+    SKYPIANO_RAW_SCHEMA_VERSION,
     InsufficientHandPresenceError,
     LowestWristHandSelector,
     PianoMotion10MPostprocessor,
@@ -90,6 +91,11 @@ def _write_raw_cache(path: Path, schema_version: str = RAW_SCHEMA_VERSION) -> No
                 "detections": count,
             }
         )
+    clock = (
+        {"motion": {"fps": 60.0}}
+        if schema_version == SKYPIANO_RAW_SCHEMA_VERSION
+        else {"video": {"fps": 60.0}}
+    )
     (path / "manifest.json").write_text(
         json.dumps(
             {
@@ -97,8 +103,8 @@ def _write_raw_cache(path: Path, schema_version: str = RAW_SCHEMA_VERSION) -> No
                 "status": "complete",
                 "decoded_frame_count": 4,
                 "detection_count": total_detections,
-                "video": {"fps": 60.0},
                 "chunks": chunks,
+                **clock,
             }
         ),
         encoding="utf-8",
@@ -678,6 +684,30 @@ class PreprocessingTest(unittest.TestCase):
                 self.assertEqual(set(current.files), set(legacy.files))
                 for name in current.files:
                     np.testing.assert_array_equal(current[name], legacy[name])
+
+    def test_canonicalizer_accepts_skypiano_motion_clock(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            current_raw = root / "current_raw"
+            skypiano_raw = root / "skypiano_raw"
+            current_output = root / "current.npz"
+            skypiano_output = root / "skypiano.npz"
+            _write_raw_cache(current_raw)
+            _write_raw_cache(
+                skypiano_raw,
+                schema_version=SKYPIANO_RAW_SCHEMA_VERSION,
+            )
+
+            WiLoRToCanonical().run(current_raw, current_output)
+            WiLoRToCanonical().run(skypiano_raw, skypiano_output)
+
+            with (
+                np.load(current_output, allow_pickle=False) as current,
+                np.load(skypiano_output, allow_pickle=False) as skypiano,
+            ):
+                self.assertEqual(set(current.files), set(skypiano.files))
+                for name in current.files:
+                    np.testing.assert_array_equal(current[name], skypiano[name])
 
     def test_canonicalizer_rejects_unknown_raw_schema(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

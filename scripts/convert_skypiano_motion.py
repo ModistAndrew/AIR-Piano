@@ -3,11 +3,21 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
 import numpy as np
 
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if __package__ in (None, ""):
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from airpiano.preprocessing.skypiano import (
+    AXIS_SIGNS,
+    read_skypiano_markers,
+)
+
 DEFAULT_MOTION_ROOT = PROJECT_ROOT / "assets" / "sky_piano" / "motion_hand"
 DEFAULT_OUTPUT_ROOT = (
     PROJECT_ROOT
@@ -18,52 +28,10 @@ DEFAULT_OUTPUT_ROOT = (
 INPUT_SUFFIX = "_imputed.csv"
 CANONICAL_SCHEMA_VERSION = "airpiano-wilor-canonical-v1"
 TARGET_FPS = 30.0
-HAND_SIDES = ("L", "R")
-JOINT_MARKERS = (
-    "Wrist",
-    "TC",
-    "TM",
-    "TD",
-    "TF",
-    "IM",
-    "IP",
-    "ID",
-    "IF",
-    "MM",
-    "MP",
-    "MD",
-    "MF",
-    "RM",
-    "RP",
-    "RD",
-    "RF",
-    "LM",
-    "LP",
-    "LD",
-    "LF",
-)
-AXIS_SIGNS = np.asarray((-1.0, 1.0, -1.0), dtype=np.float32)
-
-
 def read_skypiano_pose(path: str | Path) -> tuple[np.ndarray, np.ndarray]:
     """Read one marker CSV as wrist-relative OpenPose-order hand joints."""
 
-    table = np.atleast_1d(
-        np.genfromtxt(
-            Path(path),
-            delimiter=",",
-            names=True,
-            dtype=np.float32,
-            encoding="utf-8",
-        )
-    )
-    markers = np.empty((len(table), 2, 21, 3), dtype=np.float32)
-    for hand, side in enumerate(HAND_SIDES):
-        for joint, marker in enumerate(JOINT_MARKERS):
-            for axis, axis_name in enumerate("xyz"):
-                markers[:, hand, joint, axis] = table[
-                    f"{side}{marker}_{axis_name}"
-                ]
+    markers = read_skypiano_markers(path)
 
     presence = np.isfinite(markers).all(axis=(2, 3))
     with np.errstate(invalid="ignore"):
