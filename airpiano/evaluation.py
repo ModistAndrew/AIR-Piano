@@ -22,6 +22,14 @@ def _mean(values: Iterable[float | None]) -> tuple[float | None, int]:
     return (sum(present) / len(present), len(present)) if present else (None, 0)
 
 
+def _population_variance(values: Iterable[float | None]) -> float | None:
+    present = [float(value) for value in values if value is not None]
+    if not present:
+        return None
+    mean = sum(present) / len(present)
+    return sum((value - mean) ** 2 for value in present) / len(present)
+
+
 def _active_chords(
     frames: np.ndarray,
     onset_frames: dict[int, int],
@@ -215,9 +223,9 @@ def aggregate_alignment_metrics(
         "absolute_error_seconds_sum": error_seconds,
     }
 
-    chord_acc, chord_acc_artifacts = _mean(
-        item["chord_acc"] for item in metrics
-    )
+    chord_acc_values = [item["chord_acc"] for item in metrics]
+    chord_acc, chord_acc_artifacts = _mean(chord_acc_values)
+    chord_acc_variance = _population_variance(chord_acc_values)
     onset_mae_frames, onset_mae_artifacts = _mean(
         item["onset_mae_frames"] for item in metrics
     )
@@ -235,6 +243,7 @@ def aggregate_alignment_metrics(
         macro_c_ar[str(tolerance)] = value
     macro = {
         "chord_acc": chord_acc,
+        "chord_acc_variance": chord_acc_variance,
         "c_ar": macro_c_ar,
         "onset_mae_frames": onset_mae_frames,
         "onset_mae_seconds": onset_mae_seconds,
@@ -306,8 +315,10 @@ def plot_indexed_alignment_summary(
     indexed_metrics: dict[str, object],
     tolerances_frames: Sequence[int],
     output_path: str | Path,
+    *,
+    chord_acc_values: Sequence[float] = (),
 ) -> Path:
-    """Draw ChordAcc by frame index and C-AR by chord index."""
+    """Draw indexed alignment metrics and per-artifact ChordAcc."""
 
     import os
     import tempfile
@@ -324,14 +335,15 @@ def plot_indexed_alignment_summary(
     frame_rates = np.asarray(indexed_metrics["frame_chord_acc"])
     chord_rates = indexed_metrics["chord_c_ar"]
     chord_count = len(indexed_metrics["chord_observation_count"])
+    artifact_chord_acc = np.asarray(chord_acc_values, dtype=np.float64)
     width = max(
         8.0,
         min(18.0, max(len(frame_rates) / 60.0, chord_count * 0.5)),
     )
     figure, axes = plt.subplots(
-        2,
+        3,
         1,
-        figsize=(width, 10.0),
+        figsize=(width, 14.0),
         constrained_layout=True,
     )
 
@@ -371,6 +383,28 @@ def plot_indexed_alignment_summary(
     axes[1].set_ylim(0.0, 1.0)
     axes[1].xaxis.set_major_locator(MaxNLocator(integer=True))
     axes[1].grid(alpha=0.25)
+
+    if len(artifact_chord_acc):
+        axes[2].hist(
+            artifact_chord_acc,
+            bins=np.linspace(0.0, 1.0, 51),
+            color="#55a868",
+            edgecolor="white",
+        )
+    else:
+        axes[2].text(
+            0.5,
+            0.5,
+            "No artifact ChordAcc values",
+            ha="center",
+            va="center",
+        )
+    axes[2].set_xlabel("ChordAcc")
+    axes[2].set_ylabel("Artifact count")
+    axes[2].set_title("Per-artifact ChordAcc distribution")
+    axes[2].set_xlim(0.0, 1.0)
+    axes[2].yaxis.set_major_locator(MaxNLocator(integer=True))
+    axes[2].grid(axis="y", alpha=0.25)
 
     output = resolve_path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -445,11 +479,19 @@ def evaluation(cfg: DictConfig) -> None:
     indexed_metrics = aggregate_indexed_alignment_metrics(
         indexed_observations, tolerances
     )
+    chord_acc_values = [
+        float(item["chord_acc"])
+        for item in item_metrics
+        if item["chord_acc"] is not None
+    ]
     summary_plot = plot_indexed_alignment_summary(
-        indexed_metrics, tolerances, plot_path
+        indexed_metrics,
+        tolerances,
+        plot_path,
+        chord_acc_values=chord_acc_values,
     )
     summary = {
-        "schema_version": "airpiano-evaluation-v4",
+        "schema_version": "airpiano-evaluation-v5",
         "artifact_root": str(artifact_root),
         "summary_plot_path": str(summary_plot),
         "onset_threshold": onset_threshold,

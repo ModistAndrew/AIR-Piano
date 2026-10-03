@@ -1685,6 +1685,10 @@ inclusive. Ground truth is the earliest positive maximum in each target
 column; all-zero columns are excluded. Null predictions lower `C-AR` and
 coverage but do not enter MAE.
 
+The macro report also includes `chord_acc_variance`, the population variance
+(`ddof=0`) across non-null per-artifact ChordAcc values. Each artifact has
+equal weight; the value is null when no artifact has a valid ChordAcc.
+
 Artifact duration is the number of valid frames divided by its stored FPS. The
 JSON reports both `average_duration_seconds` and `total_duration_seconds`.
 
@@ -1696,10 +1700,11 @@ test windows remain separate evaluation artifacts in either aggregation mode.
 
 Evaluation also writes a PNG beside the JSON by replacing its suffix with
 `.png`. The top panel shows ChordAcc at each frame index relative to the first
-ground-truth onset; the bottom shows C-AR at each artifact-local chord index for
-every configured tolerance. Variable-length artifacts contribute only at
-indices they contain. The indexed arrays remain image-only even when detailed
-JSON output is enabled.
+ground-truth onset; the middle panel shows C-AR at each artifact-local chord
+index for every configured tolerance; and the bottom panel shows the
+per-artifact ChordAcc distribution in 50 fixed-width bins from 0 to 1.
+Variable-length artifacts contribute only at indices they contain. The indexed
+arrays remain image-only even when detailed JSON output is enabled.
 
 ### Visualize and sonify batches
 

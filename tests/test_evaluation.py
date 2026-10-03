@@ -169,8 +169,32 @@ class AlignmentMetricTest(unittest.TestCase):
 
         self.assertAlmostEqual(micro["chord_coverage"], 3 / 4)
         self.assertAlmostEqual(macro["chord_coverage"], 5 / 6)
+        self.assertAlmostEqual(macro["chord_acc_variance"], 4 / 81)
         self.assertEqual(macro["artifact_count"], 2)
         self.assertEqual(macro["onset_mae_artifact_count"], 2)
+
+    def test_chord_acc_variance_excludes_null_artifacts(self) -> None:
+        valid = calculate_alignment_metrics(
+            _artifact([1], frame_count=3),
+            onset_threshold=0.5,
+            tolerances_frames=TOLERANCES,
+        )
+        empty = calculate_alignment_metrics(
+            _artifact([None], target_frames=[None]),
+            onset_threshold=0.5,
+            tolerances_frames=TOLERANCES,
+        )
+
+        _, one_valid = aggregate_alignment_metrics(
+            [valid, empty], TOLERANCES
+        )
+        _, no_valid = aggregate_alignment_metrics([empty], TOLERANCES)
+
+        self.assertEqual(one_valid["chord_acc"], 1.0)
+        self.assertEqual(one_valid["chord_acc_variance"], 0.0)
+        self.assertEqual(one_valid["chord_acc_artifact_count"], 1)
+        self.assertIsNone(no_valid["chord_acc"])
+        self.assertIsNone(no_valid["chord_acc_variance"])
 
     def test_indexed_rates_and_plot_follow_relative_positions(self) -> None:
         observations = [
@@ -207,16 +231,29 @@ class AlignmentMetricTest(unittest.TestCase):
             ):
                 import matplotlib.axes
 
+                chord_acc_values = (0.1, 0.55, 1.0)
                 original_plot = matplotlib.axes.Axes.plot
-                with patch.object(
-                    matplotlib.axes.Axes,
-                    "plot",
-                    autospec=True,
-                    side_effect=original_plot,
-                ) as plot:
+                original_hist = matplotlib.axes.Axes.hist
+                with (
+                    patch.object(
+                        matplotlib.axes.Axes,
+                        "plot",
+                        autospec=True,
+                        side_effect=original_plot,
+                    ) as plot,
+                    patch.object(
+                        matplotlib.axes.Axes,
+                        "hist",
+                        autospec=True,
+                        side_effect=original_hist,
+                    ) as hist,
+                ):
                     self.assertEqual(
                         evaluation_stage.plot_indexed_alignment_summary(
-                            indexed, (0, 2), chart
+                            indexed,
+                            (0, 2),
+                            chart,
+                            chord_acc_values=chord_acc_values,
                         ),
                         chart.resolve(),
                     )
@@ -230,6 +267,11 @@ class AlignmentMetricTest(unittest.TestCase):
         )
         np.testing.assert_allclose(exact_call.args[2], [1, 0, 0])
         np.testing.assert_allclose(tolerant_call.args[2], [1, 0, 1])
+        hist.assert_called_once()
+        np.testing.assert_allclose(hist.call_args.args[1], chord_acc_values)
+        np.testing.assert_allclose(
+            hist.call_args.kwargs["bins"], np.linspace(0.0, 1.0, 51)
+        )
 
     def test_no_detections_keep_zero_rates_and_null_mae(self) -> None:
         metrics = calculate_alignment_metrics(
@@ -298,7 +340,7 @@ class EvaluationStageTest(unittest.TestCase):
             report = json.loads(
                 (root / "metrics.json").read_text(encoding="utf-8")
             )
-            self.assertEqual(report["schema_version"], "airpiano-evaluation-v4")
+            self.assertEqual(report["schema_version"], "airpiano-evaluation-v5")
             self.assertEqual(report["artifact_count"], 3)
             self.assertAlmostEqual(report["average_duration_seconds"], 4 / 3)
             self.assertEqual(report["total_duration_seconds"], 4.0)
@@ -307,6 +349,7 @@ class EvaluationStageTest(unittest.TestCase):
             self.assertEqual(report["unique_record_ids"], ["subject/a", "subject/b"])
             self.assertEqual(report["micro"]["ground_truth_chord_count"], 9)
             self.assertEqual(report["macro"]["artifact_count"], 3)
+            self.assertEqual(report["macro"]["chord_acc_variance"], 0.0)
             self.assertFalse(report["inference_artifacts_removed"])
             self.assertEqual(
                 [item["duration_seconds"] for item in report["artifacts"]],
