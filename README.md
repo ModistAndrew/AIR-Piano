@@ -1680,7 +1680,10 @@ For evaluated frames `F`, ground-truth chords `G`, and detected chords
 `D`, the report uses `ChordAcc = correct_active_frames / |F|`,
 `C-AR(delta) = |{g in G: |pred(g)-gt(g)| <= delta}| / |G|`,
 `coverage = |D| / |G|`, and
-`onset_MAE = sum(|pred(g)-gt(g)| for g in D) / |D|`. The tolerances are
+`onset_MAE = sum(|pred(g)-gt(g)| for g in D) / |D|`. It also reports
+`onset_mean_delta = sum(pred(g)-gt(g) for g in D) / |D|`, where negative
+values are early predictions and positive values are late predictions. Both
+onset metrics are available in frames and seconds. The tolerances are
 inclusive. Ground truth is the earliest positive maximum in each target
 column; all-zero columns are excluded. Null predictions lower `C-AR` and
 coverage but do not enter MAE.

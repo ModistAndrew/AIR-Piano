@@ -102,6 +102,8 @@ class AlignmentMetricTest(unittest.TestCase):
         self.assertTrue(all(value == 1.0 for value in metrics["c_ar"].values()))
         self.assertEqual(metrics["onset_mae_frames"], 0.0)
         self.assertEqual(metrics["onset_mae_seconds"], 0.0)
+        self.assertEqual(metrics["onset_mean_delta_frames"], 0.0)
+        self.assertEqual(metrics["onset_mean_delta_seconds"], 0.0)
         self.assertEqual(metrics["chord_coverage"], 1.0)
 
     def test_missing_chord_lowers_coverage_and_ratios(self) -> None:
@@ -116,6 +118,8 @@ class AlignmentMetricTest(unittest.TestCase):
         self.assertAlmostEqual(metrics["c_ar"]["2"], 2 / 3)
         self.assertEqual(metrics["onset_mae_frames"], 0.5)
         self.assertEqual(metrics["onset_mae_seconds"], 0.05)
+        self.assertEqual(metrics["onset_mean_delta_frames"], 0.5)
+        self.assertEqual(metrics["onset_mean_delta_seconds"], 0.05)
         self.assertAlmostEqual(metrics["chord_coverage"], 2 / 3)
 
     def test_tolerances_are_inclusive_and_alignment_stays_monotonic(self) -> None:
@@ -130,6 +134,8 @@ class AlignmentMetricTest(unittest.TestCase):
         self.assertAlmostEqual(metrics["c_ar"]["2"], 1 / 3)
         self.assertEqual(metrics["c_ar"]["4"], 1.0)
         self.assertAlmostEqual(metrics["onset_mae_frames"], 8 / 3)
+        self.assertEqual(metrics["onset_mean_delta_frames"], 0.0)
+        self.assertEqual(metrics["onset_mean_delta_seconds"], 0.0)
 
     def test_target_uses_earliest_positive_peak_and_excludes_zero_columns(
         self,
@@ -169,9 +175,12 @@ class AlignmentMetricTest(unittest.TestCase):
 
         self.assertAlmostEqual(micro["chord_coverage"], 3 / 4)
         self.assertAlmostEqual(macro["chord_coverage"], 5 / 6)
+        self.assertAlmostEqual(micro["onset_mean_delta_frames"], 1 / 3)
+        self.assertAlmostEqual(macro["onset_mean_delta_frames"], 0.25)
         self.assertAlmostEqual(macro["chord_acc_variance"], 4 / 81)
         self.assertEqual(macro["artifact_count"], 2)
         self.assertEqual(macro["onset_mae_artifact_count"], 2)
+        self.assertEqual(macro["onset_mean_delta_artifact_count"], 2)
 
     def test_chord_acc_variance_excludes_null_artifacts(self) -> None:
         valid = calculate_alignment_metrics(
@@ -284,9 +293,12 @@ class AlignmentMetricTest(unittest.TestCase):
         self.assertEqual(micro["chord_coverage"], 0.0)
         self.assertTrue(all(value == 0.0 for value in micro["c_ar"].values()))
         self.assertIsNone(micro["onset_mae_frames"])
+        self.assertIsNone(micro["onset_mean_delta_frames"])
         self.assertEqual(macro["chord_coverage"], 0.0)
         self.assertIsNone(macro["onset_mae_frames"])
+        self.assertIsNone(macro["onset_mean_delta_frames"])
         self.assertEqual(macro["onset_mae_artifact_count"], 0)
+        self.assertEqual(macro["onset_mean_delta_artifact_count"], 0)
 
 
 class EvaluationStageTest(unittest.TestCase):
@@ -340,7 +352,7 @@ class EvaluationStageTest(unittest.TestCase):
             report = json.loads(
                 (root / "metrics.json").read_text(encoding="utf-8")
             )
-            self.assertEqual(report["schema_version"], "airpiano-evaluation-v5")
+            self.assertEqual(report["schema_version"], "airpiano-evaluation-v6")
             self.assertEqual(report["artifact_count"], 3)
             self.assertAlmostEqual(report["average_duration_seconds"], 4 / 3)
             self.assertEqual(report["total_duration_seconds"], 4.0)

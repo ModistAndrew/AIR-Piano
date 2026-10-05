@@ -80,7 +80,7 @@ def _alignment_observations(
     predicted_active = _active_chords(evaluated_frames, predicted_frames)
     chord_errors = {
         chord_slot: (
-            abs(predicted_frames[chord_slot] - ground_truth_frame)
+            predicted_frames[chord_slot] - ground_truth_frame
             if chord_slot in predicted_frames
             else None
         )
@@ -95,6 +95,8 @@ def _empty_metrics(tolerances: Sequence[int]) -> dict[str, object]:
         "c_ar": {str(value): None for value in tolerances},
         "onset_mae_frames": None,
         "onset_mae_seconds": None,
+        "onset_mean_delta_frames": None,
+        "onset_mean_delta_seconds": None,
         "chord_coverage": None,
         "correct_frame_count": 0,
         "evaluated_frame_count": 0,
@@ -103,6 +105,8 @@ def _empty_metrics(tolerances: Sequence[int]) -> dict[str, object]:
         "ground_truth_chord_count": 0,
         "absolute_error_frames_sum": 0.0,
         "absolute_error_seconds_sum": 0.0,
+        "onset_delta_frames_sum": 0.0,
+        "onset_delta_seconds_sum": 0.0,
     }
 
 
@@ -115,9 +119,10 @@ def _metrics_from_observations(
     if not chord_errors:
         return _empty_metrics(tolerances)
 
-    absolute_errors = [
+    onset_deltas = [
         int(error) for error in chord_errors.values() if error is not None
     ]
+    absolute_errors = [abs(delta) for delta in onset_deltas]
     correct_frame_count = int(frame_correct.sum())
     evaluated_frame_count = len(frame_correct)
     chord_count = len(chord_errors)
@@ -128,6 +133,8 @@ def _metrics_from_observations(
     }
     absolute_error_frames_sum = float(sum(absolute_errors))
     absolute_error_seconds_sum = absolute_error_frames_sum / artifact.fps
+    onset_delta_frames_sum = float(sum(onset_deltas))
+    onset_delta_seconds_sum = onset_delta_frames_sum / artifact.fps
 
     return {
         "chord_acc": _ratio(correct_frame_count, evaluated_frame_count),
@@ -147,6 +154,16 @@ def _metrics_from_observations(
             if detected_count
             else None
         ),
+        "onset_mean_delta_frames": (
+            onset_delta_frames_sum / detected_count
+            if detected_count
+            else None
+        ),
+        "onset_mean_delta_seconds": (
+            onset_delta_seconds_sum / detected_count
+            if detected_count
+            else None
+        ),
         "chord_coverage": _ratio(detected_count, chord_count),
         "correct_frame_count": correct_frame_count,
         "evaluated_frame_count": evaluated_frame_count,
@@ -155,6 +172,8 @@ def _metrics_from_observations(
         "ground_truth_chord_count": chord_count,
         "absolute_error_frames_sum": absolute_error_frames_sum,
         "absolute_error_seconds_sum": absolute_error_seconds_sum,
+        "onset_delta_frames_sum": onset_delta_frames_sum,
+        "onset_delta_seconds_sum": onset_delta_seconds_sum,
     }
 
 
@@ -192,6 +211,12 @@ def aggregate_alignment_metrics(
     error_seconds = sum(
         float(item["absolute_error_seconds_sum"]) for item in metrics
     )
+    onset_delta_frames = sum(
+        float(item["onset_delta_frames_sum"]) for item in metrics
+    )
+    onset_delta_seconds = sum(
+        float(item["onset_delta_seconds_sum"]) for item in metrics
+    )
     correct_chords = {
         str(tolerance): sum(
             int(item["correct_chord_counts"][str(tolerance)])
@@ -213,6 +238,12 @@ def aggregate_alignment_metrics(
         "onset_mae_seconds": (
             error_seconds / detected_chords if detected_chords else None
         ),
+        "onset_mean_delta_frames": (
+            onset_delta_frames / detected_chords if detected_chords else None
+        ),
+        "onset_mean_delta_seconds": (
+            onset_delta_seconds / detected_chords if detected_chords else None
+        ),
         "chord_coverage": _ratio(detected_chords, ground_truth_chords),
         "correct_frame_count": correct_frames,
         "evaluated_frame_count": evaluated_frames,
@@ -221,6 +252,8 @@ def aggregate_alignment_metrics(
         "ground_truth_chord_count": ground_truth_chords,
         "absolute_error_frames_sum": error_frames,
         "absolute_error_seconds_sum": error_seconds,
+        "onset_delta_frames_sum": onset_delta_frames,
+        "onset_delta_seconds_sum": onset_delta_seconds,
     }
 
     chord_acc_values = [item["chord_acc"] for item in metrics]
@@ -231,6 +264,12 @@ def aggregate_alignment_metrics(
     )
     onset_mae_seconds, _ = _mean(
         item["onset_mae_seconds"] for item in metrics
+    )
+    onset_mean_delta_frames, onset_mean_delta_artifacts = _mean(
+        item["onset_mean_delta_frames"] for item in metrics
+    )
+    onset_mean_delta_seconds, _ = _mean(
+        item["onset_mean_delta_seconds"] for item in metrics
     )
     chord_coverage, chord_artifacts = _mean(
         item["chord_coverage"] for item in metrics
@@ -247,11 +286,14 @@ def aggregate_alignment_metrics(
         "c_ar": macro_c_ar,
         "onset_mae_frames": onset_mae_frames,
         "onset_mae_seconds": onset_mae_seconds,
+        "onset_mean_delta_frames": onset_mean_delta_frames,
+        "onset_mean_delta_seconds": onset_mean_delta_seconds,
         "chord_coverage": chord_coverage,
         "artifact_count": len(metrics),
         "chord_acc_artifact_count": chord_acc_artifacts,
         "chord_metric_artifact_count": chord_artifacts,
         "onset_mae_artifact_count": onset_mae_artifacts,
+        "onset_mean_delta_artifact_count": onset_mean_delta_artifacts,
     }
     return micro, macro
 
@@ -285,7 +327,7 @@ def aggregate_indexed_alignment_metrics(
             if error is None:
                 continue
             for tolerance in tolerances:
-                if error <= tolerance:
+                if abs(error) <= tolerance:
                     chord_correct_counts[str(tolerance)][chord_slot] += 1
 
     frame_rates = np.divide(
@@ -491,7 +533,7 @@ def evaluation(cfg: DictConfig) -> None:
         chord_acc_values=chord_acc_values,
     )
     summary = {
-        "schema_version": "airpiano-evaluation-v5",
+        "schema_version": "airpiano-evaluation-v6",
         "artifact_root": str(artifact_root),
         "summary_plot_path": str(summary_plot),
         "onset_threshold": onset_threshold,
