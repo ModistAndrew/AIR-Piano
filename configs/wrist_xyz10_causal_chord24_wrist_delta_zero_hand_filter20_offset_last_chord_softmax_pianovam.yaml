@@ -32,3 +32,6 @@ dataset:
 model:
   include_chord_duration: false
   include_chord_offsets: true
+
+sonify:
+  onset_mode: peak

@@ -9,7 +9,11 @@ import numpy as np
 from omegaconf import DictConfig
 
 from .render.artifact import InferenceArtifact, load_artifact
-from .render.sonify import decode_chord_onsets
+from .render.sonify import (
+    decode_chord_onsets,
+    onset_prediction_horizon_seconds,
+    validate_onset_target_config,
+)
 from .utils import resolve_path, write_json
 
 
@@ -44,6 +48,8 @@ def _active_chords(
 def _alignment_observations(
     artifact: InferenceArtifact,
     onset_threshold: float,
+    onset_mode: str = "first_threshold",
+    target_radius_seconds: float = 0.2,
 ) -> tuple[np.ndarray, dict[int, int | None]]:
     """Return frame correctness and onset errors at relative indices."""
 
@@ -66,6 +72,8 @@ def _alignment_observations(
     predicted_local_frames, _ = decode_chord_onsets(
         artifact,
         threshold=onset_threshold,
+        onset_mode=onset_mode,
+        target_radius_seconds=target_radius_seconds,
     )
     predicted_frames = {
         chord_slot: artifact.frame_start
@@ -182,12 +190,17 @@ def calculate_alignment_metrics(
     *,
     onset_threshold: float,
     tolerances_frames: Sequence[int],
+    onset_mode: str = "first_threshold",
+    target_radius_seconds: float = 0.2,
 ) -> dict[str, object]:
     """Calculate frame and chord alignment metrics for one artifact."""
 
     tolerances = tuple(int(value) for value in tolerances_frames)
     frame_correct, chord_errors = _alignment_observations(
-        artifact, onset_threshold
+        artifact,
+        onset_threshold,
+        onset_mode,
+        target_radius_seconds,
     )
     return _metrics_from_observations(
         artifact, frame_correct, chord_errors, tolerances
@@ -467,6 +480,12 @@ def evaluation(cfg: DictConfig) -> None:
     plot_path = metrics_path.with_suffix(".png")
     tolerances = tuple(int(value) for value in cfg.evaluation.tolerances_frames)
     onset_threshold = float(cfg.evaluation.onset_threshold)
+    onset_mode = str(cfg.evaluation.onset_mode)
+    target_radius_seconds = float(cfg.evaluation.target_radius_seconds)
+    validate_onset_target_config(cfg, onset_mode)
+    prediction_horizon_seconds = onset_prediction_horizon_seconds(
+        onset_threshold, target_radius_seconds, onset_mode
+    )
     remove_artifacts = bool(cfg.evaluation.remove_inference_artifacts)
     summary_only = bool(cfg.evaluation.summary_only)
     artifact_paths = sorted(
@@ -478,7 +497,10 @@ def evaluation(cfg: DictConfig) -> None:
     for index, artifact_path in enumerate(artifact_paths, 1):
         artifact = load_artifact(artifact_path)
         frame_correct, chord_errors = _alignment_observations(
-            artifact, onset_threshold
+            artifact,
+            onset_threshold,
+            onset_mode,
+            target_radius_seconds,
         )
         indexed_observations.append((frame_correct, chord_errors))
         item_metrics = _metrics_from_observations(
@@ -533,10 +555,13 @@ def evaluation(cfg: DictConfig) -> None:
         chord_acc_values=chord_acc_values,
     )
     summary = {
-        "schema_version": "airpiano-evaluation-v6",
+        "schema_version": "airpiano-evaluation-v8",
         "artifact_root": str(artifact_root),
         "summary_plot_path": str(summary_plot),
+        "onset_mode": onset_mode,
         "onset_threshold": onset_threshold,
+        "prediction_horizon_seconds": prediction_horizon_seconds,
+        "target_radius_seconds": target_radius_seconds,
         "tolerances_frames": list(tolerances),
         "artifact_count": len(reports),
         "average_duration_seconds": average_duration_seconds,

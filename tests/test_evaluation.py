@@ -96,6 +96,7 @@ class AlignmentMetricTest(unittest.TestCase):
             artifact,
             onset_threshold=0.5,
             tolerances_frames=TOLERANCES,
+            onset_mode="peak",
         )
 
         self.assertEqual(metrics["chord_acc"], 1.0)
@@ -106,11 +107,42 @@ class AlignmentMetricTest(unittest.TestCase):
         self.assertEqual(metrics["onset_mean_delta_seconds"], 0.0)
         self.assertEqual(metrics["chord_coverage"], 1.0)
 
+    def test_first_threshold_uses_radius_compensated_future_frame(self) -> None:
+        artifact = _artifact(
+            [5, 6],
+            target_frames=[3, 5],
+            frame_count=8,
+            fps=30.0,
+        )
+        artifact.probability[1, :] = 0.5
+        artifact.probability[5, 0] = 0.8
+        artifact.probability[6, 1] = 0.8
+
+        first_threshold = calculate_alignment_metrics(
+            artifact,
+            onset_threshold=0.5,
+            tolerances_frames=TOLERANCES,
+            target_radius_seconds=0.2,
+        )
+        peak = calculate_alignment_metrics(
+            artifact,
+            onset_threshold=0.5,
+            tolerances_frames=TOLERANCES,
+            onset_mode="peak",
+        )
+
+        self.assertEqual(first_threshold["onset_mean_delta_frames"], 0.0)
+        self.assertEqual(first_threshold["onset_mae_frames"], 1.0)
+        self.assertAlmostEqual(first_threshold["chord_acc"], 3 / 5)
+        self.assertEqual(peak["onset_mean_delta_frames"], 1.5)
+        self.assertAlmostEqual(peak["chord_acc"], 2 / 5)
+
     def test_missing_chord_lowers_coverage_and_ratios(self) -> None:
         metrics = calculate_alignment_metrics(
             _artifact([1, None, 8]),
             onset_threshold=0.5,
             tolerances_frames=TOLERANCES,
+            onset_mode="peak",
         )
 
         self.assertAlmostEqual(metrics["chord_acc"], 5 / 9)
@@ -127,6 +159,7 @@ class AlignmentMetricTest(unittest.TestCase):
             _artifact([1, 8, 3]),
             onset_threshold=0.5,
             tolerances_frames=TOLERANCES,
+            onset_mode="peak",
         )
 
         self.assertAlmostEqual(metrics["chord_acc"], 5 / 9)
@@ -151,6 +184,7 @@ class AlignmentMetricTest(unittest.TestCase):
             artifact,
             onset_threshold=0.5,
             tolerances_frames=TOLERANCES,
+            onset_mode="peak",
         )
 
         self.assertEqual(metrics["ground_truth_chord_count"], 1)
@@ -163,11 +197,13 @@ class AlignmentMetricTest(unittest.TestCase):
             _artifact([1, None, 8]),
             onset_threshold=0.5,
             tolerances_frames=TOLERANCES,
+            onset_mode="peak",
         )
         second = calculate_alignment_metrics(
             _artifact([1], frame_count=3),
             onset_threshold=0.5,
             tolerances_frames=TOLERANCES,
+            onset_mode="peak",
         )
         micro, macro = aggregate_alignment_metrics(
             [first, second], TOLERANCES
@@ -187,11 +223,13 @@ class AlignmentMetricTest(unittest.TestCase):
             _artifact([1], frame_count=3),
             onset_threshold=0.5,
             tolerances_frames=TOLERANCES,
+            onset_mode="peak",
         )
         empty = calculate_alignment_metrics(
             _artifact([None], target_frames=[None]),
             onset_threshold=0.5,
             tolerances_frames=TOLERANCES,
+            onset_mode="peak",
         )
 
         _, one_valid = aggregate_alignment_metrics(
@@ -208,10 +246,10 @@ class AlignmentMetricTest(unittest.TestCase):
     def test_indexed_rates_and_plot_follow_relative_positions(self) -> None:
         observations = [
             evaluation_stage._alignment_observations(
-                _artifact([1, None, 9]), 0.5
+                _artifact([1, None, 9]), 0.5, "peak"
             ),
             evaluation_stage._alignment_observations(
-                _artifact([1], frame_count=3), 0.5
+                _artifact([1], frame_count=3), 0.5, "peak"
             ),
         ]
         indexed = evaluation_stage.aggregate_indexed_alignment_metrics(
@@ -287,6 +325,7 @@ class AlignmentMetricTest(unittest.TestCase):
             _artifact([None]),
             onset_threshold=0.5,
             tolerances_frames=TOLERANCES,
+            onset_mode="peak",
         )
         micro, macro = aggregate_alignment_metrics([metrics], TOLERANCES)
 
@@ -315,6 +354,8 @@ class EvaluationStageTest(unittest.TestCase):
                     "root": str(root / "artifacts"),
                     "output_path": str(root / "metrics.json"),
                     "onset_threshold": 0.5,
+                    "onset_mode": "peak",
+                    "target_radius_seconds": 0.2,
                     "tolerances_frames": list(TOLERANCES),
                     "remove_inference_artifacts": remove,
                     "summary_only": summary_only,
@@ -352,7 +393,11 @@ class EvaluationStageTest(unittest.TestCase):
             report = json.loads(
                 (root / "metrics.json").read_text(encoding="utf-8")
             )
-            self.assertEqual(report["schema_version"], "airpiano-evaluation-v6")
+            self.assertEqual(report["schema_version"], "airpiano-evaluation-v8")
+            self.assertEqual(report["onset_mode"], "peak")
+            self.assertEqual(report["onset_threshold"], 0.5)
+            self.assertEqual(report["target_radius_seconds"], 0.2)
+            self.assertEqual(report["prediction_horizon_seconds"], 0.0)
             self.assertEqual(report["artifact_count"], 3)
             self.assertAlmostEqual(report["average_duration_seconds"], 4 / 3)
             self.assertEqual(report["total_duration_seconds"], 4.0)

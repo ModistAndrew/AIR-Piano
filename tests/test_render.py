@@ -18,9 +18,11 @@ import airpiano.render.visualize as visualize_stage
 from airpiano.render.artifact import load_artifact
 from airpiano.render.sonify import (
     calculate_onset_deltas,
+    decode_chord_onsets,
     plot_onset_delta_summary,
     sonify_artifact,
     sonify_ground_truth,
+    validate_onset_target_config,
     write_onset_delta_summary,
 )
 from airpiano.render.visualize import visualize_artifact
@@ -83,6 +85,8 @@ class RenderTest(unittest.TestCase):
                         "root": str(artifact_root),
                         "midi_root": str(midi_root),
                         "threshold": 0.35,
+                        "onset_mode": "peak",
+                        "target_radius_seconds": 0.2,
                         "chord_tolerance_seconds": 0.04,
                         "duration_seconds": 0.75,
                         "velocity": 72,
@@ -171,6 +175,8 @@ class RenderTest(unittest.TestCase):
             self.assertTrue(
                 all(item.kwargs == {
                     "threshold": 0.35,
+                    "onset_mode": "peak",
+                    "target_radius_seconds": 0.2,
                     "duration_seconds": 0.75,
                     "velocity": 72,
                 } for item in decode.call_args_list)
@@ -202,18 +208,24 @@ class RenderTest(unittest.TestCase):
                         artifacts[0],
                         midi_root / "subject" / "a.mid",
                         threshold=0.35,
+                        onset_mode="peak",
+                        target_radius_seconds=0.2,
                         chord_tolerance_seconds=0.04,
                     ),
                     call(
                         nested_artifact,
                         midi_root / "subject" / "inside.mid",
                         threshold=0.35,
+                        onset_mode="peak",
+                        target_radius_seconds=0.2,
                         chord_tolerance_seconds=0.04,
                     ),
                     call(
                         artifacts[1],
                         midi_root / "subject" / "take.v2.mid",
                         threshold=0.35,
+                        onset_mode="peak",
+                        target_radius_seconds=0.2,
                         chord_tolerance_seconds=0.04,
                     ),
                 ],
@@ -244,13 +256,25 @@ class RenderTest(unittest.TestCase):
             config = OmegaConf.create(
                 {
                     "output": {"dir": str(root / "unused")},
+                    "dataset": {
+                        "target_generator": {
+                            "target_mode": "onset",
+                            "softener": {
+                                "_target_": (
+                                    "airpiano.data.targets.TriangularSoftener"
+                                )
+                            },
+                        }
+                    },
                     "visualize": {
                         "root": str(artifact_root),
                     },
                     "sonify": {
                         "root": str(artifact_root),
                         "midi_root": str(midi_root),
-                        "threshold": 0.2,
+                        "threshold": 0.5,
+                        "onset_mode": "first_threshold",
+                        "target_radius_seconds": 0.2,
                         "chord_tolerance_seconds": 0.05,
                         "duration_seconds": 1.0,
                         "velocity": 64,
@@ -305,7 +329,9 @@ class RenderTest(unittest.TestCase):
             decode.assert_called_once_with(
                 artifact,
                 artifact_root / "take.v2.mid",
-                threshold=0.2,
+                threshold=0.5,
+                onset_mode="first_threshold",
+                target_radius_seconds=0.2,
                 duration_seconds=1.0,
                 velocity=64,
             )
@@ -317,7 +343,9 @@ class RenderTest(unittest.TestCase):
             onset_delta_calculate.assert_called_once_with(
                 artifact,
                 source_midi.resolve(),
-                threshold=0.2,
+                threshold=0.5,
+                onset_mode="first_threshold",
+                target_radius_seconds=0.2,
                 chord_tolerance_seconds=0.05,
             )
             onset_summary_write.assert_called_once_with(
@@ -368,7 +396,7 @@ class RenderTest(unittest.TestCase):
             self.assertTrue(output.is_file())
             self.assertGreater(output.stat().st_size, 0)
 
-    def test_sonify_uses_valid_earliest_argmax_and_all_chord_pitches(self) -> None:
+    def test_sonify_schedules_future_onset_and_all_chord_pitches(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             artifact = root / "result.npz"
@@ -376,7 +404,7 @@ class RenderTest(unittest.TestCase):
             _write_artifact(artifact)
 
             self.assertEqual(
-                sonify_artifact(artifact, output, threshold=0.2), output.resolve()
+                sonify_artifact(artifact, output, threshold=0.5), output.resolve()
             )
             midi = mido.MidiFile(output)
             absolute_tick = 0
@@ -389,8 +417,55 @@ class RenderTest(unittest.TestCase):
                 elif message.type == "note_off":
                     note_offs.append((absolute_tick, message.note))
 
-            self.assertEqual(note_ons, [(0, 60, 64), (0, 64, 64)])
-            self.assertEqual(note_offs, [(960, 60), (960, 64)])
+            self.assertEqual(note_ons, [(96, 60, 64), (96, 64, 64)])
+            self.assertEqual(note_offs, [(1056, 60), (1056, 64)])
+
+    def test_decoder_compensates_first_threshold_and_preserves_peak(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            artifact_path = Path(temporary_directory) / "result.npz"
+            probability = np.zeros((5, 96), dtype=np.float32)
+            probability[:, 0] = [0.1, 0.5, 0.8, 0.8, 1.0]
+            probability[:, 1] = [0.49, 0.49, 0.49, 0.49, 1.0]
+            _write_artifact(
+                artifact_path,
+                probability=probability,
+                target=np.zeros_like(probability),
+                frame_mask=np.asarray(
+                    [True, True, True, True, False], dtype=np.bool_
+                ),
+            )
+            artifact = load_artifact(artifact_path)
+
+            threshold_frames, threshold_probabilities = decode_chord_onsets(
+                artifact, 0.5, target_radius_seconds=0.2
+            )
+            peak_frames, peak_probabilities = decode_chord_onsets(
+                artifact, 0.5, onset_mode="peak"
+            )
+
+            self.assertEqual(int(threshold_frames[0]), 4)
+            self.assertAlmostEqual(float(threshold_probabilities[0]), 0.5)
+            self.assertEqual(int(peak_frames[0]), 2)
+            self.assertAlmostEqual(float(peak_probabilities[0]), 0.8)
+            self.assertEqual(int(threshold_frames[1]), -1)
+            self.assertTrue(np.isnan(threshold_probabilities[1]))
+            self.assertEqual(int(threshold_frames[2]), -1)
+            self.assertTrue(np.isnan(threshold_probabilities[2]))
+
+            artifact.probability[:, 0] = [0.1, 0.2, 0.3, 0.5, 1.0]
+            beyond_frames, _ = decode_chord_onsets(
+                artifact,
+                0.5,
+                target_radius_seconds=0.2,
+            )
+            self.assertEqual(int(beyond_frames[0]), 6)
+
+            with self.assertRaisesRegex(
+                ValueError, "unsupported onset mode: unknown"
+            ):
+                decode_chord_onsets(
+                    artifact, 0.5, onset_mode="unknown"
+                )
 
     def test_onset_deltas_use_target_peaks_and_mark_missed_chords(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -425,20 +500,25 @@ class RenderTest(unittest.TestCase):
             self.assertEqual(report["frame_start"], 10)
             self.assertEqual(len(report["chords"]), 2)
 
+            self.assertEqual(report["onset_mode"], "first_threshold")
+            self.assertEqual(report["threshold"], 0.5)
+            self.assertEqual(report["target_radius_seconds"], 0.2)
+            self.assertAlmostEqual(report["prediction_horizon_seconds"], 0.1)
             detected, missed = report["chords"]
             self.assertEqual(detected["chord_id"], 0)
             self.assertEqual(detected["source_chord_id"], 1)
             self.assertTrue(detected["detected"])
-            self.assertAlmostEqual(detected["peak_probability"], 0.5)
+            self.assertAlmostEqual(detected["onset_probability"], 0.5)
             self.assertAlmostEqual(detected["real_onset_seconds"], 1.1)
-            self.assertAlmostEqual(detected["predicted_onset_seconds"], 1.0)
-            self.assertAlmostEqual(detected["delta_seconds"], -0.1)
-            self.assertAlmostEqual(detected["absolute_delta_seconds"], 0.1)
+            self.assertAlmostEqual(detected["predicted_onset_seconds"], 1.1)
+            self.assertAlmostEqual(detected["delta_seconds"], 0.0)
+            self.assertAlmostEqual(detected["absolute_delta_seconds"], 0.0)
 
             self.assertEqual(missed["chord_id"], 1)
             self.assertEqual(missed["source_chord_id"], 2)
             self.assertFalse(missed["detected"])
-            self.assertAlmostEqual(missed["peak_probability"], 0.49)
+            self.assertIsNone(missed["onset_probability"])
+            self.assertNotIn("peak_probability", missed)
             self.assertAlmostEqual(missed["real_onset_seconds"], 1.0)
             self.assertIsNone(missed["predicted_onset_seconds"])
             self.assertIsNone(missed["delta_seconds"])
@@ -450,6 +530,10 @@ class RenderTest(unittest.TestCase):
             reports = [
                 {
                     "record_id": "subject/a",
+                    "onset_mode": "first_threshold",
+                    "threshold": 0.5,
+                    "target_radius_seconds": 0.2,
+                    "prediction_horizon_seconds": 0.1,
                     "chords": [
                         {
                             "chord_id": 0,
@@ -469,6 +553,10 @@ class RenderTest(unittest.TestCase):
                 },
                 {
                     "record_id": "subject/a",
+                    "onset_mode": "first_threshold",
+                    "threshold": 0.5,
+                    "target_radius_seconds": 0.2,
+                    "prediction_horizon_seconds": 0.1,
                     "chords": [
                         {
                             "chord_id": 0,
@@ -488,6 +576,10 @@ class RenderTest(unittest.TestCase):
                 },
                 {
                     "record_id": "subject/b",
+                    "onset_mode": "first_threshold",
+                    "threshold": 0.5,
+                    "target_radius_seconds": 0.2,
+                    "prediction_horizon_seconds": 0.1,
                     "chords": [
                         {
                             "chord_id": 0,
@@ -529,6 +621,10 @@ class RenderTest(unittest.TestCase):
                 [chord["chord_id"] for chord in summary["chords"]],
                 [0, 1, 2],
             )
+            self.assertEqual(summary["onset_mode"], "first_threshold")
+            self.assertEqual(summary["threshold"], 0.5)
+            self.assertEqual(summary["target_radius_seconds"], 0.2)
+            self.assertAlmostEqual(summary["prediction_horizon_seconds"], 0.1)
 
             first, second, third = summary["chords"]
             self.assertEqual(first["observation_count"], 3)
@@ -576,6 +672,39 @@ class RenderTest(unittest.TestCase):
             self.assertEqual(missing_call.args[2], [0, 2, 1])
             self.assertTrue(chart.is_file())
             self.assertGreater(chart.stat().st_size, 0)
+
+    def test_first_threshold_rejects_incompatible_target_configs(self) -> None:
+        config = OmegaConf.create(
+            {
+                "dataset": {
+                    "target_generator": {
+                        "target_mode": "onset",
+                        "velocity_target": False,
+                        "softener": {
+                            "_target_": (
+                                "airpiano.data.targets.TriangularSoftener"
+                            )
+                        },
+                    }
+                }
+            }
+        )
+        validate_onset_target_config(config, "first_threshold")
+
+        config.dataset.target_generator.target_mode = "last_chord"
+        with self.assertRaisesRegex(ValueError, "unscaled triangular onset"):
+            validate_onset_target_config(config, "first_threshold")
+        validate_onset_target_config(config, "peak")
+
+        config.dataset.target_generator.target_mode = "onset"
+        config.dataset.target_generator.velocity_target = True
+        with self.assertRaisesRegex(ValueError, "unscaled triangular onset"):
+            validate_onset_target_config(config, "first_threshold")
+
+        config.dataset.target_generator.velocity_target = False
+        config.dataset.target_generator.softener._target_ = "OtherSoftener"
+        with self.assertRaisesRegex(ValueError, "unscaled triangular onset"):
+            validate_onset_target_config(config, "first_threshold")
 
     def test_ground_truth_uses_real_slice_and_preserves_note_values(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

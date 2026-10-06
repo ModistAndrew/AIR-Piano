@@ -8,3 +8,6 @@ output:
 dataset:
   target_generator:
     velocity_target: true
+
+sonify:
+  onset_mode: peak

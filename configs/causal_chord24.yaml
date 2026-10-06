@@ -27,6 +27,8 @@ evaluation:
   root: ${full_song.output_dir}
   output_path: ${evaluation.root}.json
   onset_threshold: ${sonify.threshold}
+  onset_mode: ${sonify.onset_mode}
+  target_radius_seconds: ${sonify.target_radius_seconds}
   tolerances_frames: [0, 2, 4, 8, 16]
   summary_only: true
   remove_inference_artifacts: false

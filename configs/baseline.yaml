@@ -143,7 +143,9 @@ visualize:
 sonify:
   root: ${test.output_dir}
   midi_root: ${data.midi_root}
-  threshold: 0.2
+  threshold: 0.5
+  onset_mode: first_threshold
+  target_radius_seconds: ${dataset.target_generator.softener.radius_seconds}
   chord_tolerance_seconds: ${dataset.midi_loader.chord_merger.tolerance_seconds}
   duration_seconds: 1.0
   velocity: 64

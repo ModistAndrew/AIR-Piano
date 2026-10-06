@@ -12,3 +12,6 @@ dataset:
     crop_before_first_chord: true
   target_generator:
     target_mode: onset
+
+sonify:
+  onset_mode: first_threshold

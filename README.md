@@ -1683,6 +1683,20 @@ preserved by default; set
 `evaluation.remove_inference_artifacts=true` to remove the discovered NPZs
 only after the metrics JSON is written successfully.
 
+Decoded onsets default to `evaluation.onset_mode=first_threshold`: the first
+valid frame whose probability reaches the inclusive onset threshold is the
+detection moment. The reported onset is scheduled in the future using
+`horizon_seconds = target_radius_seconds * (1 - onset_threshold)` and
+`scheduled_frame = crossing_frame + round(horizon_seconds * fps)`.
+
+With the default radius `0.2`, threshold `0.5`, and 30 FPS, detection
+schedules the onset three frames (100 ms) later. The scheduled frame is not
+clamped to the last observed artifact frame, which lets an online consumer
+detect now and queue a future event. Set `evaluation.onset_mode=peak` to
+retain legacy earliest-global-maximum timing with no future shift. Signed onset
+errors and active-chord evaluation use the scheduled frame, so errors may
+still be negative or positive.
+
 Evaluate any existing artifact tree independently:
 
 ```bash
@@ -1702,7 +1716,10 @@ values are early predictions and positive values are late predictions. Both
 onset metrics are available in frames and seconds. The tolerances are
 inclusive. Ground truth is the earliest positive maximum in each target
 column; all-zero columns are excluded. Null predictions lower `C-AR` and
-coverage but do not enter MAE.
+coverage but do not enter MAE. The `airpiano-evaluation-v8` report persists
+`onset_threshold`, `target_radius_seconds`, and the derived
+`prediction_horizon_seconds`; it exposes scheduled onset timing rather than
+a separate crossing timestamp.
 
 The macro report also includes `chord_acc_variance`, the population variance
 (`ddof=0`) across non-null per-artifact ChordAcc values. Each artifact has
@@ -1731,7 +1748,7 @@ Both stages recursively scan `*.npz` files under `test` by default:
 
 ```bash
 conda run -n v2n python run.py stage=visualize
-conda run -n v2n python run.py stage=sonify sonify.threshold=0.2
+conda run -n v2n python run.py stage=sonify sonify.threshold=0.5
 ```
 
 For a test window, all derived files are written beside it:
@@ -1759,10 +1776,18 @@ conda run -n v2n python run.py stage=sonify \
 
 Visualization draws probability and target heatmaps with shared `[0,1]`
 scaling, followed by a signed `prediction - target` residual heatmap with a
-zero-centered `[-1,1]` scale. Sonification selects each valid chord's earliest
-maximum frame and emits all active pitches when that maximum is at least the
-threshold. Notes are
-one second at velocity 64 by default. It also resolves
+zero-centered `[-1,1]` scale. In `first_threshold` mode, sonification detects
+each valid chord at its first inclusive threshold crossing, then schedules its
+MIDI note at the radius-compensated future frame described above. For example,
+the default `0.5` crossing and `0.2`-second radius provide 100 ms of advance
+notice while placing the note at the predicted onset. `onset_probability`
+retains the crossing score. Set `sonify.onset_mode=peak` to select the
+earliest global maximum with no shift.
+
+First-threshold compensation is valid only for ordinary, unscaled triangular
+onset targets. Last-chord and velocity-scaled presets explicitly use `peak`;
+forcing `first_threshold` with either target fails with a clear error. Notes
+are one second at velocity 64 by default. Sonification also resolves
 `<sonify.midi_root>/<record_id>.mid` and writes the source notes beginning in
 the real, unpadded slice. Ground-truth pitch, velocity, and duration are
 preserved, offsets are clipped at the slice end, and timing is rebased to zero.
@@ -1774,17 +1799,20 @@ are not merged.
 Sonification also matches artifact source IDs to source-MIDI chords and keeps
 each valid chord's timing calculation in memory. Onsets use the absolute source
 clock. The signed delta is `predicted_onset_seconds - real_onset_seconds`, so a
-positive value is late. Chords below the inclusive threshold count as misses
-and do not contribute a delta. The configured chord tolerance must match the one
+positive value is late. Chords that never reach the inclusive threshold count
+as misses and do not contribute a delta. The configured chord tolerance must
+match the one
 used to build the artifact.
 
 After processing every artifact, sonification writes only the final onset
 metrics: `onset_delta_summary.json` and `onset_delta_summary.png` at
 `sonify.root`. They group all chunk observations by relative `chord_id`, so a
-chord-24 configuration has at most IDs 0 through 23. The JSON reports
+chord-24 configuration has at most IDs 0 through 23. The JSON records the
+onset mode, threshold, target radius, derived prediction horizon, and reports
 observation, detected, and missed counts plus the mean signed and absolute
-deltas over detected observations; an ID that is never detected has null means.
-The PNG contains aligned bar charts of mean absolute delta seconds and missing
+deltas; an ID that is never detected has null means. Only the scheduled onset
+time is reported, not a separate threshold-crossing timestamp. The PNG
+contains aligned bar charts of mean absolute delta seconds and missing
 prediction count by relative chord ID.
 
 For test artifacts written to a custom directory, point the artifact root at
@@ -1942,13 +1970,17 @@ loss intentionally remains fixed in code.
 | `visualize.root` | `${test.output_dir}` | Filesystem tree recursively scanned for NPZs and receiving adjacent PNG files. |
 | `evaluation.root` | `${full_song.output_dir}` | Filesystem tree recursively scanned for inference NPZs. |
 | `evaluation.output_path` | `${evaluation.root}.json` | Persistent metrics report; a sibling PNG summary is generated by replacing this suffix. |
-| `evaluation.onset_threshold` | `${sonify.threshold}` | Inclusive peak threshold below which a chord prediction is null. |
+| `evaluation.onset_threshold` | `${sonify.threshold}` | Inclusive confidence threshold required for an onset prediction. |
+| `evaluation.onset_mode` | `${sonify.onset_mode}` | Detect the first inclusive crossing and evaluate its future scheduled frame, or use `peak` for legacy timing. |
+| `evaluation.target_radius_seconds` | `${sonify.target_radius_seconds}` | Triangular target radius used to derive the first-threshold prediction horizon. |
 | `evaluation.tolerances_frames` | `[0, 2, 4, 8, 16]` | Inclusive frame tolerances reported by `C-AR`. |
 | `evaluation.summary_only` | `true` | Print and serialize final micro/macro summaries without per-artifact details; set false for verbose output. |
 | `evaluation.remove_inference_artifacts` | `false` | Remove discovered NPZs after successful report serialization; loss JSON files and directories remain. |
 | `sonify.root` | `${test.output_dir}` | Filesystem tree recursively scanned for NPZs and receiving adjacent MIDI sidecars plus final onset-delta JSON and PNG summaries. |
 | `sonify.midi_root` | `${data.midi_root}` | Root used with the artifact `record_id` to locate source MIDI. |
-| `sonify.threshold` | `0.2` | Inclusive chord peak threshold. |
+| `sonify.threshold` | `0.5` | Inclusive confidence threshold required for a decoded chord onset. |
+| `sonify.onset_mode` | `first_threshold` | Detect the first inclusive crossing and schedule the radius-compensated future frame; use `peak` for legacy timing. |
+| `sonify.target_radius_seconds` | `${dataset.target_generator.softener.radius_seconds}` | Triangular target radius; with the default threshold it derives a 0.1-second prediction horizon. |
 | `sonify.chord_tolerance_seconds` | Dataset chord tolerance | Retained for call compatibility; onset reports use each NPZ target's peak frame. |
 | `sonify.duration_seconds` | `1.0` | Fixed output-note duration. |
 | `sonify.velocity` | `64` | Fixed note-on velocity. |

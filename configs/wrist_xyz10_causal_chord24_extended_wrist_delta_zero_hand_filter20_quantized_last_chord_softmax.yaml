@@ -12,3 +12,6 @@ dataset:
     crop_before_first_chord: true
   target_generator:
     target_mode: last_chord
+
+sonify:
+  onset_mode: peak

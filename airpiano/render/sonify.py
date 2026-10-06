@@ -19,6 +19,13 @@ def sonify(cfg: DictConfig) -> None:
 
     root = resolve_path(cfg.sonify.root)
     midi_root = resolve_path(cfg.sonify.midi_root)
+    onset_mode = str(cfg.sonify.onset_mode)
+    threshold = float(cfg.sonify.threshold)
+    target_radius_seconds = float(cfg.sonify.target_radius_seconds)
+    validate_onset_target_config(cfg, onset_mode)
+    onset_prediction_horizon_seconds(
+        threshold, target_radius_seconds, onset_mode
+    )
     onset_reports = []
     for input_path in sorted(root.rglob("*.npz")):
         if not input_path.is_file():
@@ -26,7 +33,9 @@ def sonify(cfg: DictConfig) -> None:
         prediction_output = sonify_artifact(
             input_path,
             input_path.with_suffix(".mid"),
-            threshold=float(cfg.sonify.threshold),
+            threshold=threshold,
+            onset_mode=onset_mode,
+            target_radius_seconds=target_radius_seconds,
             duration_seconds=float(cfg.sonify.duration_seconds),
             velocity=int(cfg.sonify.velocity),
         )
@@ -40,7 +49,9 @@ def sonify(cfg: DictConfig) -> None:
         onset_report = calculate_onset_deltas(
             input_path,
             midi_path,
-            threshold=float(cfg.sonify.threshold),
+            threshold=threshold,
+            onset_mode=onset_mode,
+            target_radius_seconds=target_radius_seconds,
             chord_tolerance_seconds=float(
                 cfg.sonify.chord_tolerance_seconds
             ),
@@ -99,75 +110,134 @@ def _write_note_events(
     return output
 
 
-def _chord_peak(
-    probability: np.ndarray,
-    valid_frames: np.ndarray,
-    chord_slot: int,
-) -> tuple[int, float]:
-    scores = probability[valid_frames, chord_slot]
-    peak_score = float(scores.max())
-    # valid_frames is sorted and argmax returns the first occurrence of a tie.
-    peak_frame = int(valid_frames[int(np.argmax(scores))])
-    return peak_frame, peak_score
+def onset_prediction_horizon_seconds(
+    threshold: float,
+    target_radius_seconds: float,
+    onset_mode: str = "first_threshold",
+) -> float:
+    """Return the future scheduling horizon implied by onset decoding."""
+
+    if onset_mode not in {"first_threshold", "peak"}:
+        raise ValueError(f"unsupported onset mode: {onset_mode}")
+    if onset_mode == "peak":
+        return 0.0
+    if not 0.0 <= threshold <= 1.0:
+        raise ValueError(
+            "first_threshold requires threshold between 0 and 1 inclusive"
+        )
+    if target_radius_seconds < 0.0:
+        raise ValueError(
+            "first_threshold requires non-negative target_radius_seconds"
+        )
+    return target_radius_seconds * (1.0 - threshold)
+
+
+def validate_onset_target_config(cfg: DictConfig, onset_mode: str) -> None:
+    """Reject first-threshold compensation for incompatible targets."""
+
+    if onset_mode not in {"first_threshold", "peak"}:
+        raise ValueError(f"unsupported onset mode: {onset_mode}")
+    if onset_mode == "peak":
+        return
+
+    target_generator = cfg.dataset.target_generator
+    softener_target = str(target_generator.softener._target_)
+    if (
+        str(target_generator.target_mode) != "onset"
+        or bool(target_generator.get("velocity_target", False))
+        or softener_target != "airpiano.data.targets.TriangularSoftener"
+    ):
+        raise ValueError(
+            "first_threshold onset mode requires an unscaled triangular "
+            "onset target (target_mode=onset, velocity_target=false, "
+            "softener=TriangularSoftener)"
+        )
 
 
 def decode_chord_onsets(
     artifact: InferenceArtifact,
     threshold: float,
+    onset_mode: str = "first_threshold",
+    target_radius_seconds: float = 0.2,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Return per-slot onset frames and peak probabilities.
+    """Return per-slot scheduled onset frames and selection probabilities.
 
-    Undetected and padded chord slots receive frame ``-1``. Peak ties select
-    the earliest valid frame, and a peak equal to ``threshold`` is detected.
+    Undetected and padded chord slots receive frame -1 and probability NaN.
+    Threshold comparisons are inclusive. Peak ties select the earliest valid
+    frame. First-threshold detection adds the radius-derived future horizon;
+    peak timing remains unshifted.
     """
 
+    horizon_seconds = onset_prediction_horizon_seconds(
+        threshold, target_radius_seconds, onset_mode
+    )
+    horizon_frames = int(round(horizon_seconds * artifact.fps))
+
     onset_frames = np.full(len(artifact.chord_mask), -1, dtype=np.int64)
-    peak_probabilities = np.full(
+    onset_probabilities = np.full(
         len(artifact.chord_mask), np.nan, dtype=np.float64
     )
     valid_frames = np.flatnonzero(artifact.frame_mask)
     if valid_frames.size == 0:
-        return onset_frames, peak_probabilities
+        return onset_frames, onset_probabilities
 
     for chord_slot in np.flatnonzero(artifact.chord_mask):
         chord_slot = int(chord_slot)
-        peak_frame, peak_score = _chord_peak(
-            artifact.probability,
-            valid_frames,
-            chord_slot,
+        scores = artifact.probability[valid_frames, chord_slot]
+        if onset_mode == "first_threshold":
+            selected = next(
+                (
+                    index for index, score in enumerate(scores)
+                    if score >= threshold
+                ),
+                None,
+            )
+            if selected is None:
+                continue
+        else:
+            selected = int(np.argmax(scores))
+            if scores[selected] < threshold:
+                continue
+        onset_frames[chord_slot] = (
+            int(valid_frames[selected]) + horizon_frames
         )
-        peak_probabilities[chord_slot] = peak_score
-        if peak_score >= threshold:
-            onset_frames[chord_slot] = peak_frame
-    return onset_frames, peak_probabilities
+        onset_probabilities[chord_slot] = float(scores[selected])
+    return onset_frames, onset_probabilities
 
 
 def sonify_artifact(
     input_path: str | Path,
     output_path: str | Path,
-    threshold: float = 0.2,
+    threshold: float = 0.5,
     duration_seconds: float = 1.0,
     velocity: int = 64,
+    onset_mode: str = "first_threshold",
+    target_radius_seconds: float = 0.2,
 ) -> Path:
     """Emit every pitch in each confidently aligned chord as a MIDI note.
 
-    Each valid chord is placed at its earliest maximum over real frames. A peak
-    equal to ``threshold`` is included, and all notes use the requested fixed
-    duration and velocity.
+    First-threshold notes use the radius-compensated future frame; peak notes
+    use the earliest global maximum. Threshold equality is included, and all
+    notes use the requested fixed duration and velocity.
     """
 
     artifact = load_artifact(input_path)
     ticks_per_beat = 480
     tempo = 500_000
     events: list[tuple[int, int, int, int]] = []
-    onset_frames, _ = decode_chord_onsets(artifact, threshold)
+    onset_frames, _ = decode_chord_onsets(
+        artifact,
+        threshold,
+        onset_mode=onset_mode,
+        target_radius_seconds=target_radius_seconds,
+    )
 
     for chord in np.flatnonzero(artifact.chord_mask):
-        peak_frame = int(onset_frames[chord])
-        if peak_frame < 0:
+        onset_frame = int(onset_frames[chord])
+        if onset_frame < 0:
             continue
 
-        onset_seconds = peak_frame / artifact.fps
+        onset_seconds = onset_frame / artifact.fps
         start_tick = _seconds_to_tick(
             onset_seconds,
             ticks_per_beat=ticks_per_beat,
@@ -188,17 +258,21 @@ def sonify_artifact(
 def calculate_onset_deltas(
     input_path: str | Path,
     midi_path: str | Path,
-    threshold: float = 0.2,
+    threshold: float = 0.5,
     chord_tolerance_seconds: float = 0.05,
+    onset_mode: str = "first_threshold",
+    target_radius_seconds: float = 0.2,
 ) -> dict[str, object]:
     """Calculate frame-level target-to-prediction deltas for valid chords."""
 
     del midi_path, chord_tolerance_seconds
     artifact = load_artifact(input_path)
     valid_frames = np.flatnonzero(artifact.frame_mask)
-    onset_frames, peak_probabilities = decode_chord_onsets(
+    onset_frames, onset_probabilities = decode_chord_onsets(
         artifact,
         threshold,
+        onset_mode=onset_mode,
+        target_radius_seconds=target_radius_seconds,
     )
     chords = []
 
@@ -213,11 +287,10 @@ def calculate_onset_deltas(
         real_onset = (
             artifact.frame_start + target_frame
         ) / artifact.fps
-        peak_frame = int(onset_frames[chord_slot])
-        peak_score = float(peak_probabilities[chord_slot])
-        detected = peak_frame >= 0
+        onset_frame = int(onset_frames[chord_slot])
+        detected = onset_frame >= 0
         predicted_onset = (
-            (artifact.frame_start + peak_frame) / artifact.fps
+            (artifact.frame_start + onset_frame) / artifact.fps
             if detected
             else None
         )
@@ -232,18 +305,28 @@ def calculate_onset_deltas(
                 "chord_id": chord_slot,
                 "delta_seconds": delta,
                 "detected": detected,
-                "peak_probability": peak_score,
+                "onset_probability": (
+                    float(onset_probabilities[chord_slot])
+                    if detected
+                    else None
+                ),
                 "predicted_onset_seconds": predicted_onset,
                 "real_onset_seconds": real_onset,
                 "source_chord_id": source_chord_id,
             }
         )
 
+    prediction_horizon_seconds = onset_prediction_horizon_seconds(
+        threshold, target_radius_seconds, onset_mode
+    )
     return {
         "chords": chords,
         "fps": artifact.fps,
         "frame_start": artifact.frame_start,
+        "onset_mode": onset_mode,
+        "prediction_horizon_seconds": prediction_horizon_seconds,
         "record_id": artifact.record_id,
+        "target_radius_seconds": target_radius_seconds,
         "threshold": threshold,
     }
 
@@ -259,9 +342,20 @@ def write_onset_delta_summary(
     deltas: dict[int, list[float]] = {}
     absolute_deltas: dict[int, list[float]] = {}
     artifact_count = 0
+    onset_mode = None
+    prediction_horizon_seconds = None
+    target_radius_seconds = None
+    threshold = None
 
     for report in reports:
         artifact_count += 1
+        if onset_mode is None:
+            onset_mode = str(report["onset_mode"])
+            prediction_horizon_seconds = float(
+                report["prediction_horizon_seconds"]
+            )
+            target_radius_seconds = float(report["target_radius_seconds"])
+            threshold = float(report["threshold"])
         for chord in report["chords"]:
             chord_id = int(chord["chord_id"])
             observation_counts[chord_id] = (
@@ -307,6 +401,10 @@ def write_onset_delta_summary(
             "delta_definition": (
                 "predicted_onset_seconds - real_onset_seconds"
             ),
+            "onset_mode": onset_mode,
+            "prediction_horizon_seconds": prediction_horizon_seconds,
+            "target_radius_seconds": target_radius_seconds,
+            "threshold": threshold,
         },
     )
     return output
