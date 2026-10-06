@@ -677,6 +677,33 @@ class TrainTest(unittest.TestCase):
             0.2,
         )
 
+    def test_quantized_random_hand_shift_config(self) -> None:
+        config_directory = Path(__file__).parents[1] / "configs"
+        name = (
+            "wrist_xyz10_causal_chord24_extended_wrist_delta_"
+            "zero_hand_filter20_quantized_random_hand_shift0p5s"
+        )
+        with initialize_config_dir(
+            version_base=None, config_dir=str(config_directory.resolve())
+        ):
+            config = compose(config_name=name)
+
+        components = data.build_data_components(config)
+        slicer = components["slicer"]
+        reader = components["midi_loader"].reader
+        self.assertEqual(str(config.output.dir), f"outputs/{name}")
+        self.assertEqual(str(config.wandb.name), name)
+        self.assertEqual(float(config.dataset.random_hand_shift_seconds), 0.5)
+        self.assertTrue(reader.quantization)
+        self.assertEqual(reader.subdivision, 12)
+        self.assertTrue(bool(config.model.include_chord_duration))
+        self.assertTrue(bool(config.model.causal_frame_attention))
+        self.assertEqual(slicer.mode, "chord")
+        self.assertEqual(slicer.segment_frames, 24)
+        self.assertEqual(slicer.stride_frames, 12)
+        self.assertTrue(slicer.crop_to_chord_bounds)
+        self.assertEqual(slicer.max_zero_hand_fraction, 0.2)
+
     def test_pianovam_non_quantized_offset_last_chord_config(self) -> None:
         config_directory = Path(__file__).parents[1] / "configs"
         name = (

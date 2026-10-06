@@ -68,6 +68,7 @@ The alignment loss is selected by `alignment_loss`; BCE remains the default.
 | `configs/wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20.yaml` | Wrist-delta ablation with score-bounded outer windows and a 20% fully-missing-hand frame limit. |
 | `configs/wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_chord_duration_mean_normalized.yaml` | Zero-hand-filter20 wrist-delta ablation with song-mean-normalized chord durations. |
 | `configs/wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized.yaml` | Zero-hand-filter20 wrist-delta ablation with 12-subdivision beat-grid chord durations. |
+| `configs/wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized_random_hand_shift0p5s.yaml` | Quantized filter20 wrist-delta ablation with independently jittered training hand-window edges. |
 | `configs/wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized_last_chord_softmax.yaml` | Quantized zero-hand-filter20 wrist-delta ablation with persistent last-chord targets and categorical softmax. |
 | `configs/wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized_mean_time.yaml` | Quantized zero-hand-filter20 wrist-delta ablation using mean grouped-event times. |
 | `configs/wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized_mean_time_note_split.yaml` | Mean-time quantized ablation with one score token per note. |
@@ -1214,6 +1215,21 @@ conda run -n v2n python run.py \
 
 The final variant retains the quantized onset/offset action sequence and uses
 the persistent last-action target with categorical cross-entropy.
+
+The random-hand-shift variant inherits the quantized onset-only configuration
+and independently jitters each training hand-window edge by up to 0.5 seconds
+(15 frames at 30 Hz). The 24 chord tokens remain fixed, targets are regenerated
+on the shifted global frame interval, and validation, test, and full-song input
+remain unshifted:
+
+```bash
+conda run -n v2n python run.py \
+  --config-name wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized_random_hand_shift0p5s \
+  stage=train
+conda run -n v2n python run.py \
+  --config-name wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized_random_hand_shift0p5s \
+  stage=test
+```
 
 The PianoVAM counterpart removes both beat-grid quantization and duration-token
 conditioning while retaining onset/offset actions, mean grouped-event times,
