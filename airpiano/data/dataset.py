@@ -122,7 +122,7 @@ def collate_alignment_batch(batch: list[dict[str, Any]]) -> dict[str, Any]:
         frame_count, chord_count = sample["target"].shape
         target[index, :frame_count, :chord_count] = sample["target"]
 
-    return {
+    result = {
         "hands": pad_sequence(
             [sample["hands"] for sample in batch], batch_first=True
         ),
@@ -152,6 +152,12 @@ def collate_alignment_batch(batch: list[dict[str, Any]]) -> dict[str, Any]:
             [float(sample["fps"]) for sample in batch], dtype=torch.float64
         ),
     }
+    if "chord_positions" in batch[0]:
+        result["chord_positions"] = pad_sequence(
+            [sample["chord_positions"] for sample in batch],
+            batch_first=True,
+        )
+    return result
 
 
 def build_data_components(cfg: DictConfig) -> dict[str, Any]:

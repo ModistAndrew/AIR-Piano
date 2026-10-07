@@ -69,6 +69,7 @@ The alignment loss is selected by `alignment_loss`; BCE remains the default.
 | `configs/wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_chord_duration_mean_normalized.yaml` | Zero-hand-filter20 wrist-delta ablation with song-mean-normalized chord durations. |
 | `configs/wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized.yaml` | Zero-hand-filter20 wrist-delta ablation with 12-subdivision beat-grid chord durations. |
 | `configs/wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized_random_hand_shift0p5s.yaml` | Quantized filter20 wrist-delta ablation with independently jittered training hand-window edges. |
+| `configs/wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized_random_hand_shift0p5s_rope.yaml` | Random-hand-shift quantized ablation using absolute subdivision ticks with chord self-attention RoPE. |
 | `configs/wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized_last_chord_softmax.yaml` | Quantized zero-hand-filter20 wrist-delta ablation with persistent last-chord targets and categorical softmax. |
 | `configs/wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized_mean_time.yaml` | Quantized zero-hand-filter20 wrist-delta ablation using mean grouped-event times. |
 | `configs/wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized_mean_time_note_split.yaml` | Mean-time quantized ablation with one score token per note. |
@@ -1228,6 +1229,20 @@ conda run -n v2n python run.py \
   stage=train
 conda run -n v2n python run.py \
   --config-name wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized_random_hand_shift0p5s \
+  stage=test
+```
+
+The RoPE variant uses each chord's absolute 12-subdivision beat-grid tick.
+Chord self-attention depends on relative tick differences through rotary query/key
+encoding; its score tokens contain only the 256 onset/offset pitch features and
+no duration one-hot. This architecture requires training from scratch:
+
+```bash
+conda run -n v2n python run.py \
+  --config-name wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized_random_hand_shift0p5s_rope \
+  stage=train
+conda run -n v2n python run.py \
+  --config-name wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized_random_hand_shift0p5s_rope \
   stage=test
 ```
 

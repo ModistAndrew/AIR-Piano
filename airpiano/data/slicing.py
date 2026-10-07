@@ -31,6 +31,7 @@ class FutureChordSlicer:
         crop_before_first_chord: bool = False,
         crop_to_chord_bounds: bool = False,
         max_zero_hand_fraction: float | None = None,
+        chord_timing_mode: str = "duration_one_hot",
     ):
         if mode not in {"frame", "chord"}:
             raise ValueError(f"unsupported slicing mode: {mode}")
@@ -40,6 +41,11 @@ class FutureChordSlicer:
         ):
             raise ValueError(
                 "max_zero_hand_fraction must be between zero and one"
+            )
+        if chord_timing_mode not in {"duration_one_hot", "absolute_tick"}:
+            raise ValueError(
+                "chord_timing_mode must be 'duration_one_hot' or "
+                "'absolute_tick'"
             )
         self.mode = mode
         self.fps = float(fps)
@@ -55,6 +61,7 @@ class FutureChordSlicer:
             if max_zero_hand_fraction is None
             else float(max_zero_hand_fraction)
         )
+        self.chord_timing_mode = chord_timing_mode
 
     def starts(self, item_count: int) -> tuple[int, ...]:
         """Return regular starts plus the exact right-aligned final start."""
@@ -217,8 +224,16 @@ class FutureChordSlicer:
         selected_chords = tuple(
             song.chords[index] for index in chord_positions
         )
+        use_tick_positions = self.chord_timing_mode == "absolute_tick"
+        if use_tick_positions and any(
+            chord.tick is None for chord in selected_chords
+        ):
+            raise ValueError("absolute_tick timing requires quantized chords")
         chord_values = torch.zeros(
-            (len(selected_chords), CHORD_FEATURES),
+            (
+                len(selected_chords),
+                EVENT_PITCH_FEATURES if use_tick_positions else CHORD_FEATURES,
+            ),
             dtype=torch.float32,
         )
         for local_index, chord in enumerate(selected_chords):
@@ -227,11 +242,12 @@ class FutureChordSlicer:
                 chord_values[local_index, note.pitch] = 1.0
             for note in chord.offset_notes:
                 chord_values[local_index, PITCH_FEATURES + note.pitch] = 1.0
-            chord_values[local_index, EVENT_PITCH_FEATURES:] = (
-                chord.quantized_dur
-            )
+            if not use_tick_positions:
+                chord_values[local_index, EVENT_PITCH_FEATURES:] = (
+                    chord.quantized_dur
+                )
 
-        return {
+        result = {
             "hands": song.hands[frame_start:frame_stop],
             "hand_presence": song.presence[frame_start:frame_stop],
             "chords": chord_values,
@@ -240,3 +256,9 @@ class FutureChordSlicer:
             ),
             "selected_chords": selected_chords,
         }
+        if use_tick_positions:
+            result["chord_positions"] = torch.tensor(
+                [int(chord.tick) for chord in selected_chords],
+                dtype=torch.long,
+            )
+        return result

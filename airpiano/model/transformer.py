@@ -14,6 +14,7 @@ from .layers import (
     NUM_HEADS,
     FrameAlignmentBlock,
     PairScorer,
+    RotaryChordEncoder,
     sinusoidal_encoding,
 )
 
@@ -32,12 +33,22 @@ class AirPianoTransformer(nn.Module):
         include_chord_duration: bool = False,
         include_chord_offsets: bool = False,
         zero_hand_input: bool = False,
+        chord_position_encoding: str = "index",
     ) -> None:
         super().__init__()
+        if chord_position_encoding not in {"index", "rope"}:
+            raise ValueError(
+                "chord_position_encoding must be 'index' or 'rope'"
+            )
+        if chord_position_encoding == "rope" and include_chord_duration:
+            raise ValueError(
+                "RoPE chord positions cannot be combined with chord duration"
+            )
         self.causal_frame_attention = bool(causal_frame_attention)
         self.include_chord_duration = bool(include_chord_duration)
         self.include_chord_offsets = bool(include_chord_offsets)
         self.zero_hand_input = bool(zero_hand_input)
+        self.chord_position_encoding = chord_position_encoding
         self.hand_embedding = nn.Sequential(
             nn.Linear(128, MODEL_DIM),
             nn.GELU(),
@@ -67,21 +78,24 @@ class AirPianoTransformer(nn.Module):
                 nn.Dropout(DROPOUT),
             )
 
-        chord_layer = nn.TransformerEncoderLayer(
-            d_model=MODEL_DIM,
-            nhead=NUM_HEADS,
-            dim_feedforward=FEEDFORWARD_DIM,
-            dropout=DROPOUT,
-            activation="gelu",
-            batch_first=True,
-            norm_first=True,
-        )
-        self.chord_encoder = nn.TransformerEncoder(
-            chord_layer,
-            num_layers=NUM_CHORD_LAYERS,
-            norm=nn.LayerNorm(MODEL_DIM),
-            enable_nested_tensor=False,
-        )
+        if self.chord_position_encoding == "rope":
+            self.chord_encoder = RotaryChordEncoder()
+        else:
+            chord_layer = nn.TransformerEncoderLayer(
+                d_model=MODEL_DIM,
+                nhead=NUM_HEADS,
+                dim_feedforward=FEEDFORWARD_DIM,
+                dropout=DROPOUT,
+                activation="gelu",
+                batch_first=True,
+                norm_first=True,
+            )
+            self.chord_encoder = nn.TransformerEncoder(
+                chord_layer,
+                num_layers=NUM_CHORD_LAYERS,
+                norm=nn.LayerNorm(MODEL_DIM),
+                enable_nested_tensor=False,
+            )
         self.global_chord = nn.Parameter(torch.empty(1, 1, MODEL_DIM))
         self.frame_layers = nn.ModuleList(
             [FrameAlignmentBlock() for _ in range(NUM_FRAME_LAYERS)]
@@ -107,6 +121,7 @@ class AirPianoTransformer(nn.Module):
         chords: torch.Tensor,
         frame_mask: torch.Tensor,
         chord_mask: torch.Tensor,
+        chord_positions: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Return alignment logits with shape ``[B,T,C]``.
 
@@ -118,10 +133,23 @@ class AirPianoTransformer(nn.Module):
 
         batch_size, frame_count = hands.shape[:2]
         chord_count = chords.shape[1]
-        if chords.shape[-1] != 456:
+        expected_chord_features = (
+            256 if self.chord_position_encoding == "rope" else 456
+        )
+        if chords.shape[-1] != expected_chord_features:
             raise ValueError(
-                f"expected 456 chord features, got {chords.shape[-1]}"
+                f"expected {expected_chord_features} chord features, "
+                f"got {chords.shape[-1]}"
             )
+        if self.chord_position_encoding == "rope":
+            if chord_positions is None:
+                raise ValueError("RoPE chord positions are required")
+            if chord_positions.shape != chord_mask.shape:
+                raise ValueError(
+                    "chord_positions must have the same shape as chord_mask"
+                )
+            if chord_positions.dtype.is_floating_point:
+                raise ValueError("RoPE chord positions must be integer ticks")
 
         hand_dtype = self.hand_embedding[0].weight.dtype
         if self.zero_hand_input:
@@ -161,12 +189,13 @@ class AirPianoTransformer(nn.Module):
         chord_states = chord_states.masked_fill(~chord_mask.unsqueeze(-1), 0.0)
         global_chord = self.global_chord.expand(batch_size, -1, -1)
         chord_memory = torch.cat((global_chord, chord_states), dim=1)
-        chord_memory = chord_memory + sinusoidal_encoding(
-            chord_count + 1,
-            MODEL_DIM,
-            device=chord_memory.device,
-            dtype=chord_memory.dtype,
-        )
+        if self.chord_position_encoding == "index":
+            chord_memory = chord_memory + sinusoidal_encoding(
+                chord_count + 1,
+                MODEL_DIM,
+                device=chord_memory.device,
+                dtype=chord_memory.dtype,
+            )
         chord_padding_mask = torch.cat(
             (
                 torch.zeros(
@@ -182,10 +211,31 @@ class AirPianoTransformer(nn.Module):
             chord_padding_mask.unsqueeze(-1),
             0.0,
         )
-        chord_memory = self.chord_encoder(
-            chord_memory,
-            src_key_padding_mask=chord_padding_mask,
-        )
+        if self.chord_position_encoding == "rope":
+            assert chord_positions is not None
+            first_indices = chord_mask.to(torch.long).argmax(
+                dim=1, keepdim=True
+            )
+            first_positions = chord_positions.gather(1, first_indices)
+            first_positions = torch.where(
+                chord_mask.any(dim=1, keepdim=True),
+                first_positions,
+                torch.zeros_like(first_positions),
+            )
+            rotary_positions = torch.cat(
+                (first_positions, chord_positions),
+                dim=1,
+            )
+            chord_memory = self.chord_encoder(
+                chord_memory,
+                rotary_positions,
+                chord_padding_mask,
+            )
+        else:
+            chord_memory = self.chord_encoder(
+                chord_memory,
+                src_key_padding_mask=chord_padding_mask,
+            )
         chord_memory = chord_memory.masked_fill(
             chord_padding_mask.unsqueeze(-1),
             0.0,

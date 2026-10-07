@@ -46,6 +46,7 @@ def infer_full_song(
     score = slicer.slice(song, 0, 0, chord_positions)
     chord_tokens = score["chords"]
     chord_ids = score["chord_ids"]
+    chord_position_tokens = score.get("chord_positions")
     probability = torch.zeros((frame_count, chord_count), dtype=torch.float32)
 
     window_width = slicer.segment_frames
@@ -72,6 +73,10 @@ def infer_full_song(
                 (1, active_chord_count), dtype=torch.bool
             ),
         }
+        if chord_position_tokens is not None:
+            batch["chord_positions"] = chord_position_tokens[
+                chord_start:chord_stop
+            ].unsqueeze(0)
         with _autocast(device, bf16):
             logits = _forward(model, batch, device)
         history_probability = alignment_probabilities(

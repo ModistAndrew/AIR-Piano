@@ -27,6 +27,7 @@ class AirPianoTransformerTest(unittest.TestCase):
                 "include_chord_duration",
                 "include_chord_offsets",
                 "zero_hand_input",
+                "chord_position_encoding",
             ),
         )
         model = AirPianoTransformer().eval()
@@ -73,6 +74,83 @@ class AirPianoTransformerTest(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "456"):
             model(hands, presence, chords[..., :128], frame_mask, chord_mask)
+
+    def test_rope_uses_relative_integer_ticks_without_duration_embedding(
+        self,
+    ) -> None:
+        torch.manual_seed(6)
+        model = AirPianoTransformer(chord_position_encoding="rope").eval()
+        hands = torch.randn(1, 2, 2, 21, 3)
+        presence = torch.ones(1, 2, 2, dtype=torch.bool)
+        chords = torch.zeros(1, 3, 256)
+        chords[0, 0, 60] = 1.0
+        chords[0, 1, 64] = 1.0
+        chords[0, 2, 67] = 1.0
+        frame_mask = torch.ones(1, 2, dtype=torch.bool)
+        chord_mask = torch.tensor([[True, True, False]])
+        positions = torch.tensor([[240, 246, 252]])
+
+        with torch.no_grad():
+            expected = model(
+                hands,
+                presence,
+                chords,
+                frame_mask,
+                chord_mask,
+                positions,
+            )
+            translated = model(
+                hands,
+                presence,
+                chords,
+                frame_mask,
+                chord_mask,
+                positions + 1_000,
+            )
+            padded_positions = positions.clone()
+            padded_positions[0, 2] = 100_000
+            padded = model(
+                hands,
+                presence,
+                chords,
+                frame_mask,
+                chord_mask,
+                padded_positions,
+            )
+            changed_gap = positions.clone()
+            changed_gap[0, 1] += 3
+            changed = model(
+                hands,
+                presence,
+                chords,
+                frame_mask,
+                chord_mask,
+                changed_gap,
+            )
+
+        self.assertIsNone(model.chord_duration_embedding)
+        self.assertEqual(tuple(expected.shape), (1, 2, 3))
+        self.assertTrue(bool(torch.isfinite(expected).all()))
+        torch.testing.assert_close(translated, expected, rtol=0.0, atol=2e-6)
+        torch.testing.assert_close(padded, expected, rtol=0.0, atol=0.0)
+        self.assertFalse(torch.allclose(changed[:, :, :2], expected[:, :, :2]))
+
+        with self.assertRaisesRegex(ValueError, "positions are required"):
+            model(hands, presence, chords, frame_mask, chord_mask)
+        with self.assertRaisesRegex(ValueError, "integer ticks"):
+            model(
+                hands,
+                presence,
+                chords,
+                frame_mask,
+                chord_mask,
+                positions.to(torch.float32),
+            )
+        with self.assertRaisesRegex(ValueError, "cannot be combined"):
+            AirPianoTransformer(
+                include_chord_duration=True,
+                chord_position_encoding="rope",
+            )
 
     def test_offset_conditioning_uses_separate_pitch_projection(self) -> None:
         torch.manual_seed(6)

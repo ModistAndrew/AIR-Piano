@@ -90,6 +90,7 @@ class Chord:
     duration: float
     quantized_dur: torch.Tensor
     duration_ticks: int | None = None
+    tick: int | None = None
 
 
 @dataclass(frozen=True)

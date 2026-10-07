@@ -20,6 +20,7 @@ from .utils import resolve_path
 
 
 TENSOR_INPUTS = ("hands", "hand_presence", "chords", "frame_mask", "chord_mask")
+OPTIONAL_TENSOR_INPUTS = ("chord_positions",)
 
 
 def seed_everything(seed: int) -> None:
@@ -42,6 +43,13 @@ def _forward(
     device: torch.device,
 ) -> torch.Tensor:
     values = {name: _tensor_to_device(batch[name], device) for name in TENSOR_INPUTS}
+    values.update(
+        {
+            name: _tensor_to_device(batch[name], device)
+            for name in OPTIONAL_TENSOR_INPUTS
+            if name in batch
+        }
+    )
     return model(**values)
 
 

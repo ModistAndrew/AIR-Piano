@@ -114,6 +114,7 @@ model:
   include_chord_duration: false
   include_chord_offsets: false
   zero_hand_input: false
+  chord_position_encoding: index
 
 train:
   epochs: 20

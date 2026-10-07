@@ -364,6 +364,7 @@ class InitializerChordMerger:
                     duration=duration,
                     duration_ticks=ticks,
                     quantized_dur=quantized_dur,
+                    tick=int(group[0].tick) if quantization else None,
                 )
             )
         return tuple(chords)

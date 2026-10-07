@@ -157,6 +157,7 @@ def load_model_checkpoint(
             "causal_frame_attention": False,
             "include_chord_duration": False,
             "include_chord_offsets": False,
+            "chord_position_encoding": "index",
             "zero_hand_input": False,
         },
         checkpoint_config.get("model", {}),

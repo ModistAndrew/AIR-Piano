@@ -69,6 +69,7 @@ def _chord(
     notes: tuple[Note, ...],
     duration: float | None = None,
     quantized_dur: torch.Tensor | None = None,
+    tick: int | None = None,
 ) -> Chord:
     events = tuple(NoteEvent(note, False) for note in notes)
     time = events[0].time
@@ -86,6 +87,7 @@ def _chord(
         time=time,
         duration=duration,
         quantized_dur=quantized_dur,
+        tick=tick,
     )
 
 
@@ -484,6 +486,7 @@ class MidiTest(unittest.TestCase):
         self.assertAlmostEqual(chords[0].duration, 0.115)
         self.assertAlmostEqual(chords[1].duration, 19.785)
         self.assertEqual([chord.duration_ticks for chord in chords], [3, 247])
+        self.assertEqual([chord.tick for chord in chords], [0, 3])
         self.assertEqual(
             [chord.quantized_dur.argmax().item() for chord in chords],
             [3, 199],
@@ -501,6 +504,19 @@ class MidiTest(unittest.TestCase):
         )
         self.assertEqual(zero[0].duration_ticks, 0)
         self.assertEqual(zero[0].quantized_dur.argmax().item(), 0)
+        self.assertEqual(zero[0].tick, 7)
+
+        distant = InitializerChordMerger().merge(
+            EventSequence.from_notes(
+                (
+                    _note(0, 0.0, 0.1, 60, onset_tick=0, offset_tick=1),
+                    _note(1, 1.0, 1.1, 64, onset_tick=250, offset_tick=251),
+                )
+            ),
+            quantization=True,
+        )
+        self.assertEqual([chord.tick for chord in distant], [0, 250])
+        self.assertEqual(distant[0].quantized_dur.argmax().item(), 199)
 
     def test_chord_merger_splits_same_tick_notes_in_absolute_time_order(
         self,
@@ -931,6 +947,53 @@ class SlicingAndTargetTest(unittest.TestCase):
             slicer.candidate_positions(sustained, frame_start=10),
             (0,),
         )
+
+    def test_absolute_tick_tokens_omit_duration_one_hot_and_collate(
+        self,
+    ) -> None:
+        chords = (
+            _chord(0, (_note(0, 0.1, 0.2, 60),), tick=0),
+            _chord(1, (_note(1, 0.5, 0.6, 64),), tick=250),
+        )
+        song = _song(chords, frame_count=10, fps=10.0)
+        slicer = FutureChordSlicer(
+            fps=10.0,
+            chord_timing_mode="absolute_tick",
+        )
+
+        first = slicer.slice(song, 0, 2, (0, 1))
+        second = slicer.slice(song, 0, 2, (1,))
+        self.assertEqual(tuple(first["chords"].shape), (2, 256))
+        self.assertEqual(first["chord_positions"].tolist(), [0, 250])
+        self.assertEqual(first["chords"][0, 60].item(), 1.0)
+        self.assertEqual(first["chords"][1, 64].item(), 1.0)
+
+        for sample in (first, second):
+            sample["target"] = torch.zeros(
+                (2, len(sample["chords"])),
+                dtype=torch.float32,
+            )
+            sample["record_id"] = song.record_id
+            sample["frame_start"] = 0
+            sample["fps"] = song.fps
+        batch = collate_alignment_batch([first, second])
+        self.assertEqual(tuple(batch["chords"].shape), (2, 2, 256))
+        self.assertEqual(
+            batch["chord_positions"].tolist(),
+            [[0, 250], [250, 0]],
+        )
+        self.assertEqual(
+            batch["chord_mask"].tolist(),
+            [[True, True], [True, False]],
+        )
+
+        unquantized = _song(
+            (_chord(0, (_note(2, 0.1, 0.2, 67),)),),
+            frame_count=2,
+            fps=10.0,
+        )
+        with self.assertRaisesRegex(ValueError, "requires quantized chords"):
+            slicer.slice(unquantized, 0, 1, (0,))
 
     def test_duration_tokens_use_quantized_durations_stored_on_chords(self) -> None:
         middle_duration = quantize_duration_seconds(torch.tensor(1.2))

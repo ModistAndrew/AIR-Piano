@@ -121,6 +121,7 @@ class TestInferenceTest(unittest.TestCase):
             torch.save({"model": _TinyModel().state_dict()}, legacy)
 
             def instantiate_model(config):
+                self.assertEqual(str(config.chord_position_encoding), "index")
                 return _TinyModel(
                     causal_frame_attention=bool(
                         config.causal_frame_attention
