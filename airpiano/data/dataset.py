@@ -28,13 +28,32 @@ class AlignmentDataset(Dataset):
         slicer: FutureChordSlicer,
         target_generator: TargetGenerator,
         random_hand_shift_seconds: float = 0.0,
+        random_pitch_shift_semitones: int = 0,
+        random_duration_scale_factors: Sequence[float] | None = None,
+        minimum_duration_ticks: int = 0,
     ):
         if random_hand_shift_seconds < 0.0:
             raise ValueError("random_hand_shift_seconds must be non-negative")
+        if random_pitch_shift_semitones < 0:
+            raise ValueError(
+                "random_pitch_shift_semitones must be non-negative"
+            )
+        if minimum_duration_ticks < 0:
+            raise ValueError("minimum_duration_ticks must be non-negative")
+        duration_scale_factors = (
+            ()
+            if random_duration_scale_factors is None
+            else tuple(float(value) for value in random_duration_scale_factors)
+        )
+        if any(value <= 0.0 for value in duration_scale_factors):
+            raise ValueError("random duration scale factors must be positive")
         self.songs = tuple(songs)
         self.slicer = slicer
         self.target_generator = target_generator
         self.random_hand_shift_seconds = float(random_hand_shift_seconds)
+        self.random_pitch_shift_semitones = int(random_pitch_shift_semitones)
+        self.random_duration_scale_factors = duration_scale_factors
+        self.minimum_duration_ticks = int(minimum_duration_ticks)
         self.max_random_hand_shift_frames = round(
             self.random_hand_shift_seconds * self.slicer.fps
         )
@@ -71,6 +90,97 @@ class AlignmentDataset(Dataset):
             if shifted_stop > shifted_start:
                 return shifted_start, shifted_stop
 
+    def _randomize_chord_pitches(
+        self, chord_tokens: torch.Tensor
+    ) -> torch.Tensor:
+        max_shift = self.random_pitch_shift_semitones
+        if max_shift == 0:
+            return chord_tokens
+
+        pitch_plane_count = 1 if self.slicer.compact_chord_tokens else 2
+        pitch_width = 128 * pitch_plane_count
+        pitch_values = chord_tokens[:, :pitch_width].reshape(
+            len(chord_tokens),
+            pitch_plane_count,
+            128,
+        )
+        occupied = torch.nonzero(pitch_values, as_tuple=False)
+        if len(occupied) == 0:
+            return chord_tokens
+
+        minimum_pitch = int(occupied[:, -1].min())
+        maximum_pitch = int(occupied[:, -1].max())
+        minimum_shift = max(-max_shift, -minimum_pitch)
+        maximum_shift = min(max_shift, 127 - maximum_pitch)
+        shift = random.randint(minimum_shift, maximum_shift)
+        if shift == 0:
+            return chord_tokens
+
+        shifted_tokens = chord_tokens.clone()
+        shifted_pitches = shifted_tokens[:, :pitch_width].reshape(
+            len(chord_tokens),
+            pitch_plane_count,
+            128,
+        )
+        shifted_pitches.zero_()
+        if shift > 0:
+            shifted_pitches[:, :, shift:] = pitch_values[
+                :, :, : 128 - shift
+            ]
+        else:
+            shifted_pitches[:, :, : 128 + shift] = pitch_values[
+                :, :, -shift:
+            ]
+        return shifted_tokens
+
+    def _randomize_chord_durations(
+        self, chord_tokens: torch.Tensor
+    ) -> torch.Tensor:
+        if not self.random_duration_scale_factors:
+            return chord_tokens
+
+        duration_start = 128 if self.slicer.compact_chord_tokens else 256
+        duration_values = chord_tokens[:, duration_start:]
+        duration_ticks = (
+            duration_values.argmax(dim=-1) + self.minimum_duration_ticks
+        )
+        maximum_duration_ticks = (
+            self.minimum_duration_ticks + self.slicer.chord_duration_bins - 1
+        )
+        valid = []
+        for factor in self.random_duration_scale_factors:
+            scaled_ticks = torch.ceil(
+                duration_ticks.to(torch.float64) * factor
+            ).to(torch.long)
+            if bool(
+                (
+                    (scaled_ticks >= self.minimum_duration_ticks)
+                    & (scaled_ticks <= maximum_duration_ticks)
+                ).all()
+            ):
+                valid.append(factor)
+        if not valid:
+            raise ValueError(
+                "no random duration scale factor preserves duration bounds"
+            )
+
+        factor = random.choice(valid)
+        if factor == 1.0:
+            return chord_tokens
+        scaled_ticks = torch.ceil(
+            duration_ticks.to(torch.float64) * factor
+        ).to(torch.long)
+
+        shifted_tokens = chord_tokens.clone()
+        shifted_durations = shifted_tokens[:, duration_start:]
+        shifted_durations.zero_()
+        shifted_durations.scatter_(
+            1,
+            (scaled_ticks - self.minimum_duration_ticks).unsqueeze(-1),
+            1.0,
+        )
+        return shifted_tokens
+
     def __getitem__(self, index: int) -> dict[str, Any]:
         song_index, frame_start, frame_stop, chord_positions = self.samples[
             int(index)
@@ -88,6 +198,12 @@ class AlignmentDataset(Dataset):
             chord_positions,
         )
         selected_chords = window.pop("selected_chords")
+        window["chords"] = self._randomize_chord_pitches(
+            window["chords"]
+        )
+        window["chords"] = self._randomize_chord_durations(
+            window["chords"]
+        )
         target = self.target_generator.generate(
             selected_chords,
             frame_start=frame_start,
@@ -198,6 +314,23 @@ def build_dataset(
             float(cfg.dataset.random_hand_shift_seconds)
             if split == "train"
             else 0.0
+        ),
+        random_pitch_shift_semitones=(
+            int(cfg.dataset.get("random_pitch_shift_semitones", 0))
+            if split == "train"
+            else 0
+        ),
+        random_duration_scale_factors=(
+            tuple(
+                float(value)
+                for value in cfg.dataset.random_duration_scale_factors
+            )
+            if split == "train"
+            and cfg.dataset.get("random_duration_scale_factors") is not None
+            else None
+        ),
+        minimum_duration_ticks=int(
+            cfg.dataset.midi_loader.chord_merger.minimum_duration_ticks
         ),
     )
 

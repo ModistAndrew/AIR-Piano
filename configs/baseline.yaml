@@ -61,6 +61,8 @@ preprocess:
 
 dataset:
   random_hand_shift_seconds: 0.0
+  random_pitch_shift_semitones: 0
+  random_duration_scale_factors: null
   file_loader:
     _target_: airpiano.data.files.FileLoader
     pairer:

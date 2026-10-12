@@ -81,6 +81,8 @@ The alignment loss is selected by `alignment_loss`; BCE remains the default.
 | `configs/super.yaml` | All-training-data compact ablation with a 12-tick quarter/triplet grid, 48 duration bins, and 50-chord windows. |
 | `configs/super_96.yaml` | Super ablation retaining 50-chord/all-data settings with the 24-tick sixth/eighth grid and 96 duration bins. |
 | `configs/super_96_radius300ms.yaml` | Super-96 ablation using a 300 ms triangular target radius. |
+| `configs/super_96_random_pitch_shift6.yaml` | Super-96 ablation with train-only global transposition of up to six semitones. |
+| `configs/super_96_random_duration_scale0p5to2.yaml` | Super-96 ablation with train-only global duration-token scaling by 0.5, 1, or 2. |
 | `configs/super_ahead100ms.yaml` | Super ablation with alignment targets shifted 100 ms before each chord onset. |
 | `configs/super_96_ahead100ms.yaml` | Super-96 ablation with alignment targets shifted 100 ms before each chord onset. |
 | `configs/wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized_mean_time_subdivision12_triplet_quarter_clamped.yaml` | Triplet/quarter-grid ablation that clamps endpoints outside the annotated beat span. |
@@ -1377,6 +1379,40 @@ synchronized through the inherited configuration:
 ```bash
 conda run -n v2n python run.py --config-name super_96_radius300ms stage=train
 conda run -n v2n python run.py --config-name super_96_radius300ms stage=test
+```
+
+`super_96_random_pitch_shift6` retains the original `super_96` target radius
+and timing. On every training-window access, it samples one shared integer
+semitone shift from the valid portion of `[-6, +6]`, including zero, and
+transposes every chord pitch by that amount. The valid range is restricted so
+all notes remain within MIDI pitches 0 through 127; notes are never clipped,
+wrapped, or dropped. Duration features, hand frames, targets, validation,
+testing, and inference remain unchanged. This augmentation requires training
+from scratch:
+
+```bash
+conda run -n v2n python run.py \
+  --config-name super_96_random_pitch_shift6 stage=train
+conda run -n v2n python run.py \
+  --config-name super_96_random_pitch_shift6 stage=test
+```
+
+`super_96_random_duration_scale0p5to2` is a separate sibling of `super_96`.
+On every training-window access, it selects one shared factor from the
+window-valid subset of `[0.5, 1.0, 2.0]` and rescales every one-based
+duration token. Fractional ticks round upward, and factors that would leave the
+`1...96` range are excluded rather than clamped. Pitch features, wall-clock
+timing, hands, targets, validation, testing, and inference remain unchanged.
+This is logical duration-token augmentation, not a time warp, and requires
+training from scratch:
+
+```bash
+conda run -n v2n python run.py \
+  --config-name super_96_random_duration_scale0p5to2 \
+  stage=train
+conda run -n v2n python run.py \
+  --config-name super_96_random_duration_scale0p5to2 \
+  stage=test
 ```
 
 `super_ahead100ms` and `super_96_ahead100ms` preserve their corresponding

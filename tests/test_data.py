@@ -1608,7 +1608,239 @@ class SlicingAndTargetTest(unittest.TestCase):
         self.assertEqual(sample["frame_start"], 8)
         torch.testing.assert_close(sample["hands"], song.hands[8:24])
 
-    def test_build_dataset_enables_random_hand_shift_only_for_train(self) -> None:
+    def test_random_pitch_shift_is_global_resampled_and_boundary_safe(
+        self,
+    ) -> None:
+        durations = quantize_duration_ticks(
+            torch.tensor([12, 24]),
+            num_bins=96,
+            minimum_tick=1,
+        )
+        chords = (
+            _chord(
+                0,
+                (_note(0, 0.1, 0.2, 3),),
+                quantized_dur=durations[0],
+            ),
+            _chord(
+                1,
+                (_note(1, 0.6, 0.7, 125),),
+                quantized_dur=durations[1],
+            ),
+        )
+        song = _song(chords, frame_count=10, fps=10.0)
+        slicer = FutureChordSlicer(
+            mode="chord",
+            fps=10.0,
+            segment_frames=2,
+            stride_frames=2,
+            chord_duration_bins=96,
+            compact_chord_tokens=True,
+        )
+        dataset = AlignmentDataset(
+            [song],
+            slicer,
+            TargetGenerator(ChordOnsetEvents(), TriangularSoftener(0.2)),
+            random_pitch_shift_semitones=6,
+        )
+        original = slicer.slice(song, 0, 10, (0, 1))["chords"]
+
+        with patch(
+            "airpiano.data.dataset.random.randint",
+            side_effect=(2, -3, 0),
+        ) as randint:
+            shifted_up = dataset[0]
+            shifted_down = dataset[0]
+            unshifted = dataset[0]
+
+        self.assertEqual(
+            [item.args for item in randint.call_args_list],
+            [(-3, 2), (-3, 2), (-3, 2)],
+        )
+        self.assertEqual(
+            shifted_up["chords"][:, :128].argmax(dim=-1).tolist(),
+            [5, 127],
+        )
+        self.assertEqual(
+            shifted_down["chords"][:, :128].argmax(dim=-1).tolist(),
+            [0, 122],
+        )
+        torch.testing.assert_close(unshifted["chords"], original)
+        for sample in (shifted_up, shifted_down, unshifted):
+            self.assertEqual(
+                int(torch.count_nonzero(sample["chords"][:, :128])),
+                2,
+            )
+            torch.testing.assert_close(sample["chords"][:, 128:], durations)
+            torch.testing.assert_close(sample["hands"], song.hands)
+            self.assertEqual(sample["chord_ids"].tolist(), [0, 1])
+            torch.testing.assert_close(sample["target"], unshifted["target"])
+
+    def test_random_pitch_shift_moves_legacy_onset_and_offset_planes(
+        self,
+    ) -> None:
+        notes = (
+            _note(0, 0.1, 0.5, 60),
+            _note(1, 0.1, 0.6, 64),
+        )
+        chords = InitializerChordMerger().merge(
+            EventSequence.from_notes(notes, include_offsets=True)
+        )
+        song = _song(chords, frame_count=10, fps=10.0)
+        slicer = FutureChordSlicer(
+            mode="chord",
+            fps=10.0,
+            segment_frames=len(chords),
+            stride_frames=len(chords),
+        )
+        dataset = AlignmentDataset(
+            [song],
+            slicer,
+            TargetGenerator(ChordOnsetEvents(), TriangularSoftener(0.2)),
+            random_pitch_shift_semitones=6,
+        )
+        original = slicer.slice(
+            song, 0, 10, tuple(range(len(chords)))
+        )["chords"]
+
+        with patch(
+            "airpiano.data.dataset.random.randint",
+            return_value=4,
+        ) as randint:
+            shifted = dataset[0]["chords"]
+
+        randint.assert_called_once_with(-6, 6)
+        onset_indices = torch.nonzero(shifted[:, :128], as_tuple=False)
+        offset_indices = torch.nonzero(shifted[:, 128:256], as_tuple=False)
+        self.assertEqual(onset_indices.tolist(), [[0, 64], [0, 68]])
+        self.assertEqual(offset_indices.tolist(), [[1, 64], [2, 68]])
+        torch.testing.assert_close(shifted[:, 256:], original[:, 256:])
+
+    def test_random_duration_scale_is_global_resampled_and_rounds_up(
+        self,
+    ) -> None:
+        duration_ticks = torch.tensor([1, 3, 48])
+        durations = quantize_duration_ticks(
+            duration_ticks,
+            num_bins=96,
+            minimum_tick=1,
+        )
+        chords = tuple(
+            _chord(
+                index,
+                (_note(index, 0.1 + 0.3 * index, 0.2 + 0.3 * index, 60 + index),),
+                quantized_dur=durations[index],
+            )
+            for index in range(3)
+        )
+        song = _song(chords, frame_count=10, fps=10.0)
+        slicer = FutureChordSlicer(
+            mode="chord",
+            fps=10.0,
+            segment_frames=3,
+            stride_frames=3,
+            chord_duration_bins=96,
+            compact_chord_tokens=True,
+        )
+        dataset = AlignmentDataset(
+            [song],
+            slicer,
+            TargetGenerator(ChordOnsetEvents(), TriangularSoftener(0.2)),
+            random_duration_scale_factors=(0.5, 1.0, 2.0),
+            minimum_duration_ticks=1,
+        )
+        original = slicer.slice(song, 0, 10, (0, 1, 2))["chords"]
+
+        with patch(
+            "airpiano.data.dataset.random.choice",
+            side_effect=(0.5, 1.0, 2.0),
+        ) as choice:
+            halved = dataset[0]
+            unchanged = dataset[0]
+            doubled = dataset[0]
+
+        self.assertEqual(
+            [tuple(item.args[0]) for item in choice.call_args_list],
+            [(0.5, 1.0, 2.0)] * 3,
+        )
+        self.assertEqual(
+            halved["chords"][:, 128:].argmax(dim=-1).tolist(),
+            [0, 1, 23],
+        )
+        torch.testing.assert_close(unchanged["chords"], original)
+        self.assertEqual(
+            doubled["chords"][:, 128:].argmax(dim=-1).tolist(),
+            [1, 5, 95],
+        )
+        for sample in (halved, unchanged, doubled):
+            torch.testing.assert_close(
+                sample["chords"][:, :128],
+                original[:, :128],
+            )
+            self.assertTrue(
+                bool((sample["chords"][:, 128:].sum(dim=-1) == 1.0).all())
+            )
+            torch.testing.assert_close(sample["hands"], song.hands)
+            self.assertEqual(sample["chord_ids"].tolist(), [0, 1, 2])
+            torch.testing.assert_close(sample["target"], unchanged["target"])
+        for chord, duration in zip(chords, durations):
+            torch.testing.assert_close(chord.quantized_dur, duration)
+
+    def test_random_duration_scale_excludes_out_of_bounds_factors(
+        self,
+    ) -> None:
+        durations = quantize_duration_ticks(
+            torch.tensor([49, 96]),
+            num_bins=96,
+            minimum_tick=1,
+        )
+        chords = (
+            _chord(
+                0,
+                (_note(0, 0.1, 0.2, 60),),
+                quantized_dur=durations[0],
+            ),
+            _chord(
+                1,
+                (_note(1, 0.6, 0.7, 64),),
+                quantized_dur=durations[1],
+            ),
+        )
+        song = _song(chords, frame_count=10, fps=10.0)
+        slicer = FutureChordSlicer(
+            mode="chord",
+            fps=10.0,
+            segment_frames=2,
+            stride_frames=2,
+            chord_duration_bins=96,
+            compact_chord_tokens=True,
+        )
+        dataset = AlignmentDataset(
+            [song],
+            slicer,
+            TargetGenerator(ChordOnsetEvents(), TriangularSoftener(0.2)),
+            random_duration_scale_factors=(0.5, 1.0, 2.0),
+            minimum_duration_ticks=1,
+        )
+
+        with patch(
+            "airpiano.data.dataset.random.choice",
+            return_value=0.5,
+        ) as choice:
+            sample = dataset[0]
+
+        self.assertEqual(tuple(choice.call_args.args[0]), (0.5, 1.0))
+        self.assertEqual(
+            sample["chords"][:, 128:].argmax(dim=-1).tolist(),
+            [24, 47],
+        )
+        self.assertTrue(
+            bool((sample["chords"][:, 128:].sum(dim=-1) == 1.0).all())
+        )
+
+    def test_build_dataset_enables_random_augmentations_only_for_train(
+        self,
+    ) -> None:
         chords = (_chord(0, (_note(0, 0.1, 0.2, 60),)),)
         song = _song(chords, frame_count=10, fps=10.0)
 
@@ -1628,7 +1860,16 @@ class SlicingAndTargetTest(unittest.TestCase):
                     "midi_root": "midi",
                     "hand_root": "hands",
                 },
-                "dataset": {"random_hand_shift_seconds": 2.0},
+                "dataset": {
+                    "random_hand_shift_seconds": 2.0,
+                    "random_pitch_shift_semitones": 6,
+                    "random_duration_scale_factors": [0.5, 1.0, 2.0],
+                    "midi_loader": {
+                        "chord_merger": {
+                            "minimum_duration_ticks": 1,
+                        }
+                    },
+                },
             }
         )
         components = {
@@ -1644,10 +1885,22 @@ class SlicingAndTargetTest(unittest.TestCase):
         train_dataset = build_dataset(config, "train", components=components)
         self.assertEqual(train_dataset.random_hand_shift_seconds, 2.0)
         self.assertEqual(train_dataset.max_random_hand_shift_frames, 20)
+        self.assertEqual(train_dataset.random_pitch_shift_semitones, 6)
+        self.assertEqual(
+            train_dataset.random_duration_scale_factors,
+            (0.5, 1.0, 2.0),
+        )
+        self.assertEqual(train_dataset.minimum_duration_ticks, 1)
         for split in ("valid", "test"):
             dataset = build_dataset(config, split, components=components)
             self.assertEqual(dataset.random_hand_shift_seconds, 0.0)
             self.assertEqual(dataset.max_random_hand_shift_frames, 0)
+            self.assertEqual(dataset.random_pitch_shift_semitones, 0)
+            self.assertEqual(
+                dataset.random_duration_scale_factors,
+                (),
+            )
+            self.assertEqual(dataset.minimum_duration_ticks, 1)
 
     def test_target_uses_global_times_and_preserves_outer_soft_tail(self) -> None:
         chords = (

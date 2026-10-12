@@ -1,0 +1,9 @@
+defaults:
+  - super_96
+  - _self_
+
+output:
+  project_name: super_96_random_duration_scale0p5to2
+
+dataset:
+  random_duration_scale_factors: [0.5, 1.0, 2.0]

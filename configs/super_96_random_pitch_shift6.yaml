@@ -1,0 +1,9 @@
+defaults:
+  - super_96
+  - _self_
+
+output:
+  project_name: super_96_random_pitch_shift6
+
+dataset:
+  random_pitch_shift_semitones: 6
