@@ -77,6 +77,12 @@ The alignment loss is selected by `alignment_loss`; BCE remains the default.
 | `configs/wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized_mean_time_subdivision8.yaml` | Mean-time quantized ablation using 8 subdivisions per beat. |
 | `configs/wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized_mean_time_subdivision16.yaml` | Mean-time quantized ablation using 16 subdivisions per beat. |
 | `configs/wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized_mean_time_subdivision12_triplet_quarter.yaml` | Mean-time quantized ablation limited to quarter and trisection points on a 12-tick beat. |
+| `configs/wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized_random_hand_shift0p5s_subdivision24_sixth_eighth_duration96.yaml` | Random-hand-shift 24-tick sixth/eighth grid with compact one-based 96-bin duration tokens. |
+| `configs/super.yaml` | All-training-data compact ablation with a 12-tick quarter/triplet grid, 48 duration bins, and 50-chord windows. |
+| `configs/super_96.yaml` | Super ablation retaining 50-chord/all-data settings with the 24-tick sixth/eighth grid and 96 duration bins. |
+| `configs/super_96_radius300ms.yaml` | Super-96 ablation using a 300 ms triangular target radius. |
+| `configs/super_ahead100ms.yaml` | Super ablation with alignment targets shifted 100 ms before each chord onset. |
+| `configs/super_96_ahead100ms.yaml` | Super-96 ablation with alignment targets shifted 100 ms before each chord onset. |
 | `configs/wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized_mean_time_subdivision12_triplet_quarter_clamped.yaml` | Triplet/quarter-grid ablation that clamps endpoints outside the annotated beat span. |
 | `configs/wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized_offset.yaml` | Quantized zero-hand-filter20 wrist-delta ablation that adds note-offset actions. |
 | `configs/wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized_offset_last_chord_softmax.yaml` | Quantized onset/offset ablation with persistent last-action targets and categorical softmax. |
@@ -868,18 +874,27 @@ zero. Missing hands do not remove frames, targets, or loss positions.
 ```text
 hands          [B,T,2,21,3]
 hand_presence  [B,T,2]
-chords         [B,C,456]
+chords         [B,C,456], [B,C,224], or [B,C,176]
 frame_mask     [B,T]
 chord_mask     [B,C]
 ```
 
 and returns logits `[B,T,C]`. It embeds 126 hand coordinates plus two presence
 bits and always embeds the first 128 onset-pitch values. When
+`model.compact_chord_tokens=false`, chord tokens use the legacy
+`[128 onset | 128 offset | 200 duration]` 456-value layout. When
 `model.include_chord_offsets=true`, a separate embedding processes the next
 128 offset-pitch values and is added to the onset embedding. When
 `model.include_chord_duration=true`, a separate embedding processes the last
-200 values and is added to the pitch embedding. Four chord transformer layers
-and four frame self/cross-attention blocks feed 32-wide pairwise projections.
+configured duration values and is added to the pitch embedding.
+`model.compact_chord_tokens=true` removes the offset plane and rejects offset
+conditioning. The duration96 preset uses
+`[128 onset | 96 duration]` 224-value tokens; `super` uses
+`[128 onset | 48 duration]` 176-value tokens. Tick durations from 1 through
+the configured bin count map to zero-based indices. Zero saturates to duration
+1, and longer durations saturate at the final index. Four
+chord transformer layers and four frame self/cross-attention blocks feed
+32-wide pairwise projections.
 The score bias starts from positive prior `0.0055`.
 Absent hand coordinates are zeroed, presence remains an input feature, padded
 attention is protected from NaNs, and padded logits are zero. When
@@ -1297,7 +1312,11 @@ conda run -n v2n python run.py \
 Four beat-grid resolution ablations inherit the quantized mean-time preset.
 The two irregular variants retain 12 logical ticks per beat but permit only
 quarter and trisection positions. The clamped variant maps endpoints outside
-the annotated beat span to its first or last tick position:
+the annotated beat span to its first or last tick position. The compact
+24-tick variant instead inherits the random-hand-shift preset, preserving its
+0.5-second training jitter and first-event chord times. It uses the union of
+sixth and eighth points and requires training from scratch because its
+224-value token layout is incompatible with legacy 456-value models:
 
 ```bash
 conda run -n v2n python run.py \
@@ -1324,6 +1343,54 @@ conda run -n v2n python run.py \
 conda run -n v2n python run.py \
   --config-name wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized_mean_time_subdivision12_triplet_quarter_clamped \
   stage=test
+conda run -n v2n python run.py \
+  --config-name wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized_random_hand_shift0p5s_subdivision24_sixth_eighth_duration96 \
+  stage=train
+conda run -n v2n python run.py \
+  --config-name wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized_random_hand_shift0p5s_subdivision24_sixth_eighth_duration96 \
+  stage=test
+```
+
+### Super ablation
+
+`super` inherits the compact random-hand-shift preset and combines a 12-tick
+quarter/triplet grid, 48 one-based duration bins, and 50-chord windows with
+stride 12. Its compact chord tokens contain 128 onset-pitch values followed by
+48 duration values, for 176 features total. Training uses
+`assets/splits/extended_vam_yt_train.txt`; validation and testing retain the
+extended splits. `super_96` retains those data and window settings while using
+the 24-tick sixth/eighth grid and 96 duration bins, producing 224-feature
+compact tokens. Both changed duration projections require training from
+scratch:
+
+```bash
+conda run -n v2n python run.py --config-name super stage=train
+conda run -n v2n python run.py --config-name super stage=test
+conda run -n v2n python run.py --config-name super_96 stage=train
+conda run -n v2n python run.py --config-name super_96 stage=test
+```
+
+`super_96_radius300ms` changes only the triangular target radius from 0.2 to
+0.3 seconds. Its training, sonification, and evaluation radius settings remain
+synchronized through the inherited configuration:
+
+```bash
+conda run -n v2n python run.py --config-name super_96_radius300ms stage=train
+conda run -n v2n python run.py --config-name super_96_radius300ms stage=test
+```
+
+`super_ahead100ms` and `super_96_ahead100ms` preserve their corresponding
+parent grids, duration widths, data, and window settings while moving each
+target peak 0.1 seconds earlier (three frames at 30 FPS). Window boundaries
+and end padding are unchanged, so an early target for the first selected chord
+can be clipped at the beginning of a cropped window. These variants also
+require training from scratch:
+
+```bash
+conda run -n v2n python run.py --config-name super_ahead100ms stage=train
+conda run -n v2n python run.py --config-name super_ahead100ms stage=test
+conda run -n v2n python run.py --config-name super_96_ahead100ms stage=train
+conda run -n v2n python run.py --config-name super_96_ahead100ms stage=test
 ```
 
 ### Causal 24-chord ablation
@@ -1950,8 +2017,10 @@ loss intentionally remains fixed in code.
 | `bf16` | `true` | CUDA BF16 autocast. |
 | `dataset.random_hand_shift_seconds` | `0.0` | Maximum signed shift independently sampled for each training hand-window edge; validation and inference remain unshifted. |
 | `model._target_` | `airpiano.model.transformer.AirPianoTransformer` | Configured alignment model instantiated for training and restored from checkpoints. |
-| `model.include_chord_duration` | `false` | Consume the packed 200-bin duration suffix through a separate embedding. |
+| `model.include_chord_duration` | `false` | Consume the packed duration suffix through a separate embedding. |
 | `model.include_chord_offsets` | `false` | Consume the packed 128 offset-pitch values through a separate embedding. |
+| `model.chord_duration_bins` | `200` | Width of the packed duration suffix and duration projection. |
+| `model.compact_chord_tokens` | `false` | Use `[128 onset | duration]` tokens with no offset-pitch plane. |
 | `model.zero_hand_input` | `false` | Replace all coordinates and hand-presence features with zero before embedding. |
 | `wandb.project` | `air_piano` | Required online project. |
 | `wandb.name` | `${output.project_name}` | Run name shared with the local output directory. |
@@ -2002,7 +2071,7 @@ The narrow replaceable interfaces are:
 | `RelativeStemPairer` | `pair(split_file, midi_root, hand_root) -> list[FilePair]`. |
 | `EagerSongReader` | `read(pair, midi_loader, hand_loader) -> Song`; the loader exposes it as `.reader` for split-driven inference. |
 | `MidoNoteReader` | `read(path) -> tuple[Note,...]`. |
-| `InitializerChordMerger` | `merge(event_sequence) -> tuple[Chord,...]`; every chord includes grouped events, selected action time, absolute-seconds `duration`, and a `float32[200]` `quantized_dur`. |
+| `InitializerChordMerger` | `merge(event_sequence) -> tuple[Chord,...]`; every chord includes grouped events, selected action time, absolute-seconds `duration`, and a configured-width `float32` `quantized_dur`. |
 | `CanonicalNpzReader` | `read(path) -> HandSequence`. |
 | `WiLoRCoordinateConverter` | `(raw_arrays, detection_index) -> float32[21,3]` canonical hand. |
 | Hand transform | `(pose, presence) -> pose` with unchanged shape and absent slots zero. |

@@ -36,11 +36,23 @@ def quantize_duration_seconds(duration_seconds: torch.Tensor) -> torch.Tensor:
     return F.one_hot(bucket_indices, num_classes=DURATION_BINS).to(torch.float32)
 
 
-def quantize_duration_ticks(duration_ticks: torch.Tensor) -> torch.Tensor:
-    """Return direct one-hots for integer beat-grid durations."""
+def quantize_duration_ticks(
+    duration_ticks: torch.Tensor,
+    *,
+    num_bins: int = DURATION_BINS,
+    minimum_tick: int = 0,
+) -> torch.Tensor:
+    """Return saturating one-hots for a bounded integer duration interval."""
 
-    bucket_indices = duration_ticks.to(torch.long).clamp(0, DURATION_BINS - 1)
-    return F.one_hot(bucket_indices, num_classes=DURATION_BINS).to(torch.float32)
+    if num_bins <= 0:
+        raise ValueError("num_bins must be positive")
+    if bool((duration_ticks < 0).any()):
+        raise ValueError("duration ticks must be non-negative")
+    bounded_ticks = duration_ticks.to(torch.long).clamp(min=minimum_tick)
+    bucket_indices = (bounded_ticks - minimum_tick).clamp(
+        max=num_bins - 1
+    )
+    return F.one_hot(bucket_indices, num_classes=num_bins).to(torch.float32)
 
 
 class MidoNoteReader:
@@ -231,7 +243,13 @@ class InitializerChordMerger:
         duration_normalization: str = "none",
         time_mode: str = "first",
         split_notes: bool = False,
+        duration_tick_bins: int = DURATION_BINS,
+        minimum_duration_ticks: int = 0,
     ):
+        if duration_tick_bins <= 0:
+            raise ValueError("duration_tick_bins must be positive")
+        self.duration_tick_bins = int(duration_tick_bins)
+        self.minimum_duration_ticks = int(minimum_duration_ticks)
         self.tolerance_seconds = float(tolerance_seconds)
         if duration_scale_range is None:
             self.duration_scale_range = None
@@ -345,7 +363,11 @@ class InitializerChordMerger:
             zip(groups, times, durations, duration_ticks)
         ):
             if quantization:
-                quantized_dur = quantize_duration_ticks(torch.tensor(ticks))
+                quantized_dur = quantize_duration_ticks(
+                    torch.tensor(ticks),
+                    num_bins=self.duration_tick_bins,
+                    minimum_tick=self.minimum_duration_ticks,
+                )
             else:
                 quantized_dur = quantize_duration_seconds(
                     torch.tensor(duration * duration_scale, dtype=torch.float64)

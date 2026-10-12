@@ -64,12 +64,16 @@ class _TinyModel(nn.Module):
         include_chord_duration: bool = False,
         include_chord_offsets: bool = False,
         zero_hand_input: bool = False,
+        chord_duration_bins: int = 200,
+        compact_chord_tokens: bool = False,
     ) -> None:
         super().__init__()
         self.causal_frame_attention = causal_frame_attention
         self.include_chord_duration = include_chord_duration
         self.include_chord_offsets = include_chord_offsets
         self.zero_hand_input = zero_hand_input
+        self.chord_duration_bins = chord_duration_bins
+        self.compact_chord_tokens = compact_chord_tokens
         self.bias = nn.Parameter(torch.tensor(0.0))
 
     def forward(self, hands, hand_presence, chords, frame_mask, chord_mask):
@@ -132,6 +136,10 @@ class TestInferenceTest(unittest.TestCase):
                         config.include_chord_offsets
                     ),
                     zero_hand_input=bool(config.zero_hand_input),
+                    chord_duration_bins=int(config.chord_duration_bins),
+                    compact_chord_tokens=bool(
+                        config.compact_chord_tokens
+                    ),
                 )
 
             with patch.object(
@@ -163,6 +171,8 @@ class TestInferenceTest(unittest.TestCase):
             self.assertFalse(legacy_model.include_chord_duration)
             self.assertFalse(legacy_model.include_chord_offsets)
             self.assertFalse(legacy_model.zero_hand_input)
+            self.assertEqual(legacy_model.chord_duration_bins, 200)
+            self.assertFalse(legacy_model.compact_chord_tokens)
 
     def test_uses_configured_checkpoint_and_dumps_test_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

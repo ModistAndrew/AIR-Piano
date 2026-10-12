@@ -31,7 +31,11 @@ class FutureChordSlicer:
         crop_before_first_chord: bool = False,
         crop_to_chord_bounds: bool = False,
         max_zero_hand_fraction: float | None = None,
+        chord_duration_bins: int = DURATION_BINS,
+        compact_chord_tokens: bool = False,
     ):
+        if chord_duration_bins <= 0:
+            raise ValueError("chord_duration_bins must be positive")
         if mode not in {"frame", "chord"}:
             raise ValueError(f"unsupported slicing mode: {mode}")
         if (
@@ -55,6 +59,8 @@ class FutureChordSlicer:
             if max_zero_hand_fraction is None
             else float(max_zero_hand_fraction)
         )
+        self.chord_duration_bins = int(chord_duration_bins)
+        self.compact_chord_tokens = bool(compact_chord_tokens)
 
     def starts(self, item_count: int) -> tuple[int, ...]:
         """Return regular starts plus the exact right-aligned final start."""
@@ -217,19 +223,38 @@ class FutureChordSlicer:
         selected_chords = tuple(
             song.chords[index] for index in chord_positions
         )
+        duration_start = (
+            PITCH_FEATURES
+            if self.compact_chord_tokens
+            else EVENT_PITCH_FEATURES
+        )
         chord_values = torch.zeros(
-            (len(selected_chords), CHORD_FEATURES),
+            (
+                len(selected_chords),
+                duration_start + self.chord_duration_bins,
+            ),
             dtype=torch.float32,
         )
         for local_index, chord in enumerate(selected_chords):
+            if tuple(chord.quantized_dur.shape) != (
+                self.chord_duration_bins,
+            ):
+                raise ValueError(
+                    "chord duration width does not match chord_duration_bins"
+                )
+            if self.compact_chord_tokens and chord.offset_notes:
+                raise ValueError(
+                    "compact chord tokens do not support offset events"
+                )
             for note in chord.onset_notes:
                 # Duplicate physical notes intentionally collapse in multi-hot space.
                 chord_values[local_index, note.pitch] = 1.0
-            for note in chord.offset_notes:
-                chord_values[local_index, PITCH_FEATURES + note.pitch] = 1.0
-            chord_values[local_index, EVENT_PITCH_FEATURES:] = (
-                chord.quantized_dur
-            )
+            if not self.compact_chord_tokens:
+                for note in chord.offset_notes:
+                    chord_values[
+                        local_index, PITCH_FEATURES + note.pitch
+                    ] = 1.0
+            chord_values[local_index, duration_start:] = chord.quantized_dur
 
         return {
             "hands": song.hands[frame_start:frame_stop],

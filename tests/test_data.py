@@ -415,6 +415,27 @@ class MidiTest(unittest.TestCase):
             [3, 6],
         )
 
+    def test_reader_builds_exact_sixth_and_eighth_24_tick_grid(self) -> None:
+        offsets = (0, 3, 4, 6, 8, 9, 12, 15, 16, 18, 20, 21)
+        with tempfile.TemporaryDirectory() as directory:
+            beat_path = Path(directory) / "beats.txt"
+            beat_path.write_text("1.0\n2.0\n3.0\n", encoding="utf-8")
+            reader = MidoNoteReader(
+                quantization=True,
+                subdivision=24,
+                allowed_tick_offsets=offsets,
+            )
+            _, tick_positions = reader._read_ticks(beat_path)
+
+        self.assertEqual(
+            tick_positions,
+            (
+                0, 3, 4, 6, 8, 9, 12, 15, 16, 18, 20, 21,
+                24, 27, 28, 30, 32, 33, 36, 39, 40, 42, 44, 45,
+                48,
+            ),
+        )
+
     def test_reader_clamps_filtered_grid_out_of_bounds(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             beat_path = Path(directory) / "beats.txt"
@@ -501,6 +522,34 @@ class MidiTest(unittest.TestCase):
         )
         self.assertEqual(zero[0].duration_ticks, 0)
         self.assertEqual(zero[0].quantized_dur.argmax().item(), 0)
+
+    def test_chord_merger_uses_one_based_96_tick_durations(self) -> None:
+        notes = (
+            _note(0, 0.0, 0.1, 60, onset_tick=0, offset_tick=1),
+            _note(1, 0.1, 9.7, 64, onset_tick=1, offset_tick=97),
+            _note(2, 9.7, 9.71, 67, onset_tick=97, offset_tick=97),
+        )
+
+        chords = InitializerChordMerger(
+            duration_tick_bins=96,
+            minimum_duration_ticks=1,
+        ).merge(
+            EventSequence.from_notes(notes),
+            quantization=True,
+        )
+
+        self.assertEqual(
+            [chord.duration_ticks for chord in chords],
+            [1, 96, 0],
+        )
+        self.assertEqual(
+            [tuple(chord.quantized_dur.shape) for chord in chords],
+            [(96,), (96,), (96,)],
+        )
+        self.assertEqual(
+            [chord.quantized_dur.argmax().item() for chord in chords],
+            [0, 95, 0],
+        )
 
     def test_chord_merger_splits_same_tick_notes_in_absolute_time_order(
         self,
@@ -855,6 +904,44 @@ class SlicingAndTargetTest(unittest.TestCase):
         self.assertEqual(encoded.argmax(dim=-1).tolist(), expected)
         self.assertTrue(bool((encoded.sum(dim=-1) == 1.0).all()))
 
+    def test_tick_durations_support_one_based_96_bins(self) -> None:
+        encoded = quantize_duration_ticks(
+            torch.tensor([0, 1, 2, 96, 120]),
+            num_bins=96,
+            minimum_tick=1,
+        )
+
+        self.assertEqual(tuple(encoded.shape), (5, 96))
+        self.assertEqual(
+            encoded.argmax(dim=-1).tolist(),
+            [0, 0, 1, 95, 95],
+        )
+        self.assertTrue(bool((encoded.sum(dim=-1) == 1.0).all()))
+        with self.assertRaisesRegex(ValueError, "non-negative"):
+            quantize_duration_ticks(
+                torch.tensor([-1]),
+                num_bins=96,
+                minimum_tick=1,
+            )
+
+        legacy = quantize_duration_ticks(torch.tensor([0, 199, 200]))
+        self.assertEqual(tuple(legacy.shape), (3, 200))
+        self.assertEqual(legacy.argmax(dim=-1).tolist(), [0, 199, 199])
+
+    def test_tick_durations_support_one_based_48_bins(self) -> None:
+        encoded = quantize_duration_ticks(
+            torch.tensor([0, 1, 48, 49]),
+            num_bins=48,
+            minimum_tick=1,
+        )
+
+        self.assertEqual(tuple(encoded.shape), (4, 48))
+        self.assertEqual(
+            encoded.argmax(dim=-1).tolist(),
+            [0, 0, 47, 47],
+        )
+        self.assertTrue(bool((encoded.sum(dim=-1) == 1.0).all()))
+
     def test_starts_include_exact_right_aligned_tail(self) -> None:
         slicer = FutureChordSlicer(
             fps=10.0, segment_frames=4, stride_frames=3, chord_count=3
@@ -979,6 +1066,83 @@ class SlicingAndTargetTest(unittest.TestCase):
         batch = collate_alignment_batch([dataset[0], dataset[-1]])
         self.assertEqual(tuple(batch["chords"].shape), (2, 3, 456))
 
+    def test_compact_duration_tokens_slice_and_collate_as_224_features(
+        self,
+    ) -> None:
+        durations = quantize_duration_ticks(
+            torch.tensor([1, 96]),
+            num_bins=96,
+            minimum_tick=1,
+        )
+        chords = (
+            _chord(
+                0,
+                (_note(0, 0.1, 0.2, 60),),
+                quantized_dur=durations[0],
+            ),
+            _chord(
+                1,
+                (_note(1, 0.6, 0.7, 64),),
+                quantized_dur=durations[1],
+            ),
+        )
+        song = _song(chords, frame_count=12, fps=10.0)
+        slicer = FutureChordSlicer(
+            fps=10.0,
+            segment_frames=6,
+            stride_frames=6,
+            chord_count=2,
+            chord_duration_bins=96,
+            compact_chord_tokens=True,
+        )
+
+        tokens = slicer.slice(song, 0, 6, (0, 1))["chords"]
+        self.assertEqual(tuple(tokens.shape), (2, 224))
+        self.assertEqual(tokens[:, :128].argmax(dim=-1).tolist(), [60, 64])
+        torch.testing.assert_close(tokens[:, 128:], durations)
+
+        dataset = AlignmentDataset(
+            [song],
+            slicer,
+            TargetGenerator(ChordOnsetEvents(), TriangularSoftener(0.2)),
+        )
+        batch = collate_alignment_batch([dataset[0], dataset[-1]])
+        self.assertEqual(tuple(batch["chords"].shape), (2, 2, 224))
+
+    def test_compact_duration48_tokens_have_176_features(self) -> None:
+        durations = quantize_duration_ticks(
+            torch.tensor([0, 48]),
+            num_bins=48,
+            minimum_tick=1,
+        )
+        chords = (
+            _chord(
+                0,
+                (_note(0, 0.1, 0.2, 60),),
+                quantized_dur=durations[0],
+            ),
+            _chord(
+                1,
+                (_note(1, 0.6, 0.7, 64),),
+                quantized_dur=durations[1],
+            ),
+        )
+        song = _song(chords, frame_count=12, fps=10.0)
+        slicer = FutureChordSlicer(
+            fps=10.0,
+            segment_frames=6,
+            stride_frames=6,
+            chord_count=2,
+            chord_duration_bins=48,
+            compact_chord_tokens=True,
+        )
+
+        tokens = slicer.slice(song, 0, 6, (0, 1))["chords"]
+
+        self.assertEqual(tuple(tokens.shape), (2, 176))
+        self.assertEqual(tokens[:, :128].argmax(dim=-1).tolist(), [60, 64])
+        torch.testing.assert_close(tokens[:, 128:], durations)
+
     def test_offset_events_drive_candidates_targets_and_token_planes(self) -> None:
         notes = (
             _note(0, 0.0, 0.31, 60, onset_tick=0, offset_tick=3),
@@ -1025,6 +1189,16 @@ class SlicingAndTargetTest(unittest.TestCase):
         self.assertEqual(cropped.chord_frame_bounds(song, (0, 1)), (0, 4))
         self.assertEqual(cropped.chord_frame_bounds(song, (1, 2)), (3, 5))
         self.assertEqual(cropped.chord_frame_bounds(song, (2, 3)), (4, 5))
+
+        compact = FutureChordSlicer(
+            fps=10.0,
+            segment_frames=1,
+            stride_frames=1,
+            chord_count=4,
+            compact_chord_tokens=True,
+        )
+        with self.assertRaisesRegex(ValueError, "offset events"):
+            compact.slice(song, 2, 4, (1,))
 
     def test_more_overlapping_chords_than_fixed_width_raises(self) -> None:
         chords = tuple(
@@ -1545,6 +1719,26 @@ class SlicingAndTargetTest(unittest.TestCase):
         self.assertEqual(generator.event_generator.delay_seconds, 1.0)
         self.assertEqual(int(target[:, 0].argmax()), 20)
         self.assertEqual(target[20, 0].item(), 1.0)
+
+    def test_negative_target_delay_moves_peak_three_frames_earlier(self) -> None:
+        chord = _chord(0, (_note(0, 1.0, 1.1, 60),))
+        generator = TargetGenerator(
+            ChordOnsetEvents(delay_seconds=-0.1),
+            TriangularSoftener(radius_seconds=0.2),
+        )
+
+        target = generator.generate(
+            (chord,),
+            frame_start=0,
+            frame_count=31,
+            fps=30.0,
+        )
+        peak_frame = int(target[:, 0].argmax())
+
+        self.assertEqual(generator.event_generator.delay_seconds, -0.1)
+        self.assertEqual(peak_frame, 27)
+        self.assertEqual(30 - peak_frame, 3)
+        self.assertAlmostEqual(target[peak_frame, 0].item(), 1.0)
 
     def test_last_chord_target_is_zero_before_onset_then_one_hot(self) -> None:
         chords = (

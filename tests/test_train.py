@@ -122,7 +122,15 @@ class TrainTest(unittest.TestCase):
         self.assertFalse(bool(config.model.include_chord_duration))
         self.assertFalse(bool(config.model.include_chord_offsets))
         self.assertFalse(bool(config.model.zero_hand_input))
+        self.assertEqual(int(config.model.chord_duration_bins), 200)
+        self.assertFalse(bool(config.model.compact_chord_tokens))
         self.assertFalse(components["midi_loader"].include_offsets)
+        self.assertEqual(
+            components["midi_loader"].chord_merger.duration_tick_bins,
+            200,
+        )
+        self.assertEqual(components["slicer"].chord_duration_bins, 200)
+        self.assertFalse(components["slicer"].compact_chord_tokens)
         self.assertEqual(
             components["midi_loader"].chord_merger.time_mode,
             "first",
@@ -955,6 +963,253 @@ class TrainTest(unittest.TestCase):
                 self.assertEqual(slicer.stride_frames, 12)
                 self.assertTrue(slicer.crop_to_chord_bounds)
                 self.assertEqual(slicer.max_zero_hand_fraction, 0.2)
+
+    def test_compact_random_shift_sixth_eighth_duration96_config(self) -> None:
+        config_directory = Path(__file__).parents[1] / "configs"
+        name = (
+            "wrist_xyz10_causal_chord24_extended_wrist_delta_"
+            "zero_hand_filter20_quantized_random_hand_shift0p5s_"
+            "subdivision24_sixth_eighth_duration96"
+        )
+        with initialize_config_dir(
+            version_base=None,
+            config_dir=str(config_directory.resolve()),
+        ):
+            config = compose(config_name=name)
+
+        components = data.build_data_components(config)
+        midi_loader = components["midi_loader"]
+        slicer = components["slicer"]
+
+        self.assertEqual(str(config.output.dir), f"outputs/{name}")
+        self.assertEqual(str(config.wandb.name), name)
+        self.assertEqual(float(config.dataset.random_hand_shift_seconds), 0.5)
+        self.assertTrue(midi_loader.reader.quantization)
+        self.assertEqual(midi_loader.reader.subdivision, 24)
+        self.assertEqual(
+            midi_loader.reader.allowed_tick_offsets,
+            (0, 3, 4, 6, 8, 9, 12, 15, 16, 18, 20, 21),
+        )
+        self.assertEqual(midi_loader.reader.out_of_bounds_mode, "extrapolate")
+        self.assertFalse(midi_loader.include_offsets)
+        self.assertEqual(midi_loader.chord_merger.time_mode, "first")
+        self.assertEqual(midi_loader.chord_merger.duration_tick_bins, 96)
+        self.assertEqual(midi_loader.chord_merger.minimum_duration_ticks, 1)
+        self.assertEqual(slicer.chord_duration_bins, 96)
+        self.assertTrue(slicer.compact_chord_tokens)
+        self.assertEqual(slicer.mode, "chord")
+        self.assertEqual(slicer.segment_frames, 24)
+        self.assertEqual(slicer.stride_frames, 12)
+        self.assertTrue(slicer.crop_to_chord_bounds)
+        self.assertEqual(slicer.max_zero_hand_fraction, 0.2)
+        self.assertTrue(bool(config.model.include_chord_duration))
+        self.assertFalse(bool(config.model.include_chord_offsets))
+        self.assertTrue(bool(config.model.causal_frame_attention))
+        self.assertEqual(int(config.model.chord_duration_bins), 96)
+        self.assertTrue(bool(config.model.compact_chord_tokens))
+
+    def test_super_ablation_config(self) -> None:
+        config_directory = Path(__file__).parents[1] / "configs"
+        with initialize_config_dir(
+            version_base=None,
+            config_dir=str(config_directory.resolve()),
+        ):
+            config = compose(config_name="super")
+
+        components = data.build_data_components(config)
+        midi_loader = components["midi_loader"]
+        slicer = components["slicer"]
+        model = instantiate(config.model)
+
+        self.assertEqual(str(config.output.dir), "outputs/super")
+        self.assertEqual(str(config.wandb.name), "super")
+        self.assertEqual(
+            str(config.data.splits.train),
+            "assets/splits/extended_vam_yt_train.txt",
+        )
+        self.assertEqual(
+            str(config.data.splits.valid),
+            "assets/splits/extended_valid.txt",
+        )
+        self.assertEqual(
+            str(config.data.splits.test),
+            "assets/splits/extended_test.txt",
+        )
+        self.assertEqual(float(config.dataset.random_hand_shift_seconds), 0.5)
+        self.assertTrue(midi_loader.reader.quantization)
+        self.assertEqual(midi_loader.reader.subdivision, 12)
+        self.assertEqual(
+            midi_loader.reader.allowed_tick_offsets,
+            (0, 3, 4, 6, 8, 9),
+        )
+        self.assertFalse(midi_loader.include_offsets)
+        self.assertEqual(midi_loader.chord_merger.time_mode, "first")
+        self.assertEqual(midi_loader.chord_merger.duration_tick_bins, 48)
+        self.assertEqual(midi_loader.chord_merger.minimum_duration_ticks, 1)
+        self.assertEqual(slicer.mode, "chord")
+        self.assertEqual(slicer.segment_frames, 50)
+        self.assertEqual(slicer.stride_frames, 12)
+        self.assertEqual(slicer.chord_duration_bins, 48)
+        self.assertTrue(slicer.compact_chord_tokens)
+        self.assertTrue(slicer.crop_to_chord_bounds)
+        self.assertEqual(slicer.max_zero_hand_fraction, 0.2)
+        self.assertTrue(bool(config.model.causal_frame_attention))
+        self.assertTrue(bool(config.model.include_chord_duration))
+        self.assertFalse(bool(config.model.include_chord_offsets))
+        self.assertEqual(int(config.model.chord_duration_bins), 48)
+        self.assertTrue(bool(config.model.compact_chord_tokens))
+        self.assertIsNotNone(model.chord_duration_embedding)
+        assert model.chord_duration_embedding is not None
+        self.assertEqual(model.chord_duration_embedding[0].in_features, 48)
+
+    def test_super96_ablation_config(self) -> None:
+        config_directory = Path(__file__).parents[1] / "configs"
+        with initialize_config_dir(
+            version_base=None,
+            config_dir=str(config_directory.resolve()),
+        ):
+            config = compose(config_name="super_96")
+
+        components = data.build_data_components(config)
+        midi_loader = components["midi_loader"]
+        slicer = components["slicer"]
+        model = instantiate(config.model)
+
+        self.assertEqual(str(config.output.dir), "outputs/super_96")
+        self.assertEqual(str(config.wandb.name), "super_96")
+        self.assertEqual(
+            str(config.data.splits.train),
+            "assets/splits/extended_vam_yt_train.txt",
+        )
+        self.assertEqual(float(config.dataset.random_hand_shift_seconds), 0.5)
+        self.assertEqual(midi_loader.reader.subdivision, 24)
+        self.assertEqual(
+            midi_loader.reader.allowed_tick_offsets,
+            (0, 3, 4, 6, 8, 9, 12, 15, 16, 18, 20, 21),
+        )
+        self.assertEqual(midi_loader.chord_merger.duration_tick_bins, 96)
+        self.assertEqual(midi_loader.chord_merger.minimum_duration_ticks, 1)
+        self.assertEqual(slicer.segment_frames, 50)
+        self.assertEqual(slicer.stride_frames, 12)
+        self.assertEqual(slicer.chord_duration_bins, 96)
+        self.assertTrue(slicer.compact_chord_tokens)
+        self.assertEqual(int(config.model.chord_duration_bins), 96)
+        self.assertTrue(bool(config.model.compact_chord_tokens))
+        self.assertIsNotNone(model.chord_duration_embedding)
+        assert model.chord_duration_embedding is not None
+        self.assertEqual(model.chord_duration_embedding[0].in_features, 96)
+
+    def test_super96_radius300ms_ablation_config(self) -> None:
+        config_directory = Path(__file__).parents[1] / "configs"
+        with initialize_config_dir(
+            version_base=None,
+            config_dir=str(config_directory.resolve()),
+        ):
+            config = compose(config_name="super_96_radius300ms")
+
+        components = data.build_data_components(config)
+        midi_loader = components["midi_loader"]
+        slicer = components["slicer"]
+        target_generator = components["target_generator"]
+
+        self.assertEqual(
+            str(config.output.dir),
+            "outputs/super_96_radius300ms",
+        )
+        self.assertEqual(str(config.wandb.name), "super_96_radius300ms")
+        self.assertEqual(
+            target_generator.softener.radius_seconds,
+            0.3,
+        )
+        self.assertEqual(float(config.sonify.target_radius_seconds), 0.3)
+        self.assertEqual(float(config.evaluation.target_radius_seconds), 0.3)
+        self.assertEqual(
+            str(config.data.splits.train),
+            "assets/splits/extended_vam_yt_train.txt",
+        )
+        self.assertEqual(float(config.dataset.random_hand_shift_seconds), 0.5)
+        self.assertEqual(midi_loader.reader.subdivision, 24)
+        self.assertEqual(midi_loader.chord_merger.duration_tick_bins, 96)
+        self.assertEqual(slicer.segment_frames, 50)
+        self.assertEqual(slicer.stride_frames, 12)
+        self.assertEqual(slicer.chord_duration_bins, 96)
+        self.assertTrue(slicer.compact_chord_tokens)
+        self.assertEqual(int(config.model.chord_duration_bins), 96)
+
+    def test_super_prediction_ahead_configs(self) -> None:
+        config_directory = Path(__file__).parents[1] / "configs"
+        expectations = {
+            "super_ahead100ms": (
+                12,
+                (0, 3, 4, 6, 8, 9),
+                48,
+            ),
+            "super_96_ahead100ms": (
+                24,
+                (0, 3, 4, 6, 8, 9, 12, 15, 16, 18, 20, 21),
+                96,
+            ),
+        }
+        with initialize_config_dir(
+            version_base=None,
+            config_dir=str(config_directory.resolve()),
+        ):
+            configs = {
+                name: compose(config_name=name) for name in expectations
+            }
+
+        for name, (subdivision, allowed_offsets, duration_bins) in (
+            expectations.items()
+        ):
+            with self.subTest(name=name):
+                config = configs[name]
+                components = data.build_data_components(config)
+                midi_loader = components["midi_loader"]
+                slicer = components["slicer"]
+                target_generator = components["target_generator"]
+
+                self.assertEqual(str(config.output.dir), f"outputs/{name}")
+                self.assertEqual(str(config.wandb.name), name)
+                self.assertEqual(float(config.target_delay_seconds), -0.1)
+                self.assertEqual(
+                    target_generator.event_generator.delay_seconds,
+                    -0.1,
+                )
+                self.assertEqual(
+                    str(config.data.splits.train),
+                    "assets/splits/extended_vam_yt_train.txt",
+                )
+                self.assertEqual(
+                    float(config.dataset.random_hand_shift_seconds),
+                    0.5,
+                )
+                self.assertEqual(midi_loader.reader.subdivision, subdivision)
+                self.assertEqual(
+                    midi_loader.reader.allowed_tick_offsets,
+                    allowed_offsets,
+                )
+                self.assertFalse(midi_loader.include_offsets)
+                self.assertEqual(
+                    midi_loader.chord_merger.duration_tick_bins,
+                    duration_bins,
+                )
+                self.assertEqual(
+                    midi_loader.chord_merger.minimum_duration_ticks,
+                    1,
+                )
+                self.assertEqual(slicer.segment_frames, 50)
+                self.assertEqual(slicer.stride_frames, 12)
+                self.assertEqual(slicer.end_padding_seconds, 0.0)
+                self.assertEqual(slicer.chord_duration_bins, duration_bins)
+                self.assertTrue(slicer.compact_chord_tokens)
+                self.assertEqual(
+                    int(config.model.chord_duration_bins),
+                    duration_bins,
+                )
+                self.assertTrue(bool(config.model.compact_chord_tokens))
+                self.assertTrue(bool(config.model.causal_frame_attention))
+                self.assertTrue(bool(config.model.include_chord_duration))
+                self.assertFalse(bool(config.model.include_chord_offsets))
 
     def test_mean_time_note_split_and_velocity_ablation_configs(self) -> None:
         config_directory = Path(__file__).parents[1] / "configs"

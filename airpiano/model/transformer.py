@@ -32,12 +32,22 @@ class AirPianoTransformer(nn.Module):
         include_chord_duration: bool = False,
         include_chord_offsets: bool = False,
         zero_hand_input: bool = False,
+        chord_duration_bins: int = 200,
+        compact_chord_tokens: bool = False,
     ) -> None:
         super().__init__()
+        if chord_duration_bins <= 0:
+            raise ValueError("chord_duration_bins must be positive")
+        if compact_chord_tokens and include_chord_offsets:
+            raise ValueError(
+                "compact chord tokens do not support chord offsets"
+            )
         self.causal_frame_attention = bool(causal_frame_attention)
         self.include_chord_duration = bool(include_chord_duration)
         self.include_chord_offsets = bool(include_chord_offsets)
         self.zero_hand_input = bool(zero_hand_input)
+        self.chord_duration_bins = int(chord_duration_bins)
+        self.compact_chord_tokens = bool(compact_chord_tokens)
         self.hand_embedding = nn.Sequential(
             nn.Linear(128, MODEL_DIM),
             nn.GELU(),
@@ -61,7 +71,7 @@ class AirPianoTransformer(nn.Module):
         self.chord_duration_embedding = None
         if self.include_chord_duration:
             self.chord_duration_embedding = nn.Sequential(
-                nn.Linear(200, MODEL_DIM),
+                nn.Linear(self.chord_duration_bins, MODEL_DIM),
                 nn.GELU(),
                 nn.LayerNorm(MODEL_DIM),
                 nn.Dropout(DROPOUT),
@@ -118,9 +128,12 @@ class AirPianoTransformer(nn.Module):
 
         batch_size, frame_count = hands.shape[:2]
         chord_count = chords.shape[1]
-        if chords.shape[-1] != 456:
+        duration_start = 128 if self.compact_chord_tokens else 256
+        expected_chord_features = duration_start + self.chord_duration_bins
+        if chords.shape[-1] != expected_chord_features:
             raise ValueError(
-                f"expected 456 chord features, got {chords.shape[-1]}"
+                f"expected {expected_chord_features} chord features, "
+                f"got {chords.shape[-1]}"
             )
 
         hand_dtype = self.hand_embedding[0].weight.dtype
@@ -156,7 +169,7 @@ class AirPianoTransformer(nn.Module):
             )
         if self.chord_duration_embedding is not None:
             chord_states = chord_states + self.chord_duration_embedding(
-                chords[..., 256:].to(dtype=chord_dtype)
+                chords[..., duration_start:].to(dtype=chord_dtype)
             )
         chord_states = chord_states.masked_fill(~chord_mask.unsqueeze(-1), 0.0)
         global_chord = self.global_chord.expand(batch_size, -1, -1)

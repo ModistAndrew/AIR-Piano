@@ -27,6 +27,8 @@ class AirPianoTransformerTest(unittest.TestCase):
                 "include_chord_duration",
                 "include_chord_offsets",
                 "zero_hand_input",
+                "chord_duration_bins",
+                "compact_chord_tokens",
             ),
         )
         model = AirPianoTransformer().eval()
@@ -73,6 +75,75 @@ class AirPianoTransformerTest(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "456"):
             model(hands, presence, chords[..., :128], frame_mask, chord_mask)
+
+    def test_compact_duration_conditioning_uses_224_features(self) -> None:
+        torch.manual_seed(6)
+        model = AirPianoTransformer(
+            include_chord_duration=True,
+            chord_duration_bins=96,
+            compact_chord_tokens=True,
+        ).train()
+        hands = torch.randn(1, 2, 2, 21, 3)
+        presence = torch.ones(1, 2, 2, dtype=torch.bool)
+        chords = torch.zeros(1, 2, 224, requires_grad=True)
+        with torch.no_grad():
+            chords[0, 0, [60, 128]] = 1.0
+            chords[0, 1, [64, 128 + 95]] = 1.0
+        frame_mask = torch.ones(1, 2, dtype=torch.bool)
+        chord_mask = torch.ones(1, 2, dtype=torch.bool)
+
+        logits = model(hands, presence, chords, frame_mask, chord_mask)
+        logits.sum().backward()
+
+        self.assertIsNotNone(model.chord_duration_embedding)
+        assert model.chord_duration_embedding is not None
+        self.assertEqual(model.chord_duration_embedding[0].in_features, 96)
+        self.assertEqual(tuple(logits.shape), (1, 2, 2))
+        self.assertGreater(float(chords.grad[..., 128:].abs().sum()), 0.0)
+
+        with self.assertRaisesRegex(ValueError, "224"):
+            model(
+                hands,
+                presence,
+                torch.zeros(1, 2, 456),
+                frame_mask,
+                chord_mask,
+            )
+        with self.assertRaisesRegex(ValueError, "chord offsets"):
+            AirPianoTransformer(
+                include_chord_offsets=True,
+                chord_duration_bins=96,
+                compact_chord_tokens=True,
+            )
+
+    def test_compact_duration48_conditioning_uses_176_features(self) -> None:
+        model = AirPianoTransformer(
+            include_chord_duration=True,
+            chord_duration_bins=48,
+            compact_chord_tokens=True,
+        ).eval()
+        hands = torch.randn(1, 2, 2, 21, 3)
+        presence = torch.ones(1, 2, 2, dtype=torch.bool)
+        chords = torch.zeros(1, 2, 176)
+        chords[0, 0, [60, 128]] = 1.0
+        chords[0, 1, [64, 128 + 47]] = 1.0
+        frame_mask = torch.ones(1, 2, dtype=torch.bool)
+        chord_mask = torch.ones(1, 2, dtype=torch.bool)
+
+        with torch.no_grad():
+            logits = model(
+                hands,
+                presence,
+                chords,
+                frame_mask,
+                chord_mask,
+            )
+
+        self.assertIsNotNone(model.chord_duration_embedding)
+        assert model.chord_duration_embedding is not None
+        self.assertEqual(model.chord_duration_embedding[0].in_features, 48)
+        self.assertEqual(tuple(logits.shape), (1, 2, 2))
+        self.assertTrue(bool(torch.isfinite(logits).all()))
 
     def test_offset_conditioning_uses_separate_pitch_projection(self) -> None:
         torch.manual_seed(6)

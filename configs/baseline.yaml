@@ -78,6 +78,8 @@ dataset:
       duration_scale_range: null
       duration_normalization: none
       time_mode: first
+      duration_tick_bins: 200
+      minimum_duration_ticks: 0
   hand_loader:
     _target_: airpiano.data.hands.HandLoader
     reader:
@@ -98,6 +100,8 @@ dataset:
     crop_before_first_chord: false
     crop_to_chord_bounds: false
     max_zero_hand_fraction: null
+    chord_duration_bins: 200
+    compact_chord_tokens: false
   target_generator:
     _target_: airpiano.data.targets.TargetGenerator
     event_generator:
@@ -114,6 +118,8 @@ model:
   include_chord_duration: false
   include_chord_offsets: false
   zero_hand_input: false
+  chord_duration_bins: 200
+  compact_chord_tokens: false
 
 train:
   epochs: 20
