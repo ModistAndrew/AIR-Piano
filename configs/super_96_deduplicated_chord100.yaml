@@ -1,0 +1,10 @@
+defaults:
+  - super_96_deduplicated
+  - _self_
+
+output:
+  project_name: super_96_deduplicated_chord100
+
+dataset:
+  slicer:
+    segment_frames: 100
