@@ -1250,6 +1250,73 @@ class TrainTest(unittest.TestCase):
         )
         self.assertEqual(target_generator.softener.radius_seconds, 0.2)
 
+    def test_super96_deduplicated_augmentation_and_grid_configs(self) -> None:
+        config_directory = Path(__file__).parents[1] / "configs"
+        names = (
+            "super_96_deduplicated_random_pitch_shift6_"
+            "random_duration_scale0p5to2",
+            "super_96_deduplicated_random_pitch_shift6_"
+            "random_duration_scale0p5to2_all_tick_offsets",
+        )
+        with initialize_config_dir(
+            version_base=None,
+            config_dir=str(config_directory.resolve()),
+        ):
+            configs = {name: compose(config_name=name) for name in names}
+
+        augmented = configs[names[0]]
+        augmented_reader = data.build_data_components(augmented)[
+            "midi_loader"
+        ].reader
+        self.assertEqual(str(augmented.output.dir), f"outputs/{names[0]}")
+        self.assertEqual(str(augmented.wandb.name), names[0])
+        self.assertEqual(
+            str(augmented.data.splits.train),
+            "assets/splits/extended_vam_yt_train_deduplicated.txt",
+        )
+        self.assertEqual(
+            int(augmented.dataset.random_pitch_shift_semitones),
+            6,
+        )
+        self.assertEqual(
+            tuple(
+                float(value)
+                for value in augmented.dataset.random_duration_scale_factors
+            ),
+            (0.5, 1.0, 2.0),
+        )
+        self.assertEqual(
+            augmented_reader.allowed_tick_offsets,
+            (0, 3, 4, 6, 8, 9, 12, 15, 16, 18, 20, 21),
+        )
+
+        all_offsets = configs[names[1]]
+        all_offset_components = data.build_data_components(all_offsets)
+        all_offset_reader = all_offset_components["midi_loader"].reader
+        all_offset_slicer = all_offset_components["slicer"]
+        self.assertEqual(str(all_offsets.output.dir), f"outputs/{names[1]}")
+        self.assertEqual(str(all_offsets.wandb.name), names[1])
+        self.assertEqual(
+            str(all_offsets.data.splits.train),
+            "assets/splits/extended_vam_yt_train_deduplicated.txt",
+        )
+        self.assertEqual(all_offset_reader.subdivision, 24)
+        self.assertIsNone(all_offset_reader.allowed_tick_offsets)
+        self.assertEqual(
+            int(all_offsets.dataset.random_pitch_shift_semitones),
+            6,
+        )
+        self.assertEqual(
+            tuple(
+                float(value)
+                for value in all_offsets.dataset.random_duration_scale_factors
+            ),
+            (0.5, 1.0, 2.0),
+        )
+        self.assertEqual(all_offset_slicer.chord_duration_bins, 96)
+        self.assertTrue(all_offset_slicer.compact_chord_tokens)
+        self.assertEqual(int(all_offsets.model.chord_duration_bins), 96)
+
     def test_super_prediction_ahead_configs(self) -> None:
         config_directory = Path(__file__).parents[1] / "configs"
         expectations = {

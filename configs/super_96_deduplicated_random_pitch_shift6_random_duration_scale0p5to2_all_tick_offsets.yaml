@@ -1,0 +1,11 @@
+defaults:
+  - super_96_deduplicated_random_pitch_shift6_random_duration_scale0p5to2
+  - _self_
+
+output:
+  project_name: super_96_deduplicated_random_pitch_shift6_random_duration_scale0p5to2_all_tick_offsets
+
+dataset:
+  midi_loader:
+    reader:
+      allowed_tick_offsets: null

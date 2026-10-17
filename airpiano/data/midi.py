@@ -102,14 +102,33 @@ class MidoNoteReader:
         path: str | Path,
     ) -> tuple[tuple[float, ...], tuple[int, ...]]:
         with Path(path).open("r", encoding="utf-8") as handle:
-            beats = tuple(
-                float(line.split()[0])
+            rows = tuple(
+                tuple(float(value) for value in line.split())
                 for line in handle
                 if line.strip()
             )
+        column_counts = {len(row) for row in rows}
+        if column_counts not in ({1}, {2}):
+            raise ValueError(
+                "beat rows must consistently contain one or two numbers"
+            )
+
         offsets = self.allowed_tick_offsets
         if offsets is None:
             offsets = tuple(range(self.subdivision))
+
+        if column_counts == {1}:
+            ticks = tuple(
+                (row[0], tick)
+                for tick, row in enumerate(rows)
+                if tick % self.subdivision in offsets
+            )
+            return (
+                tuple(time for time, _ in ticks),
+                tuple(tick for _, tick in ticks),
+            )
+
+        beats = tuple(row[0] for row in rows)
         tick_times = tuple(
             start + (stop - start) * offset / self.subdivision
             for start, stop in zip(beats, beats[1:])

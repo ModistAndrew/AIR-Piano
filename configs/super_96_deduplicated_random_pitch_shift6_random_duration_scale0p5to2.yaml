@@ -1,0 +1,10 @@
+defaults:
+  - super_96_deduplicated
+  - _self_
+
+output:
+  project_name: super_96_deduplicated_random_pitch_shift6_random_duration_scale0p5to2
+
+dataset:
+  random_pitch_shift_semitones: 6
+  random_duration_scale_factors: [0.5, 1.0, 2.0]

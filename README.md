@@ -83,6 +83,8 @@ The alignment loss is selected by `alignment_loss`; BCE remains the default.
 | `configs/super_96_radius300ms.yaml` | Super-96 ablation using a 300 ms triangular target radius. |
 | `configs/super_96_random_pitch_shift6.yaml` | Super-96 ablation with train-only global transposition of up to six semitones. |
 | `configs/super_96_random_duration_scale0p5to2.yaml` | Super-96 ablation with train-only global duration-token scaling by 0.5, 1, or 2. |
+| `configs/super_96_deduplicated_random_pitch_shift6_random_duration_scale0p5to2.yaml` | Deduplicated Super-96 ablation combining pitch-shift and duration-scale augmentation. |
+| `configs/super_96_deduplicated_random_pitch_shift6_random_duration_scale0p5to2_all_tick_offsets.yaml` | Combined deduplicated augmentation ablation additionally allowing all 24 within-beat tick offsets. |
 | `configs/super_ahead100ms.yaml` | Super ablation with alignment targets shifted 100 ms before each chord onset. |
 | `configs/super_96_ahead100ms.yaml` | Super-96 ablation with alignment targets shifted 100 ms before each chord onset. |
 | `configs/wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized_mean_time_subdivision12_triplet_quarter_clamped.yaml` | Triplet/quarter-grid ablation that clamps endpoints outside the annotated beat span. |
@@ -751,21 +753,27 @@ onset-only chord lasts to its latest member release; the final chord in an
 offset-enabled sequence has duration zero. Configurations may transform
 durations before quantization without changing these raw values.
 
-With `MidoNoteReader.quantization=true`, the reader also consumes the paired
-beat text file's first column. Beat zero maps to tick zero and each following
-beat advances by `subdivision` ticks (12 by default); note endpoints snap to
-the nearest tick, with half-ties moving to the later tick. Optional
-`allowed_tick_offsets` restricts snap candidates within each beat while
-retaining their original logical tick positions. For example, subdivision 12 with
-offsets `[0,3,4,6,8,9]` keeps the beat boundary, quarter points, and trisection
-points, so duration tokens remain measured in twelfths of a beat. By default,
-times before or after the detected beat span repeat the same candidate pattern
-using the first or last beat interval. Setting `out_of_bounds_mode=clamp`
-instead maps those endpoints to the first or last tick position. Original MIDI
-seconds remain on every note for hand slicing and targets, while the added
-integer ticks control chord grouping and duration tokens. Missing beat files
-are reported and omitted during pairing; malformed present files raise
-normally.
+With `MidoNoteReader.quantization=true`, the reader also consumes a paired beat
+text file. A two-column file retains the existing `time_seconds beat_number`
+format: the first column supplies beat times, beat zero maps to tick zero, and
+each following beat advances by `subdivision` ticks (12 by default). A
+one-column file instead lists an already-subdivided grid: each row is used
+directly as the next logical tick without interpolation, so the file's
+resolution must match the configured subdivision. Note endpoints snap to the
+nearest tick, with half-ties moving to the later tick.
+
+Optional `allowed_tick_offsets` restricts snap candidates within each beat
+while retaining their original logical tick positions. This applies to both
+formats; for a one-column grid, row `i` is retained when
+`i % subdivision` is allowed. For example, subdivision 12 with offsets
+`[0,3,4,6,8,9]` keeps the beat boundary, quarter points, and trisection points,
+so duration tokens remain measured in twelfths of a beat. By default, times
+before or after the detected span repeat the same candidate pattern using the
+first or last interval. Setting `out_of_bounds_mode=clamp` instead maps those
+endpoints to the first or last tick position. Original MIDI seconds remain on
+every note for hand slicing and targets, while the added integer ticks control
+chord grouping and duration tokens. Missing beat files are reported and
+omitted during pairing; mixed-width or malformed present files raise normally.
 
 `OffsetScaleTransform` applies configured per-axis `(pose - offset) * scale` to
 present slots while preserving exact zero absent slots. The baseline uses
@@ -1320,6 +1328,18 @@ the annotated beat span to its first or last tick position. The compact
 sixth and eighth points and requires training from scratch because its
 224-value token layout is incompatible with legacy 456-value models:
 
+The resolution can also be selected directly on a quantized preset. The base
+preset below already accepts every tick offset; presets that explicitly define
+an `allowed_tick_offsets` whitelist can override that field with `null` to
+accept every 1/12- or 1/24-beat position:
+
+```bash
+conda run -n v2n python run.py \
+  --config-name wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized \
+  dataset.midi_loader.reader.subdivision=24 \
+  stage=train
+```
+
 ```bash
 conda run -n v2n python run.py \
   --config-name wrist_xyz10_causal_chord24_extended_wrist_delta_zero_hand_filter20_quantized_mean_time_subdivision8 \
@@ -1412,6 +1432,31 @@ conda run -n v2n python run.py \
   stage=train
 conda run -n v2n python run.py \
   --config-name super_96_random_duration_scale0p5to2 \
+  stage=test
+```
+
+The first ablation inherits `super_96_deduplicated` and enables both
+six-semitone pitch shifts and duration factors `[0.5, 1.0, 2.0]`. The second
+inherits that combined augmentation and additionally removes the within-beat
+snapping whitelist, allowing offsets `0...23` while retaining the 24-tick
+subdivision and 96 duration bins:
+
+```bash
+conda run -n v2n python run.py \
+  --config-name \
+  super_96_deduplicated_random_pitch_shift6_random_duration_scale0p5to2 \
+  stage=train
+conda run -n v2n python run.py \
+  --config-name \
+  super_96_deduplicated_random_pitch_shift6_random_duration_scale0p5to2 \
+  stage=test
+conda run -n v2n python run.py \
+  --config-name \
+  super_96_deduplicated_random_pitch_shift6_random_duration_scale0p5to2_all_tick_offsets \
+  stage=train
+conda run -n v2n python run.py \
+  --config-name \
+  super_96_deduplicated_random_pitch_shift6_random_duration_scale0p5to2_all_tick_offsets \
   stage=test
 ```
 

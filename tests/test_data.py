@@ -354,7 +354,10 @@ class MidiTest(unittest.TestCase):
     def test_reader_quantizes_to_filtered_tick_offsets(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             beat_path = Path(directory) / "beats.txt"
-            beat_path.write_text("1.0\n2.0\n3.0\n", encoding="utf-8")
+            beat_path.write_text(
+                "1.0 1\n2.0 2\n3.0 3\n",
+                encoding="utf-8",
+            )
             reader = MidoNoteReader(
                 quantization=True,
                 subdivision=12,
@@ -415,11 +418,60 @@ class MidiTest(unittest.TestCase):
             [3, 6],
         )
 
+    def test_reader_uses_one_column_rows_as_pre_subdivided_ticks(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            beat_path = Path(directory) / "ticks.txt"
+            beat_path.write_text(
+                "1.0\n1.1\n1.25\n1.5\n1.9\n",
+                encoding="utf-8",
+            )
+            reader = MidoNoteReader(quantization=True, subdivision=4)
+            tick_times, tick_positions = reader._read_ticks(beat_path)
+
+        self.assertEqual(tick_times, (1.0, 1.1, 1.25, 1.5, 1.9))
+        self.assertEqual(tick_positions, (0, 1, 2, 3, 4))
+
+    def test_reader_filters_pre_subdivided_tick_offsets(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            beat_path = Path(directory) / "ticks.txt"
+            beat_path.write_text(
+                "1.0\n1.1\n1.2\n1.3\n1.4\n1.5\n",
+                encoding="utf-8",
+            )
+            reader = MidoNoteReader(
+                quantization=True,
+                subdivision=4,
+                allowed_tick_offsets=(0, 2),
+            )
+            tick_times, tick_positions = reader._read_ticks(beat_path)
+
+        self.assertEqual(tick_times, (1.0, 1.2, 1.4))
+        self.assertEqual(tick_positions, (0, 2, 4))
+
+    def test_reader_rejects_inconsistent_beat_row_widths(self) -> None:
+        invalid_contents = (
+            "1.0\n2.0 2\n",
+            "1.0 1 4\n2.0 2 4\n",
+        )
+        for contents in invalid_contents:
+            with self.subTest(contents=contents):
+                with tempfile.TemporaryDirectory() as directory:
+                    beat_path = Path(directory) / "beats.txt"
+                    beat_path.write_text(contents, encoding="utf-8")
+                    with self.assertRaisesRegex(
+                        ValueError,
+                        "consistently contain one or two numbers",
+                    ):
+                        MidoNoteReader()._read_ticks(beat_path)
+
     def test_reader_builds_exact_sixth_and_eighth_24_tick_grid(self) -> None:
         offsets = (0, 3, 4, 6, 8, 9, 12, 15, 16, 18, 20, 21)
         with tempfile.TemporaryDirectory() as directory:
             beat_path = Path(directory) / "beats.txt"
-            beat_path.write_text("1.0\n2.0\n3.0\n", encoding="utf-8")
+            beat_path.write_text(
+                "1.0 1\n2.0 2\n3.0 3\n",
+                encoding="utf-8",
+            )
             reader = MidoNoteReader(
                 quantization=True,
                 subdivision=24,
@@ -439,7 +491,10 @@ class MidiTest(unittest.TestCase):
     def test_reader_clamps_filtered_grid_out_of_bounds(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             beat_path = Path(directory) / "beats.txt"
-            beat_path.write_text("1.0\n2.0\n3.0\n", encoding="utf-8")
+            beat_path.write_text(
+                "1.0 1\n2.0 2\n3.0 3\n",
+                encoding="utf-8",
+            )
             reader = MidoNoteReader(
                 quantization=True,
                 subdivision=12,
