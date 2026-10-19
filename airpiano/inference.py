@@ -49,6 +49,7 @@ def write_inference_artifact(
     frame_start: int,
     fps: float,
     loss: float,
+    extra_arrays: dict[str, Any] | None = None,
 ) -> None:
     """Write one artifact using the shared inference-v1 array contract."""
 
@@ -65,6 +66,7 @@ def write_inference_artifact(
         frame_start=np.asarray(frame_start, dtype=np.int64),
         fps=np.asarray(fps, dtype=np.float64),
         loss=np.asarray(loss, dtype=np.float64),
+        **(extra_arrays or {}),
     )
 
 

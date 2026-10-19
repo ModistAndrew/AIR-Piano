@@ -26,6 +26,31 @@ class RunTest(unittest.TestCase):
         self.assertIn("stage: train", result.stdout)
         self.assertIn("ragged_to_canonical", result.stdout)
 
+    def test_full_song_real_time_config_is_inherited(self) -> None:
+        root = Path(__file__).parents[1]
+        for preset in ("causal_chord24", "super_96_ahead100ms"):
+            with self.subTest(preset=preset):
+                result = subprocess.run(
+                    [
+                        sys.executable, "run.py", "--config-name", preset,
+                        "stage=full_song_real_time", "--cfg", "job", "--resolve",
+                    ],
+                    cwd=root,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                config = OmegaConf.create(result.stdout)
+                self.assertEqual(config.stage, "full_song_real_time")
+                self.assertEqual(
+                    config.full_song_real_time.checkpoint,
+                    f"outputs/{preset}/checkpoints/last.pt",
+                )
+                self.assertEqual(
+                    config.full_song_real_time.output_dir,
+                    f"outputs/{preset}/full_song_real_time",
+                )
+
     def test_dispatch_passes_the_same_config_to_only_the_selected_handler(self) -> None:
         config = OmegaConf.create({"stage": "test", "sentinel": {"value": 1}})
         handlers = {name: Mock() for name in app.STAGES}
@@ -49,6 +74,18 @@ class RunTest(unittest.TestCase):
         handlers["full-song"].assert_called_once_with(config)
         for name, handler in handlers.items():
             if name != "full-song":
+                handler.assert_not_called()
+
+    def test_dispatches_full_song_real_time_stage(self) -> None:
+        config = OmegaConf.create({"stage": "full_song_real_time"})
+        handlers = {name: Mock() for name in app.STAGES}
+
+        with patch.object(app, "STAGES", handlers):
+            app.main.__wrapped__(config)
+
+        handlers["full_song_real_time"].assert_called_once_with(config)
+        for name, handler in handlers.items():
+            if name != "full_song_real_time":
                 handler.assert_not_called()
 
     def test_dispatches_evaluation_stage(self) -> None:

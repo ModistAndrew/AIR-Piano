@@ -1810,6 +1810,69 @@ that directory, allowing a following evaluation stage to use it through
 path: `Real/star` becomes `Real/star.npz`. Weighted aggregate loss remains in
 `full_song_loss.json` at the split-specific output root.
 
+### Simulated real-time full-song MIDI
+
+The separate `full_song_real_time` stage receives one 30 FPS hand frame per
+iteration, runs the model once over the available history and 50 score chords,
+and writes MIDI directly. Use a causal BCE checkpoint with its matching
+quantized, onset-only, unsplit score configuration and at least 50 chords:
+
+```bash
+conda run -n v2n python run.py --config-name super_96_ahead100ms \
+  'stage=[full_song_real_time,visualize,sonify]' \
+  full_song_real_time.split_file=assets/splits/PianoYTSeg.txt \
+  'visualize.root=${full_song_real_time.output_dir}' \
+  'sonify.root=${full_song_real_time.output_dir}'
+```
+
+The stage defaults to the configured project's `checkpoints/last.pt`. Override
+`full_song_real_time.checkpoint` to select another compatible checkpoint.
+Outputs are `<full_song_real_time.output_dir>/<split stem>/<record_id>.npz`
+and adjacent `.mid` files; the effective output-directory config is updated
+for following stages. Preprocessing follows the existing full-song reuse
+policy, controlled by `full_song_real_time.overwrite`.
+
+Runtime chord IDs are one-based score occurrences. A strict crossing above
+0.5 creates an event; falling below 0.5 rearms the chord, and equality leaves
+the latch unchanged. Events collected in one frame keep their original IDs
+and are processed in ascending order. Each event updates the full-score DP
+(match +1, skipped score chord -1, ignored event 0); only a new historical
+best stores an anchor. Successful events recenter the window, and failed
+events advance it by one chord.
+
+Chord score positions are stored directly as `score_subdivision`, in 1/24
+beat units, independently of duration-token clipping. Timing queries return
+an exact stored anchor first. Other positions return positive infinity until
+two anchors exist, then use linear interpolation and endpoint extrapolation.
+An infinite window-start estimate selects history from frame 0. All received
+frames remain buffered so history can move backward.
+
+For MIDI scheduling only, a segment whose anchor times are equal or decreasing
+returns positive infinity. Ordered release waits until a usable estimate becomes
+available. Exact anchors still return their stored times, and video-history
+selection retains its original interpolation behavior.
+
+The simulated result time is always `frame_index / 30 + 0.050` seconds;
+event anchor times are `frame_index / 30 + 0.100`. These offsets neither
+accumulate nor depend on measured runtime. Chords release in score order
+at the first result time when due, with every overdue chord released together.
+MIDI uses this actual release time and a one-second duration at velocity 64.
+The loop stops after the last frame without flushing future onsets; emitted
+notes retain their full duration.
+
+The NPZ retains the normal `probability`/`target` arrays for visualization,
+plus `frame_chord_window_start`, `frame_video_history_start`, per-event
+`event_*` DP traces, final anchors/flags/DP arrays, and per-chord
+`release_time`, `predicted_onset`, and `release_frame_index`.
+Unreleased chords have NaN times and frame index -1. Predicted onsets are
+frozen at release. Scores outside each frame's observed window are zero;
+use the saved window starts to distinguish those cells from observations.
+Sonify recognizes these release records and recreates the same MIDI timing
+without applying threshold decoding or another prediction offset. Its onset
+reports compare actual releases with target peaks and retain the frozen
+estimate separately as `estimated_onset_seconds`. With `ahead100ms` targets,
+that comparison reference is 100 ms before the source score onset.
+
 ### Full-song evaluation
 
 The `evaluation` stage is independent of inference. It recursively scans

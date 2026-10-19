@@ -29,6 +29,7 @@ from airpiano.data import (
     HandLoader,
     HandSequence,
     InitializerChordMerger,
+    MidiLoader,
     MidiSequence,
     MidoNoteReader,
     Note,
@@ -343,6 +344,10 @@ class MidiTest(unittest.TestCase):
                 midi_path,
                 beat_path,
             )
+            sequence = MidiLoader(
+                MidoNoteReader(quantization=True, subdivision=4),
+                InitializerChordMerger(),
+            ).load(midi_path, beat_path)
 
         self.assertEqual(
             [(note.onset_tick, note.offset_tick) for note in parsed],
@@ -350,6 +355,10 @@ class MidiTest(unittest.TestCase):
         )
         self.assertEqual([note.onset for note in parsed], [0.5, 1.375, 2.875])
         self.assertEqual([note.offset for note in parsed], [1.125, 2.125, 3.25])
+        self.assertEqual(
+            [chord.score_subdivision for chord in sequence.chords],
+            [-12.0, 12.0, 48.0],
+        )
 
     def test_reader_quantizes_to_filtered_tick_offsets(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -578,6 +587,53 @@ class MidiTest(unittest.TestCase):
         self.assertEqual(zero[0].duration_ticks, 0)
         self.assertEqual(zero[0].quantized_dur.argmax().item(), 0)
 
+    def test_chord_merger_normalizes_score_positions_without_clipping(self) -> None:
+        for subdivision in (12, 24):
+            with self.subTest(subdivision=subdivision):
+                positions = (-subdivision // 4, subdivision // 4, 30 * subdivision)
+                notes = tuple(
+                    _note(
+                        index,
+                        float(index),
+                        float(index) + 0.1,
+                        60 + index,
+                        onset_tick=position,
+                        offset_tick=position + 1,
+                    )
+                    for index, position in enumerate(positions)
+                )
+                chords = InitializerChordMerger(duration_tick_bins=4).merge(
+                    EventSequence.from_notes(notes),
+                    quantization=True,
+                    subdivision=subdivision,
+                )
+
+                self.assertEqual(
+                    [chord.score_subdivision for chord in chords],
+                    [-6.0, 6.0, 720.0],
+                )
+                self.assertEqual([chord.id for chord in chords], [0, 1, 2])
+                self.assertEqual(
+                    [chord.quantized_dur.argmax().item() for chord in chords],
+                    [3, 3, 1],
+                )
+
+    def test_chord_merger_preserves_fractional_score_subdivisions(self) -> None:
+        notes = (
+            _note(0, 0.0, 0.1, 60, onset_tick=-1, offset_tick=0),
+            _note(1, 0.2, 0.3, 64, onset_tick=1, offset_tick=2),
+        )
+        chords = InitializerChordMerger().merge(
+            EventSequence.from_notes(notes),
+            quantization=True,
+            subdivision=16,
+        )
+
+        self.assertEqual(
+            [chord.score_subdivision for chord in chords],
+            [-1.5, 1.5],
+        )
+
     def test_chord_merger_uses_one_based_96_tick_durations(self) -> None:
         notes = (
             _note(0, 0.0, 0.1, 60, onset_tick=0, offset_tick=1),
@@ -704,6 +760,10 @@ class MidiTest(unittest.TestCase):
         )
 
         self.assertEqual([chord.id for chord in chords], [0, 1, 2])
+        self.assertEqual(
+            [chord.score_subdivision for chord in chords],
+            [None, None, None],
+        )
         self.assertEqual(
             [[note.id for note in chord.onset_notes] for chord in chords],
             [[0, 1], [2, 3], [4]],

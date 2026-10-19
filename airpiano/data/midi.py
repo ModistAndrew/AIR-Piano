@@ -297,6 +297,8 @@ class InitializerChordMerger:
         self,
         event_sequence: EventSequence,
         quantization: bool = False,
+        *,
+        subdivision: int = 12,
     ) -> tuple[Chord, ...]:
         events = event_sequence.events
         groups: list[tuple[NoteEvent, ...]] = []
@@ -405,6 +407,11 @@ class InitializerChordMerger:
                     duration=duration,
                     duration_ticks=ticks,
                     quantized_dur=quantized_dur,
+                    score_subdivision=(
+                        int(group[0].tick) * 24.0 / subdivision
+                        if quantization
+                        else None
+                    ),
                 )
             )
         return tuple(chords)
@@ -438,5 +445,6 @@ class MidiLoader:
             chords=self.chord_merger.merge(
                 events,
                 quantization=self.reader.quantization,
+                subdivision=self.reader.subdivision,
             ),
         )

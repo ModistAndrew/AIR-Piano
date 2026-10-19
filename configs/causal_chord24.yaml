@@ -23,6 +23,12 @@ full_song:
   alignment_threshold: 0.2
   advance_after_chords: ${dataset.slicer.stride_frames}
 
+full_song_real_time:
+  split_file: ${full_song.split_file}
+  checkpoint: ${output.dir}/checkpoints/last.pt
+  output_dir: ${output.dir}/full_song_real_time
+  overwrite: false
+
 evaluation:
   root: ${full_song.output_dir}
   output_path: ${evaluation.root}.json

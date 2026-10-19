@@ -90,6 +90,7 @@ class Chord:
     duration: float
     quantized_dur: torch.Tensor
     duration_ticks: int | None = None
+    score_subdivision: float | None = None  # In units of 1/24 beat.
 
 
 @dataclass(frozen=True)

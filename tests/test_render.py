@@ -60,6 +60,46 @@ def _write_artifact(path: Path, **updates) -> None:
     np.savez_compressed(path, **arrays)
 
 
+def _write_release_artifact(path: Path, **updates) -> None:
+    probability = np.zeros((35, 96), dtype=np.float32)
+    probability[0, 2] = 0.95  # Confidence cannot release an unscheduled chord.
+    target = np.zeros_like(probability)
+    target[33, :3] = 1.0
+    chord_mask = np.zeros(96, dtype=np.bool_)
+    chord_mask[:3] = True
+    chord_pitches = np.zeros((96, 128), dtype=np.bool_)
+    chord_pitches[0, [60, 64]] = True
+    chord_pitches[1, 67] = True
+    chord_pitches[2, 69] = True
+    chord_ids = np.full(96, -1, dtype=np.int64)
+    chord_ids[:3] = [1, 2, 3]
+    release_time = np.full(96, np.nan, dtype=np.float64)
+    release_time[:2] = 32 / 30 + 0.05
+    predicted_onset = np.full(96, np.nan, dtype=np.float64)
+    predicted_onset[:2] = 1.1
+    release_frame_index = np.full(96, -1, dtype=np.int64)
+    release_frame_index[:2] = 32
+    release_frame_time = np.full(96, np.nan, dtype=np.float64)
+    release_frame_time[:2] = 32 / 30
+    arrays = {
+        "probability": probability,
+        "target": target,
+        "frame_mask": np.ones(35, dtype=np.bool_),
+        "chord_mask": chord_mask,
+        "chord_pitches": chord_pitches,
+        "chord_ids": chord_ids,
+        "release_time": release_time,
+        "predicted_onset": predicted_onset,
+        "release_frame_index": release_frame_index,
+        "release_frame_time": release_frame_time,
+        "note_duration": np.asarray(1.0, dtype=np.float64),
+        "note_velocity": np.asarray(64, dtype=np.int64),
+        "onset_prediction_offset": np.asarray(0.1, dtype=np.float64),
+    }
+    arrays.update(updates)
+    _write_artifact(path, **arrays)
+
+
 class RenderTest(unittest.TestCase):
     def test_config_handlers_own_argument_extraction(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -114,9 +154,9 @@ class RenderTest(unittest.TestCase):
                     sonify_stage,
                     "load_artifact",
                     side_effect=[
-                        SimpleNamespace(record_id="subject/a"),
-                        SimpleNamespace(record_id="subject/inside"),
-                        SimpleNamespace(record_id="subject/take.v2"),
+                        SimpleNamespace(record_id="subject/a", release_time=None),
+                        SimpleNamespace(record_id="subject/inside", release_time=None),
+                        SimpleNamespace(record_id="subject/take.v2", release_time=None),
                     ],
                 ),
                 patch.object(
@@ -295,7 +335,7 @@ class RenderTest(unittest.TestCase):
                 patch.object(
                     sonify_stage,
                     "load_artifact",
-                    return_value=SimpleNamespace(record_id="nested/take.v2"),
+                    return_value=SimpleNamespace(record_id="nested/take.v2", release_time=None),
                 ),
                 patch.object(
                     sonify_stage,
@@ -419,6 +459,150 @@ class RenderTest(unittest.TestCase):
 
             self.assertEqual(note_ons, [(96, 60, 64), (96, 64, 64)])
             self.assertEqual(note_offs, [(1056, 60), (1056, 64)])
+
+    def test_sonify_replays_exact_recorded_releases_and_note_settings(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            artifact = root / "result.npz"
+            output = root / "prediction.mid"
+            _write_release_artifact(artifact)
+
+            sonify_artifact(
+                artifact,
+                output,
+                threshold=2.0,
+                duration_seconds=0.25,
+                velocity=12,
+                onset_mode="unused",
+                target_radius_seconds=-1.0,
+            )
+            absolute_tick = 0
+            notes = []
+            for message in mido.MidiFile(output).tracks[0]:
+                absolute_tick += message.time
+                if message.type in {"note_on", "note_off"}:
+                    notes.append(
+                        (absolute_tick, message.type, message.note, message.velocity)
+                    )
+            self.assertEqual(
+                notes,
+                [
+                    (1072, "note_on", 60, 64),
+                    (1072, "note_on", 64, 64),
+                    (1072, "note_on", 67, 64),
+                    (2032, "note_off", 60, 0),
+                    (2032, "note_off", 64, 0),
+                    (2032, "note_off", 67, 0),
+                ],
+            )
+
+    def test_sonify_empty_recorded_schedule_does_not_decode_scores(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            artifact = root / "result.npz"
+            output = root / "prediction.mid"
+            _write_release_artifact(
+                artifact,
+                release_time=np.full(96, np.nan, dtype=np.float64),
+                predicted_onset=np.full(96, np.nan, dtype=np.float64),
+                release_frame_index=np.full(96, -1, dtype=np.int64),
+                release_frame_time=np.full(96, np.nan, dtype=np.float64),
+            )
+
+            sonify_artifact(artifact, output)
+            self.assertFalse(
+                any(
+                    message.type in {"note_on", "note_off"}
+                    for message in mido.MidiFile(output).tracks[0]
+                )
+            )
+
+    def test_recorded_onset_report_compares_actual_release_time(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            artifact = root / "result.npz"
+            _write_release_artifact(artifact)
+
+            report = calculate_onset_deltas(
+                artifact,
+                root / "source.mid",
+                threshold=2.0,
+                onset_mode="unused",
+                target_radius_seconds=-1.0,
+            )
+            self.assertEqual(report["onset_mode"], "release_time")
+            self.assertEqual(report["prediction_horizon_seconds"], 0.0)
+            self.assertEqual(report["onset_prediction_offset_seconds"], 0.1)
+            first, second, missed = report["chords"]
+            for chord in (first, second):
+                self.assertTrue(chord["detected"])
+                self.assertIsNone(chord["onset_probability"])
+                self.assertAlmostEqual(chord["estimated_onset_seconds"], 1.1)
+                self.assertAlmostEqual(
+                    chord["predicted_onset_seconds"], 32 / 30 + 0.05
+                )
+                self.assertAlmostEqual(chord["delta_seconds"], 1 / 60)
+            self.assertEqual(first["source_chord_id"], 1)
+            self.assertFalse(missed["detected"])
+            self.assertIsNone(missed["estimated_onset_seconds"])
+            self.assertIsNone(missed["predicted_onset_seconds"])
+            summary_path = write_onset_delta_summary(
+                [report], root / "summary.json"
+            )
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            self.assertEqual(summary["onset_mode"], "release_time")
+            self.assertAlmostEqual(
+                summary["chords"][0]["mean_delta_seconds"], 1 / 60
+            )
+            self.assertEqual(summary["chords"][2]["missed_count"], 1)
+
+    def test_recorded_artifact_keeps_visualization_compatible(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            artifact = root / "result.npz"
+            _write_release_artifact(artifact)
+
+            loaded = load_artifact(artifact)
+            self.assertAlmostEqual(float(loaded.release_time[0]), 32 / 30 + 0.05)
+            self.assertEqual(loaded.release_frame_index[0], 32)
+            self.assertAlmostEqual(float(loaded.release_frame_time[0]), 32 / 30)
+            self.assertEqual(loaded.note_duration, 1.0)
+            self.assertEqual(loaded.note_velocity, 64)
+            self.assertEqual(loaded.probability.shape, (35, 96))
+            self.assertEqual(int(loaded.support.sum()), 105)
+            output = visualize_artifact(artifact, root / "prediction.png")
+            self.assertGreater(output.stat().st_size, 0)
+
+    def test_sonify_stage_skips_decoding_validation_for_recorded_releases(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            artifact = root / "result.npz"
+            _write_release_artifact(artifact)
+            config = OmegaConf.create(
+                {
+                    "sonify": {
+                        "root": str(root),
+                        "midi_root": str(root / "source"),
+                        "threshold": 2.0,
+                        "onset_mode": "unused",
+                        "target_radius_seconds": -1.0,
+                        "chord_tolerance_seconds": 0.05,
+                        "duration_seconds": 0.25,
+                        "velocity": 12,
+                    },
+                }
+            )
+            with (
+                patch.object(sonify_stage, "sonify_ground_truth"),
+                patch.object(sonify_stage, "plot_onset_delta_summary"),
+                redirect_stdout(io.StringIO()),
+            ):
+                sonify_stage.sonify(config)
+            self.assertTrue(artifact.with_suffix(".mid").is_file())
+            summary = json.loads(
+                (root / "onset_delta_summary.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(summary["onset_mode"], "release_time")
 
     def test_decoder_compensates_first_threshold_and_preserves_peak(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

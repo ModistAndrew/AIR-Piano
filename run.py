@@ -10,6 +10,7 @@ from omegaconf import DictConfig, ListConfig
 
 from airpiano.evaluation import evaluation
 from airpiano.full_song import full_song
+from airpiano.full_song_real_time import full_song_real_time
 from airpiano.inference import test
 from airpiano.preprocessing.pipeline import preprocess
 from airpiano.render.sonify import sonify
@@ -24,6 +25,7 @@ STAGES: dict[str, StageHandler] = {
     "train": train,
     "test": test,
     "full-song": full_song,
+    "full_song_real_time": full_song_real_time,
     "evaluation": evaluation,
     "visualize": visualize,
     "sonify": sonify,
