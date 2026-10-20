@@ -260,16 +260,17 @@ def infer_full_song_real_time(
     output_path: str | Path,
     *,
     tokenizer: data.ChordTokenizer,
+    fps: float,
     bf16: bool,
 ) -> RealTimeController:
     """Receive one frame at a time and write both the release MIDI and NPZ."""
 
-    if song.fps != slicer.fps:
-        raise ValueError("song and slicer frame rates must match")
+    if song.fps != fps:
+        raise ValueError("song and dataset frame rates must match")
     controller = RealTimeController(
         song.chords,
         window_size=slicer.segment_frames,
-        fps=slicer.fps,
+        fps=fps,
         target_radius_seconds=target_generator.softener.radius_seconds,
     )
     model.eval()
@@ -356,7 +357,7 @@ def full_song_real_time(cfg: DictConfig) -> None:
     device = torch.device(str(cfg.device))
     model = load_model_checkpoint(resolve_path(settings.checkpoint), device)
     for index, record_count, song, _ in iter_split_songs(
-        cfg, settings.split_file, overwrite=bool(settings.overwrite),
+        cfg, settings.split_file,
         label="full-song-real-time", components=components,
     ):
         print(
@@ -368,6 +369,7 @@ def full_song_real_time(cfg: DictConfig) -> None:
             model, song, components["slicer"], components["target_generator"],
             device, output_dir / f"{song.record_id}.npz",
             tokenizer=components["tokenizer"],
+            fps=float(cfg.dataset.fps),
             bf16=bool(cfg.train.bf16),
         )
         released = len(controller.release_records)

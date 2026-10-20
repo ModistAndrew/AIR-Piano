@@ -23,14 +23,13 @@ def iter_split_songs(
     cfg: DictConfig,
     split_file: str | Path,
     *,
-    overwrite: bool,
     label: str,
     components: dict[str, Any] | None = None,
 ) -> Iterator[tuple[int, int, data.Song, dict[str, Any]]]:
     """Yield prepared songs one at a time through configured modality roots.
 
-    This layer owns cache reuse and overwrite behavior. After preparation it
-    builds a FilePair and uses the same reader as FileLoader.load.
+    Existing preprocessing caches are reused; only missing inputs are built.
+    After preparation, use the same FilePair reader as FileLoader.load.
     """
 
     split_path = resolve_path(split_file)
@@ -68,27 +67,20 @@ def iter_split_songs(
         )
         raw_dir = raw_root / record_id
         canonical_path = canonical_root / f"{record_id}.npz"
-        reuse_canonical = canonical_path.exists() and not overwrite
-        if reuse_canonical or raw_cache_has_markers(raw_dir):
+        if not canonical_path.exists():
+            if not raw_cache_has_markers(raw_dir):
+                if not video_path.is_file():
+                    print(
+                        f"[{label} skip] {record_id}: missing video {video_path}",
+                        flush=True,
+                    )
+                    continue
+                if video_to_ragged is None:
+                    video_to_ragged = instantiate(cfg.preprocess.video_to_ragged)
+                video_to_ragged.run(video_path, raw_dir)
             ragged_to_canonical.run(
                 raw_record_dir=raw_dir,
                 output_path=canonical_path,
-                overwrite=overwrite,
-            )
-        else:
-            if not video_path.is_file():
-                print(
-                    f"[{label} skip] {record_id}: missing video {video_path}",
-                    flush=True,
-                )
-                continue
-            if video_to_ragged is None:
-                video_to_ragged = instantiate(cfg.preprocess.video_to_ragged)
-            video_to_ragged.run(video_path, raw_dir, overwrite)
-            ragged_to_canonical.run(
-                raw_record_dir=raw_dir,
-                output_path=canonical_path,
-                overwrite=overwrite,
             )
 
         pair = data.FilePair(

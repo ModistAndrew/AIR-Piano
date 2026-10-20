@@ -19,7 +19,7 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from airpiano.preprocessing.video import VideoToWiLoR
-from airpiano.preprocessing.wilor.cache import atomic_json, completed_output_is_valid
+from airpiano.preprocessing.wilor.extraction import atomic_json, completed_output_is_valid
 
 
 def discover_inputs(root):

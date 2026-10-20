@@ -14,7 +14,7 @@ data:
   midi_root: /storage/jinxuan/data/AirPianoFull/MIDI
   video_root: /storage/jinxuan/data/AirPianoFull/Video
   raw_wilor_root: /storage2/jinxuan/data/AirPianoFull/wilor
-  hand_root: /storage2/jinxuan/data/AirPianoFull/airpiano_wilor_wrist_xyz_delta_lowest_v_30fps
+  hand_root: /storage2/jinxuan/data/AirPianoFull/hands_default
   beat_root: /storage2/jinxuan/data/AirPianoFull/beats
   splits:
     train: splits/default_train.txt
@@ -37,20 +37,14 @@ preprocess:
     mano_model: assets/mano/MANO_RIGHT.pkl
     mano_mean_params: ${preprocess.video_to_ragged.wilor_repo}/mano_data/mano_mean_params.npz
     device: ${device}
-    detector_confidence: 0.3
-    rescale_factor: 2.0
-    frame_batch_size: 8
-    hand_batch_size: 16
-    chunk_frames: 512
-    target_fps: null
   ragged_to_canonical:
     _target_: airpiano.preprocessing.canonical.WiLoRToCanonical
-    target_fps: ${dataset.slicer.fps}
+    target_fps: ${dataset.fps}
 
 dataset:
+  fps: 30.0
   augmenter:
     _target_: airpiano.data.augmentation.WindowAugmenter
-    fps: ${dataset.slicer.fps}
     random_hand_shift_seconds: 0.5
     random_pitch_shift_semitones: 6
     random_duration_scale_factors: [0.5, 1.0, 2.0]
@@ -81,7 +75,6 @@ dataset:
       scale: [10.0, 10.0, 10.0]
   slicer:
     _target_: airpiano.data.slicing.FutureChordSlicer
-    fps: 30.0
     segment_frames: 50
     stride_frames: 12
     max_zero_hand_fraction: 0.2
@@ -111,13 +104,11 @@ test:
   split_file: ${data.splits.test}
   checkpoint: ${output.dir}/checkpoints/last.pt
   output_dir: ${output.dir}/test
-  overwrite: false
 
 full_song_real_time:
   split_file: splits/air_tabletop.txt
   checkpoint: ${output.dir}/checkpoints/last.pt
   output_dir: ${output.dir}/full_song_real_time
-  overwrite: false
 
 wandb:
   project: air_piano
@@ -126,7 +117,7 @@ wandb:
   dir: ${output.dir}/logs
 
 visualize:
-  root: ${test.output_dir}
+  root: ${full_song_real_time.output_dir}
 
 sonify:
   root: ${full_song_real_time.output_dir}
@@ -135,9 +126,8 @@ sonify:
 evaluation:
   root: ${full_song_real_time.output_dir}
   output_path: ${evaluation.root}.json
-  tolerances_frames: [0, 2, 4, 8, 16]
+  tolerances_frames: [4, 8, 16]
   summary_only: false
-  remove_inference_artifacts: false
 
 hydra:
   run:

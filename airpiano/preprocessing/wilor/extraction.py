@@ -1,4 +1,4 @@
-"""Resumable, atomically published storage for ragged WiLoR predictions."""
+"""Video decoding and WiLoR extraction with resumable, atomic cache storage."""
 
 from __future__ import annotations
 

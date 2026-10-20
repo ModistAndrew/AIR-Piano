@@ -459,7 +459,6 @@ def evaluation(cfg: DictConfig) -> None:
     metrics_path = resolve_path(cfg.evaluation.output_path)
     plot_path = metrics_path.with_suffix(".png")
     tolerances = tuple(int(value) for value in cfg.evaluation.tolerances_frames)
-    remove_artifacts = bool(cfg.evaluation.remove_inference_artifacts)
     summary_only = bool(cfg.evaluation.summary_only)
     artifact_paths = sorted(
         path for path in artifact_root.rglob("*.npz") if path.is_file()
@@ -535,7 +534,6 @@ def evaluation(cfg: DictConfig) -> None:
         "total_duration_seconds": total_duration_seconds,
         "summary_only": summary_only,
         "unique_record_count": len(unique_record_ids),
-        "inference_artifacts_removed": remove_artifacts,
         "micro": micro,
         "macro": macro,
     }
@@ -544,15 +542,6 @@ def evaluation(cfg: DictConfig) -> None:
         summary["artifacts"] = reports
     write_json(metrics_path, summary)
 
-    if remove_artifacts:
-        try:
-            for artifact_path in artifact_paths:
-                artifact_path.unlink()
-        except OSError:
-            summary["inference_artifacts_removed"] = False
-            write_json(metrics_path, summary)
-            raise
-
     print(f"evaluation micro: {micro}", flush=True)
     print(f"evaluation macro: {macro}", flush=True)
     print(
@@ -560,12 +549,6 @@ def evaluation(cfg: DictConfig) -> None:
         flush=True,
     )
     print(f"wrote evaluation metrics {metrics_path}", flush=True)
-    if remove_artifacts:
-        print(
-            f"removed {len(artifact_paths)} inference artifacts "
-            f"from {artifact_root}",
-            flush=True,
-        )
     print(f"wrote evaluation summary chart {summary_plot}", flush=True)
 
 

@@ -28,7 +28,7 @@ def preprocess(cfg: DictConfig) -> None:
     # Construct only the implementation needed by the selected task. This
     # keeps canonical-only training preparation independent of the WiLoR stack.
     if task in {"video_to_ragged", "all"}:
-        from airpiano.preprocessing.wilor.cache import VideoDecodingError
+        from airpiano.preprocessing.wilor.extraction import VideoDecodingError
 
         video_to_ragged = instantiate(cfg.preprocess.video_to_ragged)
     else:

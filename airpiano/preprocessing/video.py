@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from airpiano.preprocessing.wilor.backend import WiLoRBackend
-from airpiano.preprocessing.wilor.cache import (
+from airpiano.preprocessing.wilor.extraction import (
     completed_output_is_valid,
     process_video,
 )

@@ -21,7 +21,7 @@ from .types import AlignmentWindow, Song
 
 
 class AlignmentDataset(Dataset):
-    """Compose raw slicing, optional augmentation, and chord tokenization."""
+    """Compose alignment samples using one dataset-wide frame rate."""
 
     def __init__(
         self,
@@ -29,10 +29,14 @@ class AlignmentDataset(Dataset):
         slicer: FutureChordSlicer,
         target_generator: TargetGenerator,
         *,
+        fps: float,
         tokenizer: ChordTokenizer,
         augmenter: WindowAugmenter | None = None,
     ):
+        self.fps = float(fps)
         self.songs = tuple(songs)
+        if any(song.fps != self.fps for song in self.songs):
+            raise ValueError("song and dataset frame rates must match")
         self.slicer = slicer
         self.target_generator = target_generator
         self.tokenizer = tokenizer
@@ -69,11 +73,11 @@ class AlignmentDataset(Dataset):
                 window.chords,
                 frame_start=window.frame_start,
                 frame_count=len(window.hands),
-                fps=self.slicer.fps,
+                fps=self.fps,
             ),
             "record_id": song.record_id,
             "frame_start": window.frame_start,
-            "fps": song.fps,
+            "fps": self.fps,
         }
 
 
@@ -129,15 +133,16 @@ def collate_alignment_batch(batch: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def build_data_components(cfg: DictConfig) -> dict[str, Any]:
-    """Instantiate the replaceable data components declared in YAML."""
+    """Construct components with the shared dataset frame rate."""
 
+    fps = float(cfg.dataset.fps)
     return {
         "file_loader": instantiate(cfg.dataset.file_loader),
         "midi_loader": instantiate(cfg.dataset.midi_loader),
         "hand_loader": instantiate(cfg.dataset.hand_loader),
-        "slicer": instantiate(cfg.dataset.slicer),
+        "slicer": instantiate(cfg.dataset.slicer, fps=fps),
         "tokenizer": instantiate(cfg.dataset.tokenizer),
-        "augmenter": instantiate(cfg.dataset.augmenter),
+        "augmenter": instantiate(cfg.dataset.augmenter, fps=fps),
         "target_generator": instantiate(cfg.dataset.target_generator),
     }
 
@@ -164,6 +169,7 @@ def build_dataset(
     )
     return AlignmentDataset(
         songs=songs,
+        fps=float(cfg.dataset.fps),
         slicer=components["slicer"],
         target_generator=components["target_generator"],
         tokenizer=components["tokenizer"],

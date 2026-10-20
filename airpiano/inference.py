@@ -205,13 +205,13 @@ def test(cfg: DictConfig) -> None:
         for _, _, song, _ in iter_split_songs(
             cfg,
             cfg.test.split_file,
-            overwrite=bool(cfg.test.overwrite),
             label="test",
             components=components,
         )
     ]
     dataset = data.AlignmentDataset(
         songs=songs,
+        fps=float(cfg.dataset.fps),
         slicer=components["slicer"],
         target_generator=components["target_generator"],
         tokenizer=components["tokenizer"],
