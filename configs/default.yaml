@@ -128,10 +128,3 @@ evaluation:
   output_path: ${evaluation.root}.json
   tolerances_frames: [4, 8, 16]
   summary_only: false
-
-hydra:
-  run:
-    dir: .
-  output_subdir: null
-  job:
-    chdir: false
