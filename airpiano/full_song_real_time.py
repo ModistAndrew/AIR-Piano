@@ -29,7 +29,7 @@ class RuntimeChord:
 
     id: int
     pitches: tuple[int, ...]
-    score_subdivision: float
+    time_ticks: int
     triggered: bool = False
     released: bool = False
     anchor_time: float | None = None
@@ -45,23 +45,26 @@ class Event:
 class RealTimeController:
     """Maintain occurrence latches, full-score alignment, and release history."""
 
-    window_size = 50
-    fps = 30.0
     processing_latency = 0.050
-    onset_prediction_offset = 0.100
     note_duration = 1.0
 
-    def __init__(self, score_chords: Sequence[data.Chord]) -> None:
+    def __init__(
+        self,
+        score_chords: Sequence[data.Chord],
+        *,
+        window_size: int = 50,
+        fps: float = 30.0,
+        target_radius_seconds: float = 0.2,
+    ) -> None:
+        self.onset_prediction_offset = float(target_radius_seconds) * (1.0 - 0.5)
+        self.window_size = int(window_size)
+        self.fps = float(fps)
         self.chord_count = len(score_chords)
         if self.chord_count < self.window_size:
-            raise ValueError("full_song_real_time requires at least 50 chords")
-        if any(chord.score_subdivision is None for chord in score_chords):
             raise ValueError(
-                "full_song_real_time requires quantized score_subdivision"
+                f"full_song_real_time requires at least {self.window_size} chords"
             )
-        if any(chord.offset_notes for chord in score_chords):
-            raise ValueError("full_song_real_time requires onset-only chords")
-        positions = [float(chord.score_subdivision) for chord in score_chords]
+        positions = [chord.time_ticks for chord in score_chords]
         if any(a >= b for a, b in zip(positions, positions[1:])):
             raise ValueError(
                 "full_song_real_time requires strictly increasing score positions"
@@ -72,7 +75,7 @@ class RealTimeController:
             RuntimeChord(
                 id=index + 1,
                 pitches=tuple(sorted({note.pitch for note in chord.onset_notes})),
-                score_subdivision=positions[index],
+                time_ticks=positions[index],
             )
             for index, chord in enumerate(score_chords)
         ]
@@ -133,7 +136,7 @@ class RealTimeController:
             )
 
         start_time = self.estimate_time(
-            self.chords[self.chord_window_start].score_subdivision
+            self.chords[self.chord_window_start].time_ticks
         )
         self.video_history_start = (
             0 if math.isinf(start_time)
@@ -153,24 +156,24 @@ class RealTimeController:
         })
         return success
 
-    def estimate_time(self, score_subdivision: float) -> float:
+    def estimate_time(self, time_ticks: int) -> float:
         """Estimate time from stored anchors for video-history selection."""
 
         anchors = sorted(
-            (chord.score_subdivision, chord.anchor_time)
+            (chord.time_ticks, chord.anchor_time)
             for chord in self.chords[1:]
             if chord.anchor_time is not None
         )
         positions = [position for position, _ in anchors]
-        right = bisect_left(positions, score_subdivision)
-        if right < len(anchors) and positions[right] == score_subdivision:
+        right = bisect_left(positions, time_ticks)
+        if right < len(anchors) and positions[right] == time_ticks:
             return anchors[right][1]
         if len(anchors) < 2:
             return math.inf
         right = max(1, min(right, len(anchors) - 1))
         s_a, t_a = anchors[right - 1]
         s_b, t_b = anchors[right]
-        return t_a + (score_subdivision - s_a) * (t_b - t_a) / (s_b - s_a)
+        return t_a + (time_ticks - s_a) * (t_b - t_a) / (s_b - s_a)
 
     def release_due(self, frame_index: int) -> list[dict[str, Any]]:
         """Emit due triggers at this frame's simulated result time."""
@@ -203,7 +206,7 @@ def _controller_arrays(controller: RealTimeController) -> dict[str, np.ndarray]:
 
     chords = controller.chords[1:]
     arrays = {
-        "score_subdivision": np.asarray([c.score_subdivision for c in chords]),
+        "time_ticks": np.asarray([c.time_ticks for c in chords], dtype=np.int64),
         "anchor_time": np.asarray([
             np.nan if c.anchor_time is None else c.anchor_time for c in chords
         ]),
@@ -256,22 +259,23 @@ def infer_full_song_real_time(
     device: torch.device,
     output_path: str | Path,
     *,
+    tokenizer: data.ChordTokenizer,
     bf16: bool,
 ) -> RealTimeController:
     """Receive one frame at a time and write both the release MIDI and NPZ."""
 
-    if slicer.mode != "chord":
-        raise ValueError("full_song_real_time requires slicer.mode=chord")
-    if not model.causal_frame_attention:
-        raise ValueError("full_song_real_time requires causal_frame_attention")
-    if song.fps != 30.0 or slicer.fps != 30.0:
-        raise ValueError("full_song_real_time requires 30 fps hand frames")
-    controller = RealTimeController(song.chords)
+    if song.fps != slicer.fps:
+        raise ValueError("song and slicer frame rates must match")
+    controller = RealTimeController(
+        song.chords,
+        window_size=slicer.segment_frames,
+        fps=slicer.fps,
+        target_radius_seconds=target_generator.softener.radius_seconds,
+    )
     model.eval()
     frame_count = len(song.hands)
     chord_count = len(song.chords)
-    score = slicer.slice(song, 0, 0, tuple(range(chord_count)))
-    chord_tokens = score["chords"]
+    chord_tokens = tokenizer.tokenize(song.chords)
     probability = np.zeros((frame_count, chord_count), dtype=np.float32)
     window_starts = np.empty(frame_count, dtype=np.int64)
     history_starts = np.empty(frame_count, dtype=np.int64)
@@ -302,9 +306,7 @@ def infer_full_song_real_time(
         }
         with _autocast(device, bf16):
             logits = _forward(model, batch, device)
-        scores = alignment_probabilities(
-            logits[:, -1:], batch["chord_mask"], "bce"
-        )[0, 0].cpu().numpy()
+        scores = alignment_probabilities(logits[:, -1:])[0, 0].cpu().numpy()
         probability[frame_index, start:stop] = scores
         events = controller.collect_events(scores, window_start, frame_index)
         for event in events:
@@ -316,7 +318,7 @@ def infer_full_song_real_time(
         song.chords, frame_start=0, frame_count=frame_count, fps=controller.fps
     )
     loss, _ = alignment_probability_loss(
-        torch.from_numpy(probability), target, "bce"
+        torch.from_numpy(probability), target
     )
     extra_arrays = _controller_arrays(controller)
     frame_times = np.arange(frame_count) / controller.fps
@@ -348,22 +350,7 @@ def full_song_real_time(cfg: DictConfig) -> None:
     """Reuse split preparation and infer one simulated performance per song."""
 
     settings = cfg.full_song_real_time
-    if settings.split_file is None:
-        raise ValueError("full_song_real_time.split_file must be set")
-    if str(cfg.get("alignment_loss", "bce")) != "bce":
-        raise ValueError(
-            "full_song_real_time requires independent BCE onset scores"
-        )
     components = data.build_data_components(cfg)
-    loader = components["midi_loader"]
-    if (
-        not loader.reader.quantization
-        or loader.include_offsets
-        or loader.chord_merger.split_notes
-    ):
-        raise ValueError(
-            "full_song_real_time requires quantized, onset-only, unsplit chords"
-        )
     output_dir = resolve_split_output_dir(settings.output_dir, settings.split_file)
     settings.output_dir = str(output_dir)
     device = torch.device(str(cfg.device))
@@ -380,6 +367,7 @@ def full_song_real_time(cfg: DictConfig) -> None:
         controller = infer_full_song_real_time(
             model, song, components["slicer"], components["target_generator"],
             device, output_dir / f"{song.record_id}.npz",
+            tokenizer=components["tokenizer"],
             bf16=bool(cfg.train.bf16),
         )
         released = len(controller.release_records)

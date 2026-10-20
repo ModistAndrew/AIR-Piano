@@ -322,10 +322,6 @@ def video_metadata_for_cache(
 
     metadata = dict(source_metadata)
     source_fps = float(metadata["fps"])
-    if target_fps is not None and (
-        not math.isfinite(target_fps) or target_fps <= 0
-    ):
-        raise ValueError("target_fps must be positive or None")
     if target_fps is None or math.isclose(
         target_fps, source_fps, rel_tol=1e-9, abs_tol=1e-9
     ):

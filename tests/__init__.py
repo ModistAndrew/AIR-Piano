@@ -1,1 +1,0 @@
-"""AirPiano contract tests."""

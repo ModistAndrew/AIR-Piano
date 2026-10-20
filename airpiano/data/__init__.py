@@ -1,5 +1,6 @@
 """Public data API for AirPiano."""
 
+from .augmentation import WindowAugmenter
 from .dataset import (
     AlignmentDataset,
     build_data_components,
@@ -17,24 +18,25 @@ from .hands import (
 from .midi import InitializerChordMerger, MidiLoader, MidoNoteReader
 from .slicing import FutureChordSlicer
 from .targets import ChordOnsetEvents, TargetGenerator, TriangularSoftener
+from .tokenization import ChordTokenizer
 from .types import (
+    AlignmentWindow,
     Chord,
-    EventSequence,
     FilePair,
     HandSequence,
     MidiSequence,
     Note,
-    NoteEvent,
     Song,
 )
 
 __all__ = [
     "AlignmentDataset",
+    "AlignmentWindow",
     "CANONICAL_HAND_SCHEMA",
     "CanonicalNpzReader",
     "Chord",
     "ChordOnsetEvents",
-    "EventSequence",
+    "ChordTokenizer",
     "EagerSongReader",
     "FileLoader",
     "FilePair",
@@ -46,12 +48,12 @@ __all__ = [
     "MidiSequence",
     "MidoNoteReader",
     "Note",
-    "NoteEvent",
     "OffsetScaleTransform",
     "Song",
     "RelativeStemPairer",
     "TargetGenerator",
     "TriangularSoftener",
+    "WindowAugmenter",
     "build_data_components",
     "build_dataset",
     "collate_alignment_batch",

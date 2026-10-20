@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import sys
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -48,7 +49,6 @@ class Models:
     detector: Any
     device: Any
     torch: Any
-    fast: bool
 
 
 def empty_detection_arrays() -> dict[str, np.ndarray]:
@@ -76,7 +76,7 @@ def empty_detection_arrays() -> dict[str, np.ndarray]:
 
 
 class WiLoRCropDataset:
-    """Produce WiLoR crops with the baseline OpenCV antialiasing path.
+    """Produce WiLoR crops with the OpenCV antialiasing path.
 
     This AirPiano-owned adapter preserves the established crop numerics without
     modifying the vendored upstream snapshot.
@@ -89,7 +89,6 @@ class WiLoRCropDataset:
         boxes: np.ndarray,
         right: np.ndarray,
         rescale_factor: float,
-        fp16: bool,
     ) -> None:
         self.cfg = cfg
         self.image = image
@@ -102,7 +101,6 @@ class WiLoRCropDataset:
         self.image_size = int(cfg.MODEL.IMAGE_SIZE)
         self.mean = 255.0 * np.asarray(cfg.MODEL.IMAGE_MEAN)
         self.std = 255.0 * np.asarray(cfg.MODEL.IMAGE_STD)
-        self.fp16 = fp16
 
     def __len__(self) -> int:
         return len(self.boxes)
@@ -151,10 +149,6 @@ class WiLoRCropDataset:
         for channel in range(min(self.image.shape[2], 3)):
             patch[channel] = (patch[channel] - self.mean[channel]) / self.std[channel]
 
-        if self.fp16:
-            import torch
-
-            patch = torch.from_numpy(patch).half()
         return {
             "img": patch,
             "personid": index,
@@ -219,7 +213,6 @@ def infer_frame_batch(
             boxes,
             right,
             rescale_factor=rescale_factor,
-            fp16=models.fast,
         )
         crop_items.extend(dataset[index] for index in range(len(dataset)))
         detector_boxes.extend(item[0] for item in detections)
@@ -317,8 +310,6 @@ class WiLoRBackend:
         rescale_factor: float = 2.0,
         frame_batch_size: int = 8,
         hand_batch_size: int = 16,
-        fast: bool = False,
-        compile: bool = False,
     ) -> None:
         self.wilor_repo = resolve_path(wilor_repo)
         self.checkpoint = resolve_path(checkpoint)
@@ -331,8 +322,6 @@ class WiLoRBackend:
         self.rescale_factor = float(rescale_factor)
         self.frame_batch_size = int(frame_batch_size)
         self.hand_batch_size = int(hand_batch_size)
-        self.fast = bool(fast)
-        self.compile = bool(compile)
         self._models: Models | None = None
 
     @property
@@ -371,15 +360,20 @@ class WiLoRBackend:
                 init_renderer=False,
             )
             device = torch.device(self.device)
-            if self.fast:
-                torch.set_float32_matmul_precision("high")
-                model = model.half()
-                if self.compile:
-                    model.backbone = torch.compile(model.backbone)
-                model.backbone.skip_blocks = True
             model = model.to(device).eval()
-            detector = YOLO(str(self.detector_checkpoint)).to(device)
-        return Models(model, model_cfg, detector, device, torch, self.fast)
+            # This trusted detector asset contains a model object. Older
+            # Ultralytics does not explicitly disable PyTorch's weights-only load.
+            environment_key = "TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"
+            previous_setting = os.environ.get(environment_key)
+            try:
+                os.environ[environment_key] = "1"
+                detector = YOLO(str(self.detector_checkpoint)).to(device)
+            finally:
+                if previous_setting is None:
+                    os.environ.pop(environment_key, None)
+                else:
+                    os.environ[environment_key] = previous_setting
+        return Models(model, model_cfg, detector, device, torch)
 
     def build_chunk(
         self,
@@ -439,8 +433,6 @@ class WiLoRBackend:
     def inference_metadata(self, chunk_frames: int) -> dict[str, Any]:
         return {
             "device": self.device,
-            "fast": self.fast,
-            "compiled": self.compile,
             "detector_confidence": self.detector_confidence,
             "rescale_factor": self.rescale_factor,
             "frame_batch_size": self.frame_batch_size,

@@ -1,4 +1,8 @@
-"""Split-driven preparation of synchronized MIDI and hand data."""
+"""Prepare split inputs for window testing and real-time inference.
+
+Reuse canonical hands, or build them from raw WiLoR caches or source videos.
+MIDI and beats must already exist. Actual song loading delegates to data.files.
+"""
 
 from __future__ import annotations
 
@@ -23,7 +27,11 @@ def iter_split_songs(
     label: str,
     components: dict[str, Any] | None = None,
 ) -> Iterator[tuple[int, int, data.Song, dict[str, Any]]]:
-    """Prepare and load split records through configured modality roots."""
+    """Yield prepared songs one at a time through configured modality roots.
+
+    This layer owns cache reuse and overwrite behavior. After preparation it
+    builds a FilePair and uses the same reader as FileLoader.load.
+    """
 
     split_path = resolve_path(split_file)
     records = read_record_stems([split_path])
@@ -35,11 +43,7 @@ def iter_split_songs(
     midi_root = resolve_path(cfg.data.midi_root)
     raw_root = resolve_path(cfg.data.raw_wilor_root)
     canonical_root = resolve_path(cfg.data.hand_root)
-    beat_root = (
-        resolve_path(cfg.data.beat_root)
-        if cfg.data.get("beat_root") is not None
-        else None
-    )
+    beat_root = resolve_path(cfg.data.beat_root)
     video_to_ragged = None
     ragged_to_canonical = instantiate(cfg.preprocess.ragged_to_canonical)
     components = components or data.build_data_components(cfg)
@@ -50,15 +54,13 @@ def iter_split_songs(
             print(f"[{label} skip] {record_id}: missing MIDI {midi_path}")
             continue
 
-        beat_path = None
-        if beat_root is not None:
-            beat_path = beat_root / f"{record_id}.txt"
-            if not beat_path.is_file():
-                print(
-                    f"[{label} skip] {record_id}: missing beats {beat_path}",
-                    flush=True,
-                )
-                continue
+        beat_path = beat_root / f"{record_id}.txt"
+        if not beat_path.is_file():
+            print(
+                f"[{label} skip] {record_id}: missing beats {beat_path}",
+                flush=True,
+            )
+            continue
 
         print(
             f"{label} {index}/{len(records)}: prepare {record_id}",

@@ -10,12 +10,12 @@ import torch
 
 @dataclass(frozen=True)
 class FilePair:
-    """One MIDI/hand pair with an optional beat grid."""
+    """One MIDI/hand pair with its required beat grid."""
 
     record_id: str
     midi_path: Path
     hand_path: Path
-    beat_path: Path | None = None
+    beat_path: Path
 
 
 @dataclass(frozen=True)
@@ -32,65 +32,15 @@ class Note:
 
 
 @dataclass(frozen=True)
-class NoteEvent:
-    """One onset or offset action tied to its physical MIDI note."""
-
-    note: Note
-    is_offset: bool
-
-    @property
-    def pitch(self) -> int:
-        return self.note.pitch
-
-    @property
-    def time(self) -> float:
-        return self.note.offset if self.is_offset else self.note.onset
-
-    @property
-    def tick(self) -> int | None:
-        return self.note.offset_tick if self.is_offset else self.note.onset_tick
-
-
-@dataclass(frozen=True)
-class EventSequence:
-    """Chronological MIDI actions expanded from physical notes."""
-
-    events: tuple[NoteEvent, ...]
-    include_offsets: bool = False
-
-    @classmethod
-    def from_notes(
-        cls,
-        notes: tuple[Note, ...],
-        include_offsets: bool = False,
-    ) -> EventSequence:
-        events = [NoteEvent(note, False) for note in notes]
-        if include_offsets:
-            events.extend(NoteEvent(note, True) for note in notes)
-        events.sort(
-            key=lambda event: (
-                event.time,
-                event.is_offset,
-                event.pitch,
-                event.note.id,
-            )
-        )
-        return cls(tuple(events), bool(include_offsets))
-
-
-@dataclass(frozen=True)
 class Chord:
-    """A group of simultaneous note actions and its duration encoding."""
+    """Grouped notes with a mean physical onset and native beat-grid ticks."""
 
     id: int
-    events: tuple[NoteEvent, ...]
     onset_notes: tuple[Note, ...]
-    offset_notes: tuple[Note, ...]
     time: float
+    time_ticks: int
     duration: float
-    quantized_dur: torch.Tensor
-    duration_ticks: int | None = None
-    score_subdivision: float | None = None  # In units of 1/24 beat.
+    duration_ticks: int
 
 
 @dataclass(frozen=True)
@@ -120,3 +70,13 @@ class Song:
     hands: torch.Tensor
     presence: torch.Tensor
     fps: float
+
+
+@dataclass(frozen=True)
+class AlignmentWindow:
+    """Raw aligned score and hand frames on the original recording clock."""
+
+    hands: torch.Tensor
+    hand_presence: torch.Tensor
+    chords: tuple[Chord, ...]
+    frame_start: int

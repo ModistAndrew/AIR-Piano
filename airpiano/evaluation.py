@@ -1,4 +1,4 @@
-"""Alignment metrics for stored inference artifacts."""
+"""Alignment metrics for recorded real-time releases."""
 
 from __future__ import annotations
 
@@ -9,11 +9,6 @@ import numpy as np
 from omegaconf import DictConfig
 
 from .render.artifact import InferenceArtifact, load_artifact
-from .render.sonify import (
-    decode_chord_onsets,
-    onset_prediction_horizon_seconds,
-    validate_onset_target_config,
-)
 from .utils import resolve_path, write_json
 
 
@@ -47,9 +42,6 @@ def _active_chords(
 
 def _alignment_observations(
     artifact: InferenceArtifact,
-    onset_threshold: float,
-    onset_mode: str = "first_threshold",
-    target_radius_seconds: float = 0.2,
 ) -> tuple[np.ndarray, dict[int, float | None]]:
     """Return frame correctness and fractional-frame onset errors."""
 
@@ -69,26 +61,12 @@ def _alignment_observations(
     if not ground_truth_frames:
         return np.empty(0, dtype=np.bool_), {}
 
-    if artifact.release_time is not None:
-        # Release times are absolute seconds and may fall between frames.
-        predicted_frames = {
-            chord_slot: float(artifact.release_time[chord_slot]) * artifact.fps
-            for chord_slot in ground_truth_frames
-            if not np.isnan(artifact.release_time[chord_slot])
-        }
-    else:
-        predicted_local_frames, _ = decode_chord_onsets(
-            artifact,
-            threshold=onset_threshold,
-            onset_mode=onset_mode,
-            target_radius_seconds=target_radius_seconds,
-        )
-        predicted_frames = {
-            chord_slot: artifact.frame_start
-            + int(predicted_local_frames[chord_slot])
-            for chord_slot in ground_truth_frames
-            if predicted_local_frames[chord_slot] >= 0
-        }
+    # Release times are absolute seconds and may fall between frames.
+    predicted_frames = {
+        chord_slot: float(artifact.release_time[chord_slot]) * artifact.fps
+        for chord_slot in ground_truth_frames
+        if not np.isnan(artifact.release_time[chord_slot])
+    }
     global_frames = artifact.frame_start + valid_frames
     first_onset = min(ground_truth_frames.values())
     evaluated_frames = global_frames[global_frames >= first_onset]
@@ -196,20 +174,12 @@ def _metrics_from_observations(
 def calculate_alignment_metrics(
     artifact: InferenceArtifact,
     *,
-    onset_threshold: float,
     tolerances_frames: Sequence[int],
-    onset_mode: str = "first_threshold",
-    target_radius_seconds: float = 0.2,
 ) -> dict[str, object]:
-    """Calculate frame and chord alignment metrics for one artifact."""
+    """Compare one artifact's recorded releases with its target peaks."""
 
     tolerances = tuple(int(value) for value in tolerances_frames)
-    frame_correct, chord_errors = _alignment_observations(
-        artifact,
-        onset_threshold,
-        onset_mode,
-        target_radius_seconds,
-    )
+    frame_correct, chord_errors = _alignment_observations(artifact)
     return _metrics_from_observations(
         artifact, frame_correct, chord_errors, tolerances
     )
@@ -479,7 +449,7 @@ def plot_indexed_alignment_summary(
 
 
 def evaluation(cfg: DictConfig) -> None:
-    """Calculate alignment metrics for stored inference artifacts."""
+    """Calculate alignment metrics from saved real-time release records."""
 
     artifact_root = resolve_path(cfg.evaluation.root)
     if not artifact_root.is_dir():
@@ -489,10 +459,6 @@ def evaluation(cfg: DictConfig) -> None:
     metrics_path = resolve_path(cfg.evaluation.output_path)
     plot_path = metrics_path.with_suffix(".png")
     tolerances = tuple(int(value) for value in cfg.evaluation.tolerances_frames)
-    onset_threshold = float(cfg.evaluation.onset_threshold)
-    onset_mode = str(cfg.evaluation.onset_mode)
-    target_radius_seconds = float(cfg.evaluation.target_radius_seconds)
-    prediction_horizon_seconds = None
     remove_artifacts = bool(cfg.evaluation.remove_inference_artifacts)
     summary_only = bool(cfg.evaluation.summary_only)
     artifact_paths = sorted(
@@ -501,24 +467,9 @@ def evaluation(cfg: DictConfig) -> None:
 
     reports = []
     indexed_observations = []
-    onset_source_counts = {"release_time": 0, "probability": 0}
     for index, artifact_path in enumerate(artifact_paths, 1):
-        artifact = load_artifact(artifact_path)
-        recorded_releases = artifact.release_time is not None
-        if not recorded_releases and prediction_horizon_seconds is None:
-            validate_onset_target_config(cfg, onset_mode)
-            prediction_horizon_seconds = onset_prediction_horizon_seconds(
-                onset_threshold, target_radius_seconds, onset_mode
-            )
-        onset_source_counts[
-            "release_time" if recorded_releases else "probability"
-        ] += 1
-        frame_correct, chord_errors = _alignment_observations(
-            artifact,
-            onset_threshold,
-            onset_mode,
-            target_radius_seconds,
-        )
+        artifact = load_artifact(artifact_path, require_releases=True)
+        frame_correct, chord_errors = _alignment_observations(artifact)
         indexed_observations.append((frame_correct, chord_errors))
         item_metrics = _metrics_from_observations(
             artifact, frame_correct, chord_errors, tolerances
@@ -531,10 +482,7 @@ def evaluation(cfg: DictConfig) -> None:
                 "record_id": artifact.record_id,
                 "frame_start": artifact.frame_start,
                 "fps": artifact.fps,
-                "onset_mode": "release_time" if recorded_releases else onset_mode,
-                "prediction_horizon_seconds": (
-                    0.0 if recorded_releases else prediction_horizon_seconds
-                ),
+                "onset_mode": "release_time",
                 "frame_count": int(artifact.frame_mask.sum()),
                 "duration_seconds": (
                     int(artifact.frame_mask.sum()) / artifact.fps
@@ -576,23 +524,11 @@ def evaluation(cfg: DictConfig) -> None:
         plot_path,
         c_ar_values=c_ar_values,
     )
-    release_only = bool(reports) and onset_source_counts["probability"] == 0
-    mixed_sources = all(onset_source_counts.values())
     summary = {
-        "schema_version": "airpiano-evaluation-v8",
+        "schema_version": "airpiano-evaluation-v9",
         "artifact_root": str(artifact_root),
         "summary_plot_path": str(summary_plot),
-        "onset_mode": (
-            "mixed" if mixed_sources else "release_time" if release_only
-            else onset_mode
-        ),
-        "onset_source_counts": onset_source_counts,
-        "onset_threshold": None if release_only else onset_threshold,
-        "prediction_horizon_seconds": (
-            None if mixed_sources else 0.0 if release_only
-            else prediction_horizon_seconds
-        ),
-        "target_radius_seconds": 0.0 if release_only else target_radius_seconds,
+        "onset_mode": "release_time",
         "tolerances_frames": list(tolerances),
         "artifact_count": len(reports),
         "average_duration_seconds": average_duration_seconds,

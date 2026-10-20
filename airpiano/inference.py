@@ -15,7 +15,7 @@ from . import data
 from .model.loss import (
     alignment_loss_count,
     alignment_probabilities,
-    masked_alignment_loss,
+    masked_bce_loss,
 )
 from .model.transformer import AirPianoTransformer
 from .song_input import iter_split_songs
@@ -78,9 +78,8 @@ def dump_inference(
     output_dir: Path,
     *,
     bf16: bool,
-    alignment_loss: str = "bce",
 ) -> float:
-    """Write one NPZ per slice and return the aggregate configured loss."""
+    """Write one NPZ per slice and return BCE over all valid cells."""
 
     model.eval()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -93,26 +92,21 @@ def dump_inference(
         chord_mask_device = _tensor_to_device(batch["chord_mask"], device)
         with _autocast(device, bf16):
             logits = _forward(model, batch, device)
-        probabilities = alignment_probabilities(
-            logits, chord_mask_device, alignment_loss
-        )
+        probabilities = alignment_probabilities(logits)
 
         for index in range(logits.shape[0]):
             item_frame_mask = frame_mask_device[index : index + 1]
             item_chord_mask = chord_mask_device[index : index + 1]
             count = alignment_loss_count(
-                target_device[index : index + 1],
                 item_frame_mask,
                 item_chord_mask,
-                alignment_loss,
             )
             if count:
-                item_loss_tensor = masked_alignment_loss(
+                item_loss_tensor = masked_bce_loss(
                     logits[index : index + 1],
                     target_device[index : index + 1],
                     item_frame_mask,
                     item_chord_mask,
-                    alignment_loss,
                 )
                 item_loss = float(item_loss_tensor)
                 total_loss += item_loss * count
@@ -151,22 +145,22 @@ def load_model_checkpoint(
     """Instantiate the saved model configuration and restore its state."""
 
     payload = torch.load(Path(path), map_location=device, weights_only=False)
-    checkpoint_config = payload.get("config", {})
-    # for compatibility with older checkpoints
-    model_config = OmegaConf.merge(
-        {
-            "_target_": "airpiano.model.transformer.AirPianoTransformer",
-            "causal_frame_attention": False,
-            "include_chord_duration": False,
-            "include_chord_offsets": False,
-            "zero_hand_input": False,
-            "chord_duration_bins": 200,
-            "compact_chord_tokens": False,
-        },
-        checkpoint_config.get("model", {}),
-    )
+    model_config = dict(payload["config"]["model"])
+    legacy_flags = {
+        "causal_frame_attention": True,
+        "include_chord_duration": True,
+        "include_chord_offsets": False,
+        "zero_hand_input": False,
+        "compact_chord_tokens": True,
+    }
+    for name, expected in legacy_flags.items():
+        if name in model_config and model_config.pop(name) != expected:
+            raise ValueError(f"unsupported checkpoint model setting: {name}")
+    model_config = OmegaConf.create(model_config)
     model = instantiate(model_config).to(device)
-    model.load_state_dict(payload["model"], strict=True)
+    model_state = payload["model"].copy()
+    model_state.pop("global_chord", None)
+    model.load_state_dict(model_state, strict=True)
     return model
 
 
@@ -193,15 +187,12 @@ def infer_dataset(
         device,
         resolve_path(output_dir),
         bf16=bool(cfg.train.bf16),
-        alignment_loss=str(cfg.get("alignment_loss", "bce")),
     )
 
 
 def test(cfg: DictConfig) -> None:
     """Prepare the configured split and dump every test window."""
 
-    if cfg.test.split_file is None:
-        raise ValueError("test.split_file must be set")
     checkpoint = resolve_path(cfg.test.checkpoint)
     output_dir = resolve_split_output_dir(
         cfg.test.output_dir,
@@ -223,6 +214,7 @@ def test(cfg: DictConfig) -> None:
         songs=songs,
         slicer=components["slicer"],
         target_generator=components["target_generator"],
+        tokenizer=components["tokenizer"],
     )
     loss = infer_dataset(cfg, dataset, checkpoint, output_dir)
     write_json(output_dir / "test_loss.json", {"test_loss": loss})

@@ -12,10 +12,7 @@ from airpiano.utils import resolve_path
 def preprocess(cfg: DictConfig) -> None:
     """Run the configured WiLoR preprocessing phase or both phases in order."""
 
-    from airpiano.preprocessing.canonical import (
-        InsufficientHandPresenceError,
-        raw_cache_has_markers,
-    )
+    from airpiano.preprocessing.canonical import raw_cache_has_markers
 
     task = str(cfg.preprocess.task)
     if task not in {"video_to_ragged", "ragged_to_canonical", "all"}:
@@ -43,7 +40,6 @@ def preprocess(cfg: DictConfig) -> None:
     )
 
     missing: list[str] = []
-    rejected: list[str] = []
     skipped: list[str] = []
     converted = 0
     for ordinal, record_id in enumerate(records, 1):
@@ -79,17 +75,11 @@ def preprocess(cfg: DictConfig) -> None:
                 missing.append(message)
                 print(f"[preprocess missing] {message}", flush=True)
                 continue
-            try:
-                ragged_to_canonical.run(
-                    raw_record_dir=raw_dir,
-                    output_path=canonical_path,
-                    overwrite=overwrite,
-                )
-            except InsufficientHandPresenceError as error:
-                message = f"{record_id}: {error}"
-                rejected.append(message)
-                print(f"[preprocess rejected] {message}", flush=True)
-                continue
+            ragged_to_canonical.run(
+                raw_record_dir=raw_dir,
+                output_path=canonical_path,
+                overwrite=overwrite,
+            )
 
         converted += 1
         if ordinal == 1 or ordinal % 25 == 0 or ordinal == len(records):
@@ -101,6 +91,6 @@ def preprocess(cfg: DictConfig) -> None:
     print(
         f"preprocess complete: requested={len(records)} "
         f"completed_or_reused={converted} missing={len(missing)} "
-        f"rejected={len(rejected)} skipped={len(skipped)}",
+        f"skipped={len(skipped)}",
         flush=True,
     )

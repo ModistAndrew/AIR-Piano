@@ -1,9 +1,0 @@
-defaults:
-  - baseline
-  - _self_
-
-output:
-  project_name: chord_duration
-
-model:
-  include_chord_duration: true

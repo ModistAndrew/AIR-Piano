@@ -26,28 +26,9 @@ class AirPianoTransformer(nn.Module):
     chords in the current slice.
     """
 
-    def __init__(
-        self,
-        causal_frame_attention: bool = False,
-        include_chord_duration: bool = False,
-        include_chord_offsets: bool = False,
-        zero_hand_input: bool = False,
-        chord_duration_bins: int = 200,
-        compact_chord_tokens: bool = False,
-    ) -> None:
+    def __init__(self, chord_duration_bins: int = 96) -> None:
         super().__init__()
-        if chord_duration_bins <= 0:
-            raise ValueError("chord_duration_bins must be positive")
-        if compact_chord_tokens and include_chord_offsets:
-            raise ValueError(
-                "compact chord tokens do not support chord offsets"
-            )
-        self.causal_frame_attention = bool(causal_frame_attention)
-        self.include_chord_duration = bool(include_chord_duration)
-        self.include_chord_offsets = bool(include_chord_offsets)
-        self.zero_hand_input = bool(zero_hand_input)
         self.chord_duration_bins = int(chord_duration_bins)
-        self.compact_chord_tokens = bool(compact_chord_tokens)
         self.hand_embedding = nn.Sequential(
             nn.Linear(128, MODEL_DIM),
             nn.GELU(),
@@ -60,22 +41,12 @@ class AirPianoTransformer(nn.Module):
             nn.LayerNorm(MODEL_DIM),
             nn.Dropout(DROPOUT),
         )
-        self.chord_offset_embedding = None
-        if self.include_chord_offsets:
-            self.chord_offset_embedding = nn.Sequential(
-                nn.Linear(128, MODEL_DIM),
-                nn.GELU(),
-                nn.LayerNorm(MODEL_DIM),
-                nn.Dropout(DROPOUT),
-            )
-        self.chord_duration_embedding = None
-        if self.include_chord_duration:
-            self.chord_duration_embedding = nn.Sequential(
-                nn.Linear(self.chord_duration_bins, MODEL_DIM),
-                nn.GELU(),
-                nn.LayerNorm(MODEL_DIM),
-                nn.Dropout(DROPOUT),
-            )
+        self.chord_duration_embedding = nn.Sequential(
+            nn.Linear(self.chord_duration_bins, MODEL_DIM),
+            nn.GELU(),
+            nn.LayerNorm(MODEL_DIM),
+            nn.Dropout(DROPOUT),
+        )
 
         chord_layer = nn.TransformerEncoderLayer(
             d_model=MODEL_DIM,
@@ -92,19 +63,17 @@ class AirPianoTransformer(nn.Module):
             norm=nn.LayerNorm(MODEL_DIM),
             enable_nested_tensor=False,
         )
-        self.global_chord = nn.Parameter(torch.empty(1, 1, MODEL_DIM))
         self.frame_layers = nn.ModuleList(
             [FrameAlignmentBlock() for _ in range(NUM_FRAME_LAYERS)]
         )
         self.frame_norm = nn.LayerNorm(MODEL_DIM)
         self.scorer = PairScorer()
-        nn.init.normal_(self.global_chord, mean=0.0, std=0.02)
 
     @staticmethod
-    def _safe_frame_padding_mask(frame_mask: torch.Tensor) -> torch.Tensor:
+    def _safe_padding_mask(valid_mask: torch.Tensor) -> torch.Tensor:
         """Expose one dummy key so all-padded slices remain finite in attention."""
 
-        padding_mask = ~frame_mask
+        padding_mask = ~valid_mask
         all_padding = padding_mask.all(dim=1)
         padding_mask = padding_mask.clone()
         padding_mask[:, 0] &= ~all_padding
@@ -120,16 +89,15 @@ class AirPianoTransformer(nn.Module):
     ) -> torch.Tensor:
         """Return alignment logits with shape ``[B,T,C]``.
 
-        Unless ``zero_hand_input`` is enabled, ``hand_presence`` zeros an
+        ``hand_presence`` zeros an
         absent hand's coordinates and contributes two explicit embedding
         features. It is not a frame mask: ``frame_mask`` alone marks padded
         time steps for attention and supervision.
         """
 
-        batch_size, frame_count = hands.shape[:2]
+        frame_count = hands.shape[1]
         chord_count = chords.shape[1]
-        duration_start = 128 if self.compact_chord_tokens else 256
-        expected_chord_features = duration_start + self.chord_duration_bins
+        expected_chord_features = 128 + self.chord_duration_bins
         if chords.shape[-1] != expected_chord_features:
             raise ValueError(
                 f"expected {expected_chord_features} chord features, "
@@ -137,19 +105,11 @@ class AirPianoTransformer(nn.Module):
             )
 
         hand_dtype = self.hand_embedding[0].weight.dtype
-        if self.zero_hand_input:
-            hand_features = torch.zeros(
-                (batch_size, frame_count, self.hand_embedding[0].in_features),
-                dtype=hand_dtype,
-                device=hands.device,
-            )
-        else:
-            presence = hand_presence.to(dtype=hand_dtype)
-            masked_hands = hands.to(dtype=hand_dtype) * presence[..., None, None]
-            hand_features = torch.cat(
-                (masked_hands.flatten(start_dim=2), presence),
-                dim=-1,
-            )
+        presence = hand_presence.to(dtype=hand_dtype)
+        masked_hands = hands.to(dtype=hand_dtype) * presence[..., None, None]
+        hand_features = torch.cat(
+            (masked_hands.flatten(start_dim=2), presence), dim=-1
+        )
         frames = self.hand_embedding(hand_features)
         frames = frames + sinusoidal_encoding(
             frame_count,
@@ -163,36 +123,18 @@ class AirPianoTransformer(nn.Module):
         chord_states = self.chord_embedding(
             chords[..., :128].to(dtype=chord_dtype)
         )
-        if self.chord_offset_embedding is not None:
-            chord_states = chord_states + self.chord_offset_embedding(
-                chords[..., 128:256].to(dtype=chord_dtype)
-            )
-        if self.chord_duration_embedding is not None:
-            chord_states = chord_states + self.chord_duration_embedding(
-                chords[..., duration_start:].to(dtype=chord_dtype)
-            )
-        chord_states = chord_states.masked_fill(~chord_mask.unsqueeze(-1), 0.0)
-        global_chord = self.global_chord.expand(batch_size, -1, -1)
-        chord_memory = torch.cat((global_chord, chord_states), dim=1)
-        chord_memory = chord_memory + sinusoidal_encoding(
-            chord_count + 1,
+        chord_states = chord_states + self.chord_duration_embedding(
+            chords[..., 128:].to(dtype=chord_dtype)
+        )
+        chord_memory = chord_states + sinusoidal_encoding(
+            chord_count,
             MODEL_DIM,
-            device=chord_memory.device,
-            dtype=chord_memory.dtype,
+            device=chord_states.device,
+            dtype=chord_states.dtype,
         )
-        chord_padding_mask = torch.cat(
-            (
-                torch.zeros(
-                    (batch_size, 1),
-                    dtype=torch.bool,
-                    device=chord_mask.device,
-                ),
-                ~chord_mask,
-            ),
-            dim=1,
-        )
+        chord_padding_mask = self._safe_padding_mask(chord_mask)
         chord_memory = chord_memory.masked_fill(
-            chord_padding_mask.unsqueeze(-1),
+            ~chord_mask.unsqueeze(-1),
             0.0,
         )
         chord_memory = self.chord_encoder(
@@ -200,18 +142,16 @@ class AirPianoTransformer(nn.Module):
             src_key_padding_mask=chord_padding_mask,
         )
         chord_memory = chord_memory.masked_fill(
-            chord_padding_mask.unsqueeze(-1),
+            ~chord_mask.unsqueeze(-1),
             0.0,
         )
 
-        frame_padding_mask = self._safe_frame_padding_mask(frame_mask)
-        frame_attention_mask = None
-        if self.causal_frame_attention:
-            frame_attention_mask = torch.ones(
-                (frame_count, frame_count),
-                dtype=torch.bool,
-                device=frames.device,
-            ).triu(diagonal=1)
+        frame_padding_mask = self._safe_padding_mask(frame_mask)
+        frame_attention_mask = torch.ones(
+            (frame_count, frame_count),
+            dtype=torch.bool,
+            device=frames.device,
+        ).triu(diagonal=1)
         for layer in self.frame_layers:
             frames = layer(
                 frames,
@@ -223,7 +163,7 @@ class AirPianoTransformer(nn.Module):
             frames = frames.masked_fill(~frame_mask.unsqueeze(-1), 0.0)
         frames = self.frame_norm(frames)
 
-        logits = self.scorer(frames, chord_memory[:, 1:])
+        logits = self.scorer(frames, chord_memory)
         valid = frame_mask.unsqueeze(-1) & chord_mask.unsqueeze(1)
         return logits.masked_fill(~valid, 0.0)
 

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 from pathlib import Path
 
 from airpiano.preprocessing.wilor.backend import WiLoRBackend
@@ -25,7 +24,7 @@ class VideoToWiLoR:
         checkpoint: str | Path = PROJECT_ROOT / "assets/wilor/wilor_final.ckpt",
         model_config: str | Path | None = None,
         detector_checkpoint: str | Path = PROJECT_ROOT / "assets/wilor/detector.pt",
-        mano_model: str | Path = PROJECT_ROOT / "assets/wilor/MANO_RIGHT.pkl",
+        mano_model: str | Path = PROJECT_ROOT / "assets/mano/MANO_RIGHT.pkl",
         mano_mean_params: str | Path | None = None,
         device: str = "cuda:1",
         detector_confidence: float = 0.3,
@@ -33,16 +32,10 @@ class VideoToWiLoR:
         frame_batch_size: int = 8,
         hand_batch_size: int = 16,
         chunk_frames: int = 512,
-        fast: bool = False,
-        compile: bool = False,
         target_fps: float | None = None,
     ) -> None:
         repository = resolve_path(wilor_repo)
         self.chunk_frames = int(chunk_frames)
-        if target_fps is not None and (
-            not math.isfinite(target_fps) or target_fps <= 0
-        ):
-            raise ValueError("target_fps must be positive or None")
         self.target_fps = target_fps
         self._backend = WiLoRBackend(
             wilor_repo=repository,
@@ -64,8 +57,6 @@ class VideoToWiLoR:
             rescale_factor=rescale_factor,
             frame_batch_size=frame_batch_size,
             hand_batch_size=hand_batch_size,
-            fast=fast,
-            compile=compile,
         )
 
     def run(

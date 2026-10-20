@@ -14,7 +14,7 @@ from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import DataLoader
 
 from . import data
-from .model.loss import alignment_loss_count, masked_alignment_loss
+from .model.loss import alignment_loss_count, masked_bce_loss
 from .model.transformer import AirPianoTransformer
 from .utils import resolve_path
 
@@ -23,7 +23,7 @@ TENSOR_INPUTS = ("hands", "hand_presence", "chords", "frame_mask", "chord_mask")
 
 
 def seed_everything(seed: int) -> None:
-    """Seed every random source used by the baseline."""
+    """Seed every random source used by training."""
 
     random.seed(seed)
     np.random.seed(seed)
@@ -58,9 +58,8 @@ def evaluate(
     device: torch.device,
     *,
     bf16: bool,
-    alignment_loss: str = "bce",
 ) -> float:
-    """Return the configured loss weighted by its valid target units."""
+    """Return BCE weighted by its valid frame/chord cells."""
 
     model.eval()
     loss_sum = 0.0
@@ -69,17 +68,14 @@ def evaluate(
         target = _tensor_to_device(batch["target"], device)
         frame_mask = _tensor_to_device(batch["frame_mask"], device)
         chord_mask = _tensor_to_device(batch["chord_mask"], device)
-        valid_count = alignment_loss_count(
-            target, frame_mask, chord_mask, alignment_loss
-        )
+        valid_count = alignment_loss_count(frame_mask, chord_mask)
         with _autocast(device, bf16):
             logits = _forward(model, batch, device)
-            loss = masked_alignment_loss(
+            loss = masked_bce_loss(
                 logits,
                 target,
                 frame_mask,
                 chord_mask,
-                alignment_loss,
             )
         loss_sum += float(loss) * valid_count
         valid_sum += valid_count
@@ -95,7 +91,7 @@ def _lr_lambda(step: int, *, warmup_steps: int, total_steps: int) -> float:
 
 
 def train(cfg: DictConfig) -> None:
-    """Train the baseline, validate each epoch, and write checkpoints."""
+    """Train the model, validate each epoch, and write checkpoints."""
 
     import wandb
 
@@ -145,7 +141,6 @@ def train(cfg: DictConfig) -> None:
     best_loss = float("inf")
     global_step = 0
     bf16 = bool(cfg.train.bf16)
-    alignment_loss = str(cfg.get("alignment_loss", "bce"))
     try:
         for epoch in range(epochs):
             model.train()
@@ -166,12 +161,11 @@ def train(cfg: DictConfig) -> None:
                 )
                 with _autocast(device, bf16):
                     logits = _forward(model, batch, device)
-                    loss = masked_alignment_loss(
+                    loss = masked_bce_loss(
                         logits,
                         target,
                         frame_mask,
                         chord_mask,
-                        alignment_loss,
                     )
                 (loss / group_size).backward()
                 accumulated_loss += float(loss.detach())
@@ -197,7 +191,6 @@ def train(cfg: DictConfig) -> None:
                 valid_loader,
                 device,
                 bf16=bf16,
-                alignment_loss=alignment_loss,
             )
             run.log({"valid/loss": valid_loss})
             print(

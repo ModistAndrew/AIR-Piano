@@ -9,7 +9,6 @@ import hydra
 from omegaconf import DictConfig, ListConfig
 
 from airpiano.evaluation import evaluation
-from airpiano.full_song import full_song
 from airpiano.full_song_real_time import full_song_real_time
 from airpiano.inference import test
 from airpiano.preprocessing.pipeline import preprocess
@@ -24,7 +23,6 @@ STAGES: dict[str, StageHandler] = {
     "preprocess": preprocess,
     "train": train,
     "test": test,
-    "full-song": full_song,
     "full_song_real_time": full_song_real_time,
     "evaluation": evaluation,
     "visualize": visualize,
@@ -32,7 +30,7 @@ STAGES: dict[str, StageHandler] = {
 }
 
 
-@hydra.main(version_base=None, config_path="configs", config_name="baseline")
+@hydra.main(version_base=None, config_path="configs", config_name="default")
 def main(cfg: DictConfig) -> None:
     """Run one stage or a Hydra list of stages in the requested order."""
 

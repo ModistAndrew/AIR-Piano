@@ -43,13 +43,18 @@ class InferenceArtifact:
         return self.frame_mask[:, None] & self.chord_mask[None, :]
 
 
-def load_artifact(input_path: str | Path) -> InferenceArtifact:
-    """Load a trusted inference NPZ, copying arrays before closing the archive."""
+def load_artifact(
+    input_path: str | Path, *, require_releases: bool = False
+) -> InferenceArtifact:
+    """Load arrays, requiring saved real-time metadata when requested.
+
+    Missing release fields raise KeyError; window heatmaps use the default.
+    """
 
     path = resolve_path(input_path)
     with np.load(path, allow_pickle=False) as payload:
         release_metadata = {}
-        if "release_time" in payload:
+        if require_releases or "release_time" in payload:
             release_metadata = {
                 "release_time": payload["release_time"].copy(),
                 "predicted_onset": payload["predicted_onset"].copy(),
