@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
 import torch
 from omegaconf import DictConfig
 
@@ -53,8 +54,13 @@ def infer_full_song(
     chord_start = 0
     history_start = 0
     shift_count = 0
+    window_starts = np.empty(frame_count, dtype=np.int64)
+    history_starts = np.empty(frame_count, dtype=np.int64)
 
     for frame_index in range(frame_count):
+        # Log the inputs used for this forward pass, before any shift.
+        window_starts[frame_index] = chord_start + 1
+        history_starts[frame_index] = history_start
         chord_stop = min(chord_start + window_width, chord_count)
         history_stop = frame_index + 1
         history_length = history_stop - history_start
@@ -115,6 +121,14 @@ def infer_full_song(
         frame_start=0,
         fps=song.fps,
         loss=loss,
+        extra_arrays={
+            "frame_chord_window_start": window_starts,
+            "frame_video_history_start": history_starts,
+            "frame_time": np.arange(frame_count) / song.fps,
+            "window_size": np.asarray(window_width),
+            "final_chord_window_start": np.asarray(chord_start + 1),
+            "final_video_history_start": np.asarray(history_start),
+        },
     )
     return loss, loss_weight, shift_count
 

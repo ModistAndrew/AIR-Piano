@@ -1810,6 +1810,14 @@ that directory, allowing a following evaluation stage to use it through
 path: `Real/star` becomes `Real/star.npz`. Weighted aggregate loss remains in
 `full_song_loss.json` at the split-specific output root.
 
+New full-song NPZs also store the chord-window start (one-based score
+occurrence), video-history start (zero-based frame), and timestamp used by each
+forward pass. Plot these traces with
+`python scripts/visualize_real_time.py path/to/song.npz`; the script detects
+the stage and shows decoded MIDI onsets for `full_song`, or DP trigger outcomes
+for `full_song_real_time`. Use `--start` and `--end` for a time-range close-up.
+Older full-song NPZs need an inference replay to recover exact video histories.
+
 ### Simulated real-time full-song MIDI
 
 The separate `full_song_real_time` stage receives one 30 FPS hand frame per
@@ -1847,15 +1855,16 @@ two anchors exist, then use linear interpolation and endpoint extrapolation.
 An infinite window-start estimate selects history from frame 0. All received
 frames remain buffered so history can move backward.
 
-For MIDI scheduling only, a segment whose anchor times are equal or decreasing
-returns positive infinity. Ordered release waits until a usable estimate becomes
-available. Exact anchors still return their stored times, and video-history
-selection retains its original interpolation behavior.
-
 The simulated result time is always `frame_index / 30 + 0.050` seconds;
 event anchor times are `frame_index / 30 + 0.100`. These offsets neither
-accumulate nor depend on measured runtime. Chords release in score order
-at the first result time when due, with every overdue chord released together.
+accumulate nor depend on measured runtime. Each new threshold trigger schedules
+its own chord at the event time (100 ms after its image timestamp), whether DP
+accepts or rejects the event. DP acceptance still controls anchor updates and
+window recentering.
+MIDI releases at the first result time when due, without waiting for earlier
+score chords. Each score occurrence plays at most once; later triggers do not
+reschedule a pending or emitted note. Interpolation is used only to select video
+history and never creates MIDI notes for missing triggers.
 MIDI uses this actual release time and a one-second duration at velocity 64.
 The loop stops after the last frame without flushing future onsets; emitted
 notes retain their full duration.
@@ -1894,7 +1903,15 @@ preserved by default; set
 `evaluation.remove_inference_artifacts=true` to remove the discovered NPZs
 only after the metrics JSON is written successfully.
 
-Decoded onsets default to `evaluation.onset_mode=first_threshold`: the first
+When an NPZ contains `release_time`, evaluation uses those actual MIDI onset
+times automatically, just like sonify. NaN releases count as missed chords,
+even if their model probabilities crossed the threshold. Release times are
+absolute seconds; no prediction offset or processing latency is added, and
+fractional-frame precision is retained for timing errors and tolerances.
+Ground truth remains the target-array peak, as in the existing metrics.
+
+For artifacts without `release_time`, decoded onsets default to
+`evaluation.onset_mode=first_threshold`: the first
 valid frame whose probability reaches the inclusive onset threshold is the
 detection moment. The reported onset is scheduled in the future using
 `horizon_seconds = target_radius_seconds * (1 - onset_threshold)` and
@@ -1930,7 +1947,12 @@ column; all-zero columns are excluded. Null predictions lower `C-AR` and
 coverage but do not enter MAE. The `airpiano-evaluation-v8` report persists
 `onset_threshold`, `target_radius_seconds`, and the derived
 `prediction_horizon_seconds`; it exposes scheduled onset timing rather than
-a separate crossing timestamp.
+a separate crossing timestamp. For recorded releases, `onset_mode` is
+`release_time` and the additional prediction horizon is zero. Mixed artifact
+trees report `onset_mode=mixed` and a null summary horizon; detailed artifact
+reports identify each applied mode and horizon. `onset_source_counts` records
+how many artifacts used each source, including in summary-only output.
+Threshold and radius settings apply only to probability decoding.
 
 The macro report also includes `chord_acc_variance`, the population variance
 (`ddof=0`) across non-null per-artifact ChordAcc values. Each artifact has

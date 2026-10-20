@@ -8,3 +8,16 @@ output:
 dataset:
   random_pitch_shift_semitones: 6
   random_duration_scale_factors: [0.5, 1.0, 2.0]
+
+full_song_real_time:
+  split_file: assets/splits/real1.txt
+
+visualize:
+  root: ${full_song_real_time.output_dir}
+
+sonify:
+  root: ${full_song_real_time.output_dir}
+
+evaluation:
+  root: ${full_song_real_time.output_dir}
+  summary_only: false

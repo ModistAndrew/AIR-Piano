@@ -115,7 +115,7 @@ class RealTimeControllerTest(unittest.TestCase):
         np.testing.assert_array_equal(controller.prev, np.zeros(61))
         np.testing.assert_array_equal(controller.cur, np.zeros(61))
         self.assertEqual(controller.best_score, 0)
-        self.assertEqual(controller.next_unreleased, 1)
+        self.assertEqual(controller.pending_releases, {})
         self.assertEqual(controller.chord_window_start, 1)
         self.assertEqual(controller.video_history_start, 0)
         self.assertEqual(controller.release_records, [])
@@ -203,11 +203,8 @@ class RealTimeControllerTest(unittest.TestCase):
     def test_anchor_estimates_require_two_anchors_except_at_exact_anchor(self) -> None:
         controller = RealTimeController(_chords())
         self.assertTrue(math.isinf(controller.estimate_time(0)))
-        self.assertTrue(math.isinf(controller.estimate_time(0, for_midi=True)))
         controller.chords[10].anchor_time = 3.0
         self.assertEqual(controller.estimate_time(9 * 24), 3.0)
-        self.assertEqual(controller.estimate_time(9 * 24, for_midi=True), 3.0)
-        self.assertTrue(math.isinf(controller.estimate_time(0, for_midi=True)))
         self.assertTrue(math.isinf(controller.estimate_time(8 * 24)))
         self.assertTrue(math.isinf(controller.estimate_time(10 * 24)))
 
@@ -229,27 +226,93 @@ class RealTimeControllerTest(unittest.TestCase):
         self.assertAlmostEqual(controller.estimate_time(0), 8.8)
         self.assertAlmostEqual(controller.estimate_time(40 * 24), 0.8)
 
-    def test_midi_guard_blocks_nonpositive_segments_but_preserves_exact_anchors(self) -> None:
-        for later_time in (7.0, 3.0):
-            with self.subTest(later_time=later_time):
-                controller = RealTimeController(_chords())
-                controller.chords[10].anchor_time = 7.0
-                controller.chords[30].anchor_time = later_time
-                self.assertEqual(
-                    controller.estimate_time(9 * 24, for_midi=True), 7.0
-                )
-                self.assertEqual(
-                    controller.estimate_time(29 * 24, for_midi=True), later_time
-                )
-                for subdivision in (0, 19 * 24, 40 * 24):
-                    self.assertTrue(math.isinf(
-                        controller.estimate_time(subdivision, for_midi=True)
-                    ))
-                    self.assertTrue(math.isfinite(
-                        controller.estimate_time(subdivision)
-                    ))
+    def test_successful_single_anchor_releases_at_first_available_result_time(self) -> None:
+        controller = RealTimeController(_chords())
+        scores = np.zeros(50)
+        scores[9] = 0.8
+        event, = controller.collect_events(scores, window_start=1, frame_index=30)
+        self.assertTrue(controller.process_event(event, frame_index=30))
+        self.assertEqual(controller.pending_releases, {10: 1.1})
+        self.assertEqual(controller.release_due(frame_index=30), [])
+        self.assertEqual(controller.release_due(frame_index=31), [])
 
-    def test_midi_guard_does_not_change_history_selection(self) -> None:
+        released = controller.release_due(frame_index=32)
+        self.assertEqual([record["chord_id"] for record in released], [10])
+        self.assertAlmostEqual(released[0]["predicted_onset"], 1.1)
+        self.assertAlmostEqual(released[0]["frame_time"], 32 / 30)
+        self.assertAlmostEqual(released[0]["release_time"], 32 / 30 + 0.05)
+        self.assertEqual(released[0]["duration"], 1.0)
+        self.assertFalse(controller.chords[1].released)
+        self.assertTrue(controller.chords[10].released)
+        self.assertEqual(controller.pending_releases, {})
+        self.assertEqual(controller.release_due(frame_index=100), [])
+
+    def test_failed_trigger_is_scheduled_without_interpolating_missing_chords(self) -> None:
+        controller = RealTimeController(_chords())
+        scores = np.zeros(50)
+        scores[[9, 11]] = 0.8
+        events = controller.collect_events(scores, window_start=1, frame_index=0)
+        self.assertEqual(
+            [controller.process_event(event, frame_index=0) for event in events],
+            [True, False],
+        )
+        self.assertTrue(controller.chords[12].triggered)
+        self.assertIsNone(controller.chords[12].anchor_time)
+        self.assertEqual(controller.pending_releases, {10: 0.1, 12: 0.1})
+        released = controller.release_due(frame_index=30)
+        self.assertEqual([record["chord_id"] for record in released], [10, 12])
+        self.assertFalse(controller.chords[11].released)
+        self.assertTrue(controller.chords[12].released)
+
+    def test_repeated_success_preserves_pending_target_and_releases_only_once(self) -> None:
+        controller = RealTimeController(_chords())
+        self.assertTrue(controller.process_event(Event(10, 0.1, 0.8), frame_index=0))
+        self.assertEqual(controller.release_due(frame_index=1), [])
+        self.assertEqual(
+            [
+                controller.process_event(Event(chord_id, 2 / 30 + 0.1, 0.8), 2)
+                for chord_id in (8, 9, 10)
+            ],
+            [False, True, True],
+        )
+        self.assertEqual(controller.pending_releases[10], 0.1)
+        self.assertAlmostEqual(controller.chords[10].anchor_time, 2 / 30 + 0.1)
+        released = controller.release_due(frame_index=2)
+        self.assertEqual([record["chord_id"] for record in released], [10])
+        self.assertEqual(released[0]["predicted_onset"], 0.1)
+        frozen = released[0].copy()
+
+        self.assertFalse(controller.process_event(Event(8, 0.2, 0.8), 3))
+        self.assertEqual(controller.pending_releases[8], 2 / 30 + 0.1)
+        self.assertFalse(controller.process_event(Event(10, 0.2, 0.8), 3))
+        self.assertNotIn(10, controller.pending_releases)
+
+        successes = [
+            controller.process_event(Event(chord_id, 4 / 30 + 0.1, 0.8), 4)
+            for chord_id in range(1, 11)
+        ]
+        self.assertTrue(successes[-1])
+        self.assertTrue(successes[7])
+        self.assertAlmostEqual(controller.chords[8].anchor_time, 4 / 30 + 0.1)
+        self.assertEqual(controller.pending_releases[8], 2 / 30 + 0.1)
+        self.assertNotIn(10, controller.pending_releases)
+        controller.release_due(frame_index=10)
+        self.assertEqual(
+            [record for record in controller.release_records if record["chord_id"] == 10],
+            [frozen],
+        )
+        rejected_first = [
+            record for record in controller.release_records if record["chord_id"] == 8
+        ]
+        self.assertEqual(len(rejected_first), 1)
+        self.assertEqual(rejected_first[0]["predicted_onset"], 2 / 30 + 0.1)
+        self.assertFalse(
+            controller.process_event(Event(8, 11 / 30 + 0.1, 0.8), 11)
+        )
+        self.assertNotIn(8, controller.pending_releases)
+        self.assertEqual(controller.release_due(frame_index=20), [])
+
+    def test_nonpositive_segments_still_select_video_history(self) -> None:
         for first_time, expected_history in ((1.0, 30), (2.0, 45)):
             with self.subTest(first_time=first_time):
                 controller = RealTimeController(_chords(100))
@@ -257,46 +320,9 @@ class RealTimeControllerTest(unittest.TestCase):
                 controller.process_event(Event(51, 1.0, 0.8), frame_index=60)
                 self.assertEqual(controller.chord_window_start, 26)
                 self.assertEqual(controller.video_history_start, expected_history)
-                self.assertTrue(math.isinf(
-                    controller.estimate_time(25 * 24, for_midi=True)
-                ))
-
-    def test_later_positive_anchor_resumes_releases_at_current_time(self) -> None:
-        controller = RealTimeController(_chords())
-        controller.process_event(Event(1, 0.1, 0.8), frame_index=0)
-        controller.process_event(Event(2, 0.1, 0.8), frame_index=0)
-        released = controller.release_due(frame_index=4)
-        self.assertEqual([record["chord_id"] for record in released], [1, 2])
-        frozen = [record.copy() for record in released]
-        self.assertEqual(controller.release_due(frame_index=5), [])
-
-        self.assertTrue(
-            controller.process_event(Event(3, 0.3, 0.8), frame_index=6)
-        )
-        self.assertEqual(controller.release_due(frame_index=6), [])
-        following = controller.release_due(frame_index=15)
-        self.assertEqual([record["chord_id"] for record in following], [3, 4])
-        np.testing.assert_allclose(
-            [record["predicted_onset"] for record in following], [0.3, 0.5]
-        )
-        for record in following:
-            self.assertAlmostEqual(record["release_time"], 0.55)
-        self.assertEqual(controller.release_records[:2], frozen)
-
-    def test_invalid_interior_segment_blocks_later_due_chords_in_order(self) -> None:
-        controller = RealTimeController(_chords())
-        for chord_id, time in ((1, 0.1), (3, 0.3), (5, 0.2), (7, 0.4)):
-            controller.chords[chord_id].anchor_time = time
-        released = controller.release_due(frame_index=30)
-        self.assertEqual([record["chord_id"] for record in released], [1, 2, 3])
-        self.assertEqual(controller.next_unreleased, 4)
-        self.assertFalse(controller.chords[5].released)
-        self.assertFalse(controller.chords[7].released)
-        self.assertEqual(controller.estimate_time(4 * 24, for_midi=True), 0.2)
-        self.assertAlmostEqual(
-            controller.estimate_time(5 * 24, for_midi=True), 0.3
-        )
-        self.assertEqual(controller.release_due(frame_index=60), [])
+                self.assertAlmostEqual(
+                    controller.estimate_time(25 * 24), expected_history / 30
+                )
 
     def test_history_resets_for_infinity_and_can_move_backward(self) -> None:
         controller = RealTimeController(_chords(100))
@@ -324,43 +350,35 @@ class RealTimeControllerTest(unittest.TestCase):
         controller.process_event(Event(52, 10.6, 0.8), frame_index=4)
         self.assertEqual(controller.video_history_start, 0)
 
-    def test_releases_stop_at_unknown_earliest_chord(self) -> None:
+    def test_stored_anchors_alone_do_not_schedule_notes(self) -> None:
         controller = RealTimeController(_chords())
+        for chord_id, time in ((1, 0.1), (3, 0.3), (5, 0.2), (7, 0.4)):
+            controller.chords[chord_id].anchor_time = time
+        self.assertEqual(controller.pending_releases, {})
         self.assertEqual(controller.release_due(frame_index=30), [])
-        controller.chords[2].anchor_time = 0.0
-        self.assertEqual(controller.release_due(frame_index=30), [])
-        self.assertFalse(controller.chords[2].released)
+        self.assertFalse(any(chord.released for chord in controller.chords[1:]))
 
-        controller.chords[1].anchor_time = 0.0
-        released = controller.release_due(frame_index=30)
-        self.assertEqual([record["chord_id"] for record in released], [1, 2])
-        self.assertEqual(controller.next_unreleased, 3)
-        self.assertFalse(controller.chords[3].released)
-        self.assertEqual(controller.release_due(frame_index=31), [])
-
-    def test_overdue_release_batch_uses_now_and_freezes_emitted_times(self) -> None:
+    def test_release_batch_uses_frozen_event_times_without_querying_anchors(self) -> None:
         controller = RealTimeController(_chords())
-        controller.chords[1].anchor_time = 0.1
-        controller.chords[2].anchor_time = 0.2
-        released = controller.release_due(frame_index=8)
-        self.assertEqual([record["chord_id"] for record in released], [1, 2, 3])
+        controller.process_event(Event(10, 0.1, 0.8), frame_index=0)
+        controller.process_event(Event(11, 0.2, 0.8), frame_index=3)
+        controller.chords[1].anchor_time = 100.0
+        controller.chords[2].anchor_time = -100.0
+        controller.chords[10].anchor_time = 50.0
+        previous_dp = controller.prev.copy()
+        with patch.object(controller, "estimate_time", side_effect=AssertionError):
+            released = controller.release_due(frame_index=8)
+        self.assertEqual([record["chord_id"] for record in released], [10, 11])
         for index, record in enumerate(released):
             self.assertEqual(record["frame_index"], 8)
             self.assertAlmostEqual(record["frame_time"], 8 / 30)
             self.assertAlmostEqual(record["predicted_onset"], (index + 1) / 10)
             self.assertAlmostEqual(record["release_time"], 8 / 30 + 0.05)
             self.assertEqual(record["duration"], 1.0)
-        frozen = [record.copy() for record in released]
-        previous_dp = controller.prev.copy()
-
-        controller.chords[2].anchor_time = 0.15
-        following = controller.release_due(frame_index=9)
-        self.assertGreater(len(following), 0)
-        self.assertEqual(following[0]["chord_id"], 4)
-        self.assertAlmostEqual(following[0]["release_time"], 0.35)
-        self.assertEqual(controller.release_records[:3], frozen)
+        self.assertEqual(controller.pending_releases, {})
+        self.assertFalse(controller.chords[12].released)
         np.testing.assert_array_equal(controller.prev, previous_dp)
-        self.assertEqual(controller.best_score, 0)
+        self.assertEqual(controller.best_score, 2)
 
 
 class RealTimeInferenceTest(unittest.TestCase):
@@ -389,7 +407,11 @@ class RealTimeInferenceTest(unittest.TestCase):
                 self.assertEqual(len(chord_ids), 50)
                 torch.testing.assert_close(presence, song.presence[frames])
             self.assertEqual(controller.best_score, 2)
-            self.assertEqual(controller.release_records, [])
+            self.assertEqual(
+                [record["chord_id"] for record in controller.release_records], [40, 41, 65]
+            )
+            self.assertTrue(controller.chords[65].released)
+            self.assertIsNone(controller.chords[65].anchor_time)
 
             with np.load(output, allow_pickle=False) as artifact:
                 self.assertEqual(artifact["probability"].shape, (4, 90))
@@ -402,16 +424,27 @@ class RealTimeInferenceTest(unittest.TestCase):
                 self.assertTrue(bool((artifact["probability"][0, 50:] == 0).all()))
                 self.assertTrue(bool((artifact["probability"][1, :15] == 0).all()))
                 self.assertLess(float(artifact["probability"][2, 39]), 0.5)
-                self.assertTrue(bool(np.isnan(artifact["predicted_onset"]).all()))
-                self.assertTrue(bool(np.isnan(artifact["release_time"]).all()))
-                self.assertTrue(bool((artifact["release_frame_index"] == -1).all()))
+                self.assertNotIn("next_unreleased", artifact.files)
+                np.testing.assert_allclose(artifact["predicted_onset"][39:41], 0.1)
+                np.testing.assert_allclose(
+                    artifact["release_time"][39:41], 2 / 30 + 0.05
+                )
+                self.assertEqual(artifact["release_frame_index"][39:41].tolist(), [2, 2])
+                self.assertEqual(artifact["event_success"].tolist(), [True, True, False])
+                self.assertAlmostEqual(float(artifact["predicted_onset"][64]), 1 / 30 + 0.1)
+                self.assertAlmostEqual(float(artifact["release_time"][64]), 0.15)
+                self.assertEqual(int(artifact["release_frame_index"][64]), 3)
+                self.assertEqual(
+                    np.flatnonzero(np.isfinite(artifact["release_time"])).tolist(),
+                    [39, 40, 64],
+                )
 
             loaded = load_artifact(output)
             self.assertEqual(loaded.probability.shape, (4, 90))
             self.assertTrue(output.with_suffix(".mid").is_file())
 
     def test_finite_end_preserves_one_second_notes_without_flushing_future_onsets(self) -> None:
-        model = _ScheduledModel({0: (1,), 1: (2,)})
+        model = _ScheduledModel({0: (1,), 1: (2,), 3: (3,)})
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "song.npz"
             controller = self._infer(model, _song(), output)
@@ -421,6 +454,7 @@ class RealTimeInferenceTest(unittest.TestCase):
             self.assertAlmostEqual(controller.chords[1].anchor_time, 0.1)
             self.assertAlmostEqual(controller.chords[2].anchor_time, 1 / 30 + 0.1)
             self.assertFalse(controller.chords[3].released)
+            self.assertEqual(controller.pending_releases, {3: 0.2})
             with np.load(output, allow_pickle=False) as artifact:
                 np.testing.assert_allclose(artifact["release_time"][:2], [2 / 30 + 0.05, 0.15])
                 self.assertTrue(bool(np.isnan(artifact["release_time"][2:]).all()))

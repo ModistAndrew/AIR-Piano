@@ -81,7 +81,7 @@ class RealTimeController:
         self.prev = np.zeros(self.chord_count + 1)
         self.cur = np.zeros(self.chord_count + 1)
         self.best_score = 0.0
-        self.next_unreleased = 1
+        self.pending_releases: dict[int, float] = {}
         self.event_records: list[dict[str, Any]] = []
         self.release_records: list[dict[str, Any]] = []
 
@@ -117,9 +117,13 @@ class RealTimeController:
             self.best_score = float(match_score)
         self.prev, self.cur = self.cur, self.prev
 
+        chord = self.chords[event.id]
+        if not chord.released:
+            self.pending_releases.setdefault(event.id, event.time)
+
         final_start = self.chord_count - self.window_size + 1
         if success:
-            self.chords[event.id].anchor_time = event.time
+            chord.anchor_time = event.time
             self.chord_window_start = max(
                 1, min(event.id - self.window_size // 2, final_start)
             )
@@ -149,10 +153,8 @@ class RealTimeController:
         })
         return success
 
-    def estimate_time(
-        self, score_subdivision: float, *, for_midi: bool = False
-    ) -> float:
-        """Estimate time; MIDI segments require increasing anchor times."""
+    def estimate_time(self, score_subdivision: float) -> float:
+        """Estimate time from stored anchors for video-history selection."""
 
         anchors = sorted(
             (chord.score_subdivision, chord.anchor_time)
@@ -168,23 +170,18 @@ class RealTimeController:
         right = max(1, min(right, len(anchors) - 1))
         s_a, t_a = anchors[right - 1]
         s_b, t_b = anchors[right]
-        if for_midi and t_b <= t_a:
-            return math.inf
         return t_a + (score_subdivision - s_a) * (t_b - t_a) / (s_b - s_a)
 
     def release_due(self, frame_index: int) -> list[dict[str, Any]]:
-        """Emit all due chords in order at this frame's simulated result time."""
+        """Emit due triggers at this frame's simulated result time."""
 
         frame_time = frame_index / self.fps
         now = frame_time + self.processing_latency
         records = []
-        while self.next_unreleased <= self.chord_count:
-            chord = self.chords[self.next_unreleased]
-            target_time = self.estimate_time(
-                chord.score_subdivision, for_midi=True
-            )
+        for chord_id, target_time in list(self.pending_releases.items()):
             if target_time > now:
-                break
+                continue
+            chord = self.chords[chord_id]
             record = {
                 "chord_id": chord.id,
                 "pitches": chord.pitches,
@@ -197,7 +194,7 @@ class RealTimeController:
             self.release_records.append(record)
             records.append(record)
             chord.released = True
-            self.next_unreleased += 1
+            del self.pending_releases[chord_id]
         return records
 
 
@@ -226,7 +223,6 @@ def _controller_arrays(controller: RealTimeController) -> dict[str, np.ndarray]:
         ),
         "window_size": np.asarray(controller.window_size),
         "best_score": np.asarray(controller.best_score),
-        "next_unreleased": np.asarray(controller.next_unreleased),
         "final_chord_window_start": np.asarray(controller.chord_window_start),
         "final_video_history_start": np.asarray(controller.video_history_start),
         "dp_prev": controller.prev,

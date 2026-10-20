@@ -325,7 +325,7 @@ class MidiTest(unittest.TestCase):
             midi_path = root / "notes.mid"
             beat_path = root / "beats.txt"
             beat_path.write_text(
-                "1.0\t4\n2.0\t1\n3.0\t2\n",
+                "0.5\t3\n1.0\t4\n1.5\t4\n2.0\t1\n2.5\t1\n3.0\t2\n",
                 encoding="utf-8",
             )
             midi = mido.MidiFile(type=0, ticks_per_beat=1000)
@@ -364,7 +364,7 @@ class MidiTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             beat_path = Path(directory) / "beats.txt"
             beat_path.write_text(
-                "1.0 1\n2.0 2\n3.0 3\n",
+                "0.5 0\n1.0 1\n1.5 1\n2.0 2\n2.5 2\n3.0 3\n",
                 encoding="utf-8",
             )
             reader = MidoNoteReader(
@@ -431,14 +431,14 @@ class MidiTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             beat_path = Path(directory) / "ticks.txt"
             beat_path.write_text(
-                "1.0\n1.1\n1.25\n1.5\n1.9\n",
+                "1.0 1 4\n\n1.1\n1.25 2\n\n1.5\n1.9 3 4\n",
                 encoding="utf-8",
             )
             reader = MidoNoteReader(quantization=True, subdivision=4)
             tick_times, tick_positions = reader._read_ticks(beat_path)
 
-        self.assertEqual(tick_times, (1.0, 1.1, 1.25, 1.5, 1.9))
-        self.assertEqual(tick_positions, (0, 1, 2, 3, 4))
+        self.assertEqual(tick_times, (1.1, 1.5))
+        self.assertEqual(tick_positions, (0, 1))
 
     def test_reader_filters_pre_subdivided_tick_offsets(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -454,12 +454,12 @@ class MidiTest(unittest.TestCase):
             )
             tick_times, tick_positions = reader._read_ticks(beat_path)
 
-        self.assertEqual(tick_times, (1.0, 1.2, 1.4))
-        self.assertEqual(tick_positions, (0, 2, 4))
+        self.assertEqual(tick_times, (1.1, 1.5))
+        self.assertEqual(tick_positions, (0, 2))
 
     def test_reader_rejects_inconsistent_beat_row_widths(self) -> None:
         invalid_contents = (
-            "1.0\n2.0 2\n",
+            "0.5\n1.0\n1.5\n2.0 2\n",
             "1.0 1 4\n2.0 2 4\n",
         )
         for contents in invalid_contents:
@@ -478,7 +478,7 @@ class MidiTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             beat_path = Path(directory) / "beats.txt"
             beat_path.write_text(
-                "1.0 1\n2.0 2\n3.0 3\n",
+                "0.5 0\n1.0 1\n1.5 1\n2.0 2\n2.5 2\n3.0 3\n",
                 encoding="utf-8",
             )
             reader = MidoNoteReader(
@@ -501,7 +501,7 @@ class MidiTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             beat_path = Path(directory) / "beats.txt"
             beat_path.write_text(
-                "1.0 1\n2.0 2\n3.0 3\n",
+                "0.5 0\n1.0 1\n1.5 1\n2.0 2\n2.5 2\n3.0 3\n",
                 encoding="utf-8",
             )
             reader = MidoNoteReader(

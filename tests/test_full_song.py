@@ -160,6 +160,19 @@ class FullSongControllerTest(unittest.TestCase):
                     str(artifact["record_id"]), "subject/performance.v1"
                 )
                 self.assertAlmostEqual(float(artifact["loss"]), loss)
+                self.assertEqual(
+                    artifact["frame_chord_window_start"].tolist(),
+                    [pitches[0] - 59 for _, pitches in model.calls],
+                )
+                self.assertEqual(
+                    artifact["frame_video_history_start"].tolist(),
+                    [frames[0] for frames, _ in model.calls],
+                )
+                self.assertEqual(float(artifact["fps"]), 10.0)
+                np.testing.assert_allclose(artifact["frame_time"], np.arange(6) / 10)
+                self.assertEqual(int(artifact["window_size"]), 4)
+                self.assertEqual(int(artifact["final_chord_window_start"]), 3)
+                self.assertEqual(int(artifact["final_video_history_start"]), 1)
 
             loaded = load_artifact(output)
             self.assertEqual(loaded.probability.shape, (6, 6))
@@ -193,6 +206,15 @@ class FullSongControllerTest(unittest.TestCase):
             )
             with np.load(output, allow_pickle=False) as artifact:
                 self.assertTrue(bool((artifact["probability"] > 0.0).all()))
+                np.testing.assert_array_equal(
+                    artifact["frame_chord_window_start"], np.ones(4)
+                )
+                np.testing.assert_array_equal(
+                    artifact["frame_video_history_start"], np.zeros(4)
+                )
+                self.assertEqual(int(artifact["window_size"]), 4)
+                self.assertEqual(int(artifact["final_chord_window_start"]), 1)
+                self.assertEqual(int(artifact["final_video_history_start"]), 0)
 
     def test_cross_entropy_keeps_pre_onset_frames_and_uses_softmax(self) -> None:
         base = _song(3)
