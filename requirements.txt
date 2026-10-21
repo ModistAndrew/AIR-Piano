@@ -42,3 +42,7 @@ beat-this==1.1.0
 soundfile==0.14.0
 # Required by Beat This DBN postprocessing; matches v2n's installed Git revision.
 madmom @ git+https://github.com/CPJKU/madmom.git@27f032e8947204902c675e5e341a3faf5dc86dae
+
+# MIDI split similarity checker (scripts/check_midi_similarity.py) only.
+numba==0.66.0
+parangonar==3.4.0

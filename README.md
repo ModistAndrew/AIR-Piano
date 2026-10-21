@@ -22,6 +22,16 @@ Update the five `data.*_root` paths in [configs/default.yaml](configs/default.ya
 
 Split files contain one relative record ID per line, without a file extension.
 
+### Check MIDI split similarity
+
+Use `scripts/check_midi_similarity.py` to check two split files for exact or composition-level MIDI overlap:
+
+```bash
+python scripts/check_midi_similarity.py splits/default_train.txt splits/default_valid.txt
+```
+
+Both positional arguments must be split-file paths. MIDIs default to `/storage/jinxuan/data/AirPianoFull/MIDI`; pass `--midi-root /path/to/MIDI` to use another root. Add `--skip-missing` to compare the available files when a split is incomplete. The script prints likely and possible matches with scores, coverage, transposition, and aligned time ranges.
+
 ## Dependencies
 
 The project uses Python 3.11. FFmpeg/ffprobe are required. See [requirements.txt](requirements.txt) for dependencies (a fresh installation has not been tested).
