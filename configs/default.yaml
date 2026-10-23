@@ -106,7 +106,7 @@ test:
   output_dir: ${output.dir}/test
 
 full_song_real_time:
-  split_file: splits/air_tabletop.txt
+  split_file: splits/air_tabletop_valid.txt
   checkpoint: ${output.dir}/checkpoints/last.pt
   output_dir: ${output.dir}/full_song_real_time
 

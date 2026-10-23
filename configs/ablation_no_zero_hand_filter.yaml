@@ -1,0 +1,11 @@
+defaults:
+  - default
+  - _self_
+
+output:
+  project_name: airpiano_no_zero_hand_filter
+
+dataset:
+  slicer:
+    # Accept windows even when every frame has no detected hands.
+    max_zero_hand_fraction: 1.0

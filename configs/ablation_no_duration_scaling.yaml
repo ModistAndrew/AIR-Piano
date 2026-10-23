@@ -1,0 +1,10 @@
+defaults:
+  - default
+  - _self_
+
+output:
+  project_name: airpiano_no_duration_scaling
+
+dataset:
+  augmenter:
+    random_duration_scale_factors: []

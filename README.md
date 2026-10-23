@@ -80,6 +80,30 @@ wandb login
 python run.py stage=train device=cuda:0
 ```
 
+### Ablations
+
+All ablation configs inherit [configs/default.yaml](configs/default.yaml), changing only the indicated settings and the run name. Each saves checkpoints and logs under its own `outputs/airpiano_*` directory.
+
+```bash
+# Disable zero-hand filtering by accepting up to 100% missing-hand frames.
+python run.py --config-name ablation_no_zero_hand_filter stage=train device=cuda:0
+
+# Disable MIDI pitch shifts and duration scaling; keep hand-boundary jitter.
+python run.py --config-name ablation_no_midi_augmentation stage=train device=cuda:0
+
+# Disable random hand-boundary shifts.
+python run.py --config-name ablation_no_hand_shift stage=train device=cuda:0
+
+# Disable random duration scaling.
+python run.py --config-name ablation_no_duration_scaling stage=train device=cuda:0
+
+# Use 25 chords per window instead of 50; keep the default 12-chord stride.
+python run.py --config-name ablation_chord_window_25 stage=train device=cuda:0
+
+# Use 100 chords per window instead of 50; keep the default 12-chord stride.
+python run.py --config-name ablation_chord_window_100 stage=train device=cuda:0
+```
+
 ## Inference
 
 ### Required files

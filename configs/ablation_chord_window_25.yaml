@@ -1,0 +1,11 @@
+defaults:
+  - default
+  - _self_
+
+output:
+  project_name: airpiano_chord_window_25
+
+dataset:
+  slicer:
+    # Window length counts chords, despite the legacy parameter name.
+    segment_frames: 25

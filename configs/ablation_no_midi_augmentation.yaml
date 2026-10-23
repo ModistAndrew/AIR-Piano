@@ -1,0 +1,12 @@
+defaults:
+  - default
+  - _self_
+
+output:
+  project_name: airpiano_no_midi_augmentation
+
+dataset:
+  augmenter:
+    # Preserve the default hand-boundary jitter.
+    random_pitch_shift_semitones: 0
+    random_duration_scale_factors: []
