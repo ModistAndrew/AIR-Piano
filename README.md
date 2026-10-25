@@ -94,6 +94,9 @@ python run.py --config-name ablation_no_midi_augmentation stage=train device=cud
 # Disable random hand-boundary shifts.
 python run.py --config-name ablation_no_hand_shift stage=train device=cuda:0
 
+# Disable random pitch shifts.
+python run.py --config-name ablation_no_pitch_shift stage=train device=cuda:0
+
 # Disable random duration scaling.
 python run.py --config-name ablation_no_duration_scaling stage=train device=cuda:0
 

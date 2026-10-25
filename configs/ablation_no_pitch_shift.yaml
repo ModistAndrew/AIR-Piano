@@ -1,0 +1,10 @@
+defaults:
+  - default
+  - _self_
+
+output:
+  project_name: airpiano_no_pitch_shift
+
+dataset:
+  augmenter:
+    random_pitch_shift_semitones: 0
