@@ -57,13 +57,11 @@ class RealTimeController:
         target_radius_seconds: float = 0.2,
     ) -> None:
         self.onset_prediction_offset = float(target_radius_seconds) * (1.0 - 0.5)
-        self.window_size = int(window_size)
         self.fps = float(fps)
         self.chord_count = len(score_chords)
-        if self.chord_count < self.window_size:
-            raise ValueError(
-                f"full_song_real_time requires at least {self.window_size} chords"
-            )
+        if not self.chord_count:
+            raise ValueError("full_song_real_time requires at least one chord")
+        self.window_size = min(int(window_size), self.chord_count)
         positions = [chord.time_ticks for chord in score_chords]
         if any(a >= b for a, b in zip(positions, positions[1:])):
             raise ValueError(

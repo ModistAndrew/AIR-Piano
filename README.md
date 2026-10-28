@@ -30,8 +30,6 @@ Use `scripts/check_midi_similarity.py` to check two split files for exact or com
 python scripts/check_midi_similarity.py splits/default_train.txt splits/default_valid.txt
 ```
 
-Both positional arguments must be split-file paths. MIDIs default to `/storage/jinxuan/data/AirPianoFull/MIDI`; pass `--midi-root /path/to/MIDI` to use another root. Add `--skip-missing` to compare the available files when a split is incomplete. The script prints likely and possible matches with scores, coverage, transposition, and aligned time ranges.
-
 ## Dependencies
 
 The project uses Python 3.11. FFmpeg/ffprobe are required. See [requirements.txt](requirements.txt) for dependencies (a fresh installation has not been tested).
@@ -82,7 +80,7 @@ python run.py stage=train device=cuda:0
 
 ### Ablations
 
-All ablation configs inherit [configs/default.yaml](configs/default.yaml), changing only the indicated settings and the run name. Each saves checkpoints and logs under its own `outputs/airpiano_*` directory.
+All ablation configs inherit [configs/default.yaml](configs/default.yaml), changing only the indicated settings and the run name.
 
 ```bash
 # Disable zero-hand filtering by accepting up to 100% missing-hand frames.
@@ -105,6 +103,12 @@ python run.py --config-name ablation_chord_window_25 stage=train device=cuda:0
 
 # Use 100 chords per window instead of 50; keep the default 12-chord stride.
 python run.py --config-name ablation_chord_window_100 stage=train device=cuda:0
+
+# Allow every tick offset at 24 ticks per beat, with 96 duration bins.
+python run.py --config-name ablation_all_tick_offsets stage=train device=cuda:0
+
+# Use 12 ticks per beat and 48 duration bins, retaining a four-beat limit.
+python run.py --config-name ablation_coarse_ticks_12 stage=train device=cuda:0
 ```
 
 ## Inference

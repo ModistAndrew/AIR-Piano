@@ -8,6 +8,8 @@ from airpiano.preprocessing.wilor.backend import WiLoRBackend
 from airpiano.preprocessing.wilor.extraction import (
     completed_output_is_valid,
     process_video,
+    read_manifest,
+    validate_cache_fast_mode,
 )
 from airpiano.utils import resolve_path
 
@@ -33,10 +35,12 @@ class VideoToWiLoR:
         hand_batch_size: int = 16,
         chunk_frames: int = 512,
         target_fps: float | None = None,
+        fast: bool = False,
     ) -> None:
         repository = resolve_path(wilor_repo)
         self.chunk_frames = int(chunk_frames)
         self.target_fps = target_fps
+        self.fast = bool(fast)
         self._backend = WiLoRBackend(
             wilor_repo=repository,
             checkpoint=resolve_path(checkpoint),
@@ -57,6 +61,7 @@ class VideoToWiLoR:
             rescale_factor=rescale_factor,
             frame_batch_size=frame_batch_size,
             hand_batch_size=hand_batch_size,
+            fast=self.fast,
         )
 
     def run(
@@ -72,6 +77,7 @@ class VideoToWiLoR:
         # Reuse precedes source lookup so retained raw caches remain useful after
         # the large input video has been removed. Schema mismatches raise here.
         if not overwrite and completed_output_is_valid(output):
+            validate_cache_fast_mode(read_manifest(output), self.fast)
             return output
 
         video = resolve_path(video_path)

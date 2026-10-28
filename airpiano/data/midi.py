@@ -22,13 +22,23 @@ class MidoNoteReader:
     seconds. Repeated notes on the same channel and pitch are paired FIFO;
     sustain-pedal messages are deliberately ignored. Optional beat-grid
     quantization adds tick coordinates without replacing the seconds clock.
+    ``one_column_tick_stride`` downsamples subdivision timestamps before
+    assigning tick coordinates; two-column beat timestamps are unaffected.
     """
 
     def __init__(
         self,
         subdivision: int = 24,
         allowed_tick_offsets: Sequence[int] = DEFAULT_TICK_OFFSETS,
+        one_column_tick_stride: int = 1,
     ) -> None:
+        if (
+            isinstance(one_column_tick_stride, bool)
+            or not isinstance(one_column_tick_stride, int)
+            or one_column_tick_stride <= 0
+        ):
+            raise ValueError("one_column_tick_stride must be a positive integer")
+        self.one_column_tick_stride = one_column_tick_stride
         self.subdivision = int(subdivision)
         offsets = tuple(allowed_tick_offsets)
         if len(offsets) != len(set(offsets)):
@@ -49,6 +59,8 @@ class MidoNoteReader:
                 for line in handle
                 if line.strip()
             )
+        if not rows:
+            raise ValueError("beat grid must contain at least two usable timestamps")
         column_counts = {len(row) for row in rows}
         if column_counts not in ({1}, {2}):
             raise ValueError(
@@ -60,25 +72,25 @@ class MidoNoteReader:
         if column_counts == {1}:
             ticks = tuple(
                 (row[0], tick)
-                for tick, row in enumerate(rows)
+                for tick, row in enumerate(rows[::self.one_column_tick_stride])
                 if tick % self.subdivision in offsets
             )
-            return (
-                tuple(time for time, _ in ticks),
-                tuple(tick for _, tick in ticks),
-            )
-
-        beats = tuple(row[0] for row in rows)
-        tick_times = tuple(
-            start + (stop - start) * offset / self.subdivision
-            for start, stop in zip(beats, beats[1:])
-            for offset in offsets
-        ) + (beats[-1],)
-        tick_positions = tuple(
-            beat_index * self.subdivision + offset
-            for beat_index in range(len(beats) - 1)
-            for offset in offsets
-        ) + ((len(beats) - 1) * self.subdivision,)
+            tick_times = tuple(time for time, _ in ticks)
+            tick_positions = tuple(tick for _, tick in ticks)
+        else:
+            beats = tuple(row[0] for row in rows)
+            tick_times = tuple(
+                start + (stop - start) * offset / self.subdivision
+                for start, stop in zip(beats, beats[1:])
+                for offset in offsets
+            ) + (beats[-1],)
+            tick_positions = tuple(
+                beat_index * self.subdivision + offset
+                for beat_index in range(len(beats) - 1)
+                for offset in offsets
+            ) + ((len(beats) - 1) * self.subdivision,)
+        if len(tick_times) < 2:
+            raise ValueError("beat grid must contain at least two usable timestamps")
         return tick_times, tick_positions
 
     def _nearest_allowed_tick(self, position: float) -> int:

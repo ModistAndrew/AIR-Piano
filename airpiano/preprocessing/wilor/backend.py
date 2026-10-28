@@ -49,6 +49,7 @@ class Models:
     detector: Any
     device: Any
     torch: Any
+    fast: bool = False
 
 
 def empty_detection_arrays() -> dict[str, np.ndarray]:
@@ -89,8 +90,10 @@ class WiLoRCropDataset:
         boxes: np.ndarray,
         right: np.ndarray,
         rescale_factor: float,
+        fp16: bool = False,
     ) -> None:
         self.cfg = cfg
+        self.fp16 = fp16
         self.image = image
         self.boxes = boxes.astype(np.float32)
         self.center = (self.boxes[:, 2:4] + self.boxes[:, 0:2]) / 2.0
@@ -148,6 +151,10 @@ class WiLoRCropDataset:
         patch = convert_cvimg_to_tensor(patch[:, :, ::-1])
         for channel in range(min(self.image.shape[2], 3)):
             patch[channel] = (patch[channel] - self.mean[channel]) / self.std[channel]
+        if self.fp16:
+            import torch
+
+            patch = torch.from_numpy(patch).half()
 
         return {
             "img": patch,
@@ -213,6 +220,7 @@ def infer_frame_batch(
             boxes,
             right,
             rescale_factor=rescale_factor,
+            fp16=models.fast,
         )
         crop_items.extend(dataset[index] for index in range(len(dataset)))
         detector_boxes.extend(item[0] for item in detections)
@@ -310,6 +318,7 @@ class WiLoRBackend:
         rescale_factor: float = 2.0,
         frame_batch_size: int = 8,
         hand_batch_size: int = 16,
+        fast: bool = False,
     ) -> None:
         self.wilor_repo = resolve_path(wilor_repo)
         self.checkpoint = resolve_path(checkpoint)
@@ -322,6 +331,7 @@ class WiLoRBackend:
         self.rescale_factor = float(rescale_factor)
         self.frame_batch_size = int(frame_batch_size)
         self.hand_batch_size = int(hand_batch_size)
+        self.fast = bool(fast)
         self._models: Models | None = None
 
     @property
@@ -359,6 +369,13 @@ class WiLoRBackend:
                 cfg=model_cfg,
                 init_renderer=False,
             )
+            if self.fast:
+                # Match the pinned upstream demo's --fast implementation.
+                # Its matmul setting is process-global; benchmark modes separately.
+                torch.set_float32_matmul_precision("high")
+                model = model.half()
+                model.backbone = torch.compile(model.backbone)
+                model.backbone.skip_blocks = True
             device = torch.device(self.device)
             model = model.to(device).eval()
             # This trusted detector asset contains a model object. Older
@@ -373,7 +390,7 @@ class WiLoRBackend:
                     os.environ.pop(environment_key, None)
                 else:
                     os.environ[environment_key] = previous_setting
-        return Models(model, model_cfg, detector, device, torch)
+        return Models(model, model_cfg, detector, device, torch, fast=self.fast)
 
     def build_chunk(
         self,
@@ -437,5 +454,6 @@ class WiLoRBackend:
             "rescale_factor": self.rescale_factor,
             "frame_batch_size": self.frame_batch_size,
             "hand_batch_size": self.hand_batch_size,
+            "fast": self.fast,
             "chunk_frames": int(chunk_frames),
         }

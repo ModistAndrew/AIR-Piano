@@ -444,6 +444,16 @@ def cache_rate_matches(
     )
 
 
+def validate_cache_fast_mode(manifest: dict[str, Any], fast: bool) -> None:
+    """Prevent mixing standard and fast-mode predictions in one raw cache."""
+
+    if bool(manifest.get("inference", {}).get("fast", False)) != fast:
+        raise RuntimeError(
+            "WiLoR cache uses a different fast mode; use a new output "
+            "directory or explicitly overwrite it"
+        )
+
+
 def process_video(
     video_path: str | Path,
     output_dir: str | Path,
@@ -456,9 +466,12 @@ def process_video(
 
     video = resolve_path(video_path)
     output = resolve_path(output_dir)
+    inference_metadata = backend.inference_metadata(chunk_frames)
+    fast = bool(inference_metadata.get("fast", False))
     if overwrite and output.exists():
         shutil.rmtree(output)
     elif completed_output_is_valid(output):
+        validate_cache_fast_mode(read_manifest(output), fast)
         return output
 
     chunks_directory = output / "chunks"
@@ -467,6 +480,8 @@ def process_video(
     success_path.unlink(missing_ok=True)
     manifest_path = output / "manifest.json"
     old_manifest = read_manifest(output) if manifest_path.exists() else None
+    if old_manifest is not None:
+        validate_cache_fast_mode(old_manifest, fast)
 
     video_metadata = video_metadata_for_cache(probe_video(video), target_fps)
     if old_manifest is not None and not cache_rate_matches(
@@ -483,7 +498,7 @@ def process_video(
         "video_path": str(video),
         "video": video_metadata,
         "model": backend.model_metadata(),
-        "inference": backend.inference_metadata(chunk_frames),
+        "inference": inference_metadata,
         "vertex_reconstruction": (
             "Run MANO with saved rotation matrices and betas; reflect vertex x "
             "for is_right=0."

@@ -62,6 +62,7 @@ dataset:
     reader:
       _target_: airpiano.data.midi.MidoNoteReader
       subdivision: 24
+      one_column_tick_stride: 1
       allowed_tick_offsets: [0, 3, 4, 6, 8, 9, 12, 15, 16, 18, 20, 21]
     chord_merger:
       _target_: airpiano.data.midi.InitializerChordMerger
