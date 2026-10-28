@@ -1,0 +1,70 @@
+{
+  "demos": [
+    {
+      "id": "jinxuan-beethoven-8-3",
+      "title": "Beethoven — Sonata No. 8, III",
+      "performer": "Jinxuan",
+      "piece": "beethoven_8_3",
+      "video": "assets/demos/jinxuan-beethoven-8-3.mp4",
+      "poster": "assets/demos/jinxuan-beethoven-8-3.jpg",
+      "midi": "assets/demos/jinxuan-beethoven-8-3.mid",
+      "duration_seconds": 26.95,
+      "source_duration_seconds": 26.266667
+    },
+    {
+      "id": "jinxuan-summer",
+      "title": "Summer",
+      "performer": "Jinxuan",
+      "piece": "summer",
+      "video": "assets/demos/jinxuan-summer.mp4",
+      "poster": "assets/demos/jinxuan-summer.jpg",
+      "midi": "assets/demos/jinxuan-summer.mid",
+      "duration_seconds": 149.133333,
+      "source_duration_seconds": 149.133333
+    },
+    {
+      "id": "huiran-bach-prelude",
+      "title": "Bach — Prelude",
+      "performer": "Huiran",
+      "piece": "bach_prelude",
+      "video": "assets/demos/huiran-bach-prelude.mp4",
+      "poster": "assets/demos/huiran-bach-prelude.jpg",
+      "midi": "assets/demos/huiran-bach-prelude.mid",
+      "duration_seconds": 111.833333,
+      "source_duration_seconds": 111.833333
+    },
+    {
+      "id": "huiran-schubert-serenade",
+      "title": "Schubert — Serenade",
+      "performer": "Huiran",
+      "piece": "schubert_serenade",
+      "video": "assets/demos/huiran-schubert-serenade.mp4",
+      "poster": "assets/demos/huiran-schubert-serenade.jpg",
+      "midi": "assets/demos/huiran-schubert-serenade.mid",
+      "duration_seconds": 107.066667,
+      "source_duration_seconds": 106.3
+    },
+    {
+      "id": "venkat-minuet",
+      "title": "Minuet",
+      "performer": "Venkat",
+      "piece": "minuet",
+      "video": "assets/demos/venkat-minuet.mp4",
+      "poster": "assets/demos/venkat-minuet.jpg",
+      "midi": "assets/demos/venkat-minuet.mid",
+      "duration_seconds": 43.883333,
+      "source_duration_seconds": 43.866667
+    },
+    {
+      "id": "venkat-chopin-waltz",
+      "title": "Chopin — Waltz",
+      "performer": "Venkat",
+      "piece": "chopin_waltz",
+      "video": "assets/demos/venkat-chopin-waltz.mp4",
+      "poster": "assets/demos/venkat-chopin-waltz.jpg",
+      "midi": "assets/demos/venkat-chopin-waltz.mid",
+      "duration_seconds": 73.616667,
+      "source_duration_seconds": 73.5
+    }
+  ]
+}

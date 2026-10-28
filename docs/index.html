@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#17364b">
+    <meta name="description" content="AIRPiano turns tabletop hand motion into piano sound through score-guided alignment. Explore six recorded performances with audio synthesized from predicted MIDI.">
+    <meta property="og:title" content="AIRPiano: Piano Score Following with Tabletop Hand Motion">
+    <meta property="og:description" content="The score supplies pitches. Tabletop hand motion determines which score events to play and when.">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://modistandrew.github.io/AIR-Piano/">
+    <title>AIRPiano — Piano Score Following with Tabletop Hand Motion</title>
+    <link rel="stylesheet" href="styles.css">
+    <script src="app.js" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#demos">Skip to video demos</a>
+    <header class="project-header page-width">
+      <div class="title-row">
+        <h1><span class="project-name">AIRPiano</span><span class="project-title">Piano Score Following with<br class="desktop-break"> Tabletop Hand Motion</span></h1>
+        <img class="lab-logo" src="assets/air-lab-logo.png" width="224" height="130" alt="Audio Information Research Lab">
+      </div>
+      <p class="authors">Jinxuan Zhu <span aria-hidden="true">·</span> Zhiyao Duan</p>
+      <p class="affiliation">Audio Information Research Lab, University of Rochester</p>
+      <nav class="project-links" aria-label="Project links">
+        <a class="primary-link" href="#demos">Watch demos <span aria-hidden="true">↓</span></a>
+        <a class="repository-link" href="https://github.com/ModistAndrew/AIR-Piano" target="_blank" rel="noopener noreferrer">Code on GitHub <span aria-hidden="true">↗</span><span class="sr-only"> (opens in a new tab)</span></a>
+      </nav>
+      <p class="project-intro">Guided by a known score, AIRPiano turns tabletop hand motion into piano sound without requiring precise keyboard positions. <strong>The score supplies pitches</strong>, while <strong>tabletop hand motion determines which score events to play and when</strong>.</p>
+    </header>
+
+    <main id="main" class="page-width">
+      <section class="demo-section" id="demos" aria-labelledby="demos-title">
+        <div class="section-heading">
+          <h2 id="demos-title">Video demos</h2>
+          <p>Six full recordings across three performers</p>
+        </div>
+        <div class="audio-note" id="audio-note">
+          <p><strong>What you hear:</strong> piano audio synthesized from AIRPiano’s predicted MIDI using the real-time inference pipeline, replacing the original sound.</p>
+        </div>
+        <p id="gallery-status" class="gallery-status" role="status">Loading performances…</p>
+        <button id="retry-load" class="retry-button" type="button" hidden>Try loading again</button>
+        <div id="demo-gallery" class="demo-gallery" aria-describedby="audio-note"></div>
+        <noscript><p class="gallery-status">Please enable JavaScript to load the video gallery. The project’s source code is available on <a href="https://github.com/ModistAndrew/AIR-Piano">GitHub</a>.</p></noscript>
+      </section>
+    </main>
+
+    <footer class="site-footer page-width">
+      <p><strong>AIRPiano</strong> <span aria-hidden="true">·</span> Audio Information Research Lab</p>
+      <a href="https://github.com/ModistAndrew/AIR-Piano" target="_blank" rel="noopener noreferrer">GitHub repository <span aria-hidden="true">↗</span><span class="sr-only"> (opens in a new tab)</span></a>
+    </footer>
+  </body>
+</html>
