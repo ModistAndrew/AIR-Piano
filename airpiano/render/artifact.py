@@ -14,7 +14,8 @@ from ..utils import resolve_path
 class InferenceArtifact:
     """Arrays needed by both renderers.
 
-    Probability and target have shape ``[frames, chord_slots]``. The two
+    Probability and target have shape ``[frames, chord_slots]``. Optional
+    physical_target preserves unshifted onsets for release evaluation. The two
     one-dimensional masks identify real frames and populated chord slots, and
     chord IDs map populated slots back to the source score.
     """
@@ -35,6 +36,7 @@ class InferenceArtifact:
     note_duration: float | None = None
     note_velocity: int | None = None
     onset_prediction_offset: float | None = None
+    physical_target: np.ndarray | None = None
 
     @property
     def support(self) -> np.ndarray:
@@ -76,5 +78,9 @@ def load_artifact(
             fps=float(payload["fps"]),
             record_id=str(payload["record_id"]),
             frame_start=int(payload["frame_start"]),
+            physical_target=(
+                payload["physical_target"].copy()
+                if "physical_target" in payload else None
+            ),
             **release_metadata,
         )

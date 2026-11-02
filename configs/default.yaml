@@ -83,6 +83,7 @@ dataset:
     _target_: airpiano.data.targets.TargetGenerator
     event_generator:
       _target_: airpiano.data.targets.ChordOnsetEvents
+      delay_seconds: 0.0
     softener:
       _target_: airpiano.data.targets.TriangularSoftener
       radius_seconds: 0.2
