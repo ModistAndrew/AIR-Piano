@@ -55,8 +55,11 @@ class RealTimeController:
         window_size: int = 50,
         fps: float = 30.0,
         target_radius_seconds: float = 0.2,
+        target_delay_seconds: float = 0.0,
     ) -> None:
-        self.onset_prediction_offset = float(target_radius_seconds) * (1.0 - 0.5)
+        self.onset_prediction_offset = (
+            float(target_radius_seconds) * 0.5 - float(target_delay_seconds)
+        )
         self.fps = float(fps)
         self.chord_count = len(score_chords)
         if not self.chord_count:
@@ -270,6 +273,7 @@ def infer_full_song_real_time(
         window_size=slicer.segment_frames,
         fps=fps,
         target_radius_seconds=target_generator.softener.radius_seconds,
+        target_delay_seconds=target_generator.event_generator.delay_seconds,
     )
     model.eval()
     frame_count = len(song.hands)
@@ -316,12 +320,18 @@ def infer_full_song_real_time(
     target = target_generator.generate(
         song.chords, frame_start=0, frame_count=frame_count, fps=controller.fps
     )
+    physical_target = data.TargetGenerator(
+        data.ChordOnsetEvents(), target_generator.softener
+    ).generate(
+        song.chords, frame_start=0, frame_count=frame_count, fps=controller.fps
+    )
     loss, _ = alignment_probability_loss(
         torch.from_numpy(probability), target
     )
     extra_arrays = _controller_arrays(controller)
     frame_times = np.arange(frame_count) / controller.fps
     extra_arrays.update(
+        physical_target=physical_target.numpy(),
         frame_chord_window_start=window_starts,
         frame_video_history_start=history_starts,
         frame_time=frame_times,

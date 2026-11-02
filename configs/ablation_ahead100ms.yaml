@@ -1,0 +1,12 @@
+defaults:
+  - default
+  - _self_
+
+output:
+  project_name: airpiano_ahead100ms
+
+dataset:
+  target_generator:
+    event_generator:
+      # Predict each onset 100 ms early, keeping the same input windows.
+      delay_seconds: -0.1

@@ -49,10 +49,14 @@ def _alignment_observations(
     if valid_frames.size == 0:
         return np.empty(0, dtype=np.bool_), {}
 
+    target = (
+        artifact.physical_target
+        if artifact.physical_target is not None else artifact.target
+    )
     ground_truth_frames = {}
     for chord_slot in np.flatnonzero(artifact.chord_mask):
         chord_slot = int(chord_slot)
-        scores = artifact.target[valid_frames, chord_slot]
+        scores = target[valid_frames, chord_slot]
         if not np.any(scores > 0.0):
             continue
         target_frame = int(valid_frames[int(np.argmax(scores))])
@@ -176,7 +180,7 @@ def calculate_alignment_metrics(
     *,
     tolerances_frames: Sequence[int],
 ) -> dict[str, object]:
-    """Compare one artifact's recorded releases with its target peaks."""
+    """Compare recorded releases with physical onset peaks when available."""
 
     tolerances = tuple(int(value) for value in tolerances_frames)
     frame_correct, chord_errors = _alignment_observations(artifact)

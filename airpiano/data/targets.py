@@ -8,11 +8,14 @@ from .types import Chord
 
 
 class ChordOnsetEvents:
-    """Extract each chord's mean physical onset time."""
+    """Extract chord onset times; negative delays move targets earlier."""
+
+    def __init__(self, delay_seconds: float = 0.0) -> None:
+        self.delay_seconds = float(delay_seconds)
 
     def times(self, chords: tuple[Chord, ...]) -> torch.Tensor:
         return torch.tensor(
-            [chord.time for chord in chords],
+            [chord.time + self.delay_seconds for chord in chords],
             dtype=torch.float64,
         )
 
