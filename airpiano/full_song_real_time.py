@@ -7,6 +7,7 @@ from bisect import bisect_left
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from threading import RLock
 from typing import Any
 
 import numpy as np
@@ -15,11 +16,10 @@ from omegaconf import DictConfig
 
 from . import data
 from .inference import load_model_checkpoint, write_inference_artifact
-from .model.loss import alignment_probabilities, alignment_probability_loss
+from .model.loss import alignment_probability_loss
 from .model.transformer import AirPianoTransformer
 from .render.sonify import sonify_artifact
 from .song_input import iter_split_songs
-from .train import _autocast, _forward
 from .utils import resolve_path, resolve_split_output_dir
 
 
@@ -57,6 +57,7 @@ class RealTimeController:
         target_radius_seconds: float = 0.2,
         target_delay_seconds: float = 0.0,
     ) -> None:
+        self.lock = RLock()
         self.onset_prediction_offset = (
             float(target_radius_seconds) * 0.5 - float(target_delay_seconds)
         )
@@ -90,116 +91,127 @@ class RealTimeController:
         self.release_records: list[dict[str, Any]] = []
 
     def collect_events(
-        self, scores: Sequence[float], window_start: int, frame_index: int
+        self, scores: Sequence[float], window_start: int, frame_index: int,
+        *, source_time: float | None = None,
     ) -> list[Event]:
         """Latch all observations using the window saved before this forward."""
 
-        events = []
-        event_time = frame_index / self.fps + self.onset_prediction_offset
-        for slot, value in enumerate(scores):
-            score = float(value)
-            chord = self.chords[window_start + slot]
-            if score > 0.5 and not chord.triggered:
-                chord.triggered = True
-                events.append(Event(chord.id, event_time, score))
-            elif score < 0.5:
-                chord.triggered = False
-        return events
+        with self.lock:
+            events = []
+            frame_time = frame_index / self.fps if source_time is None else source_time
+            event_time = frame_time + self.onset_prediction_offset
+            for slot, value in enumerate(scores):
+                score = float(value)
+                chord = self.chords[window_start + slot]
+                if score > 0.5 and not chord.triggered:
+                    chord.triggered = True
+                    events.append(Event(chord.id, event_time, score))
+                elif score < 0.5:
+                    chord.triggered = False
+            return events
 
     def process_event(self, event: Event, frame_index: int) -> bool:
         """Advance one full DP column, then update the window and history."""
 
-        old_best = self.best_score
-        match_score = self.prev[event.id - 1] + 1
-        self.cur[0] = 0
-        for index in range(1, self.chord_count + 1):
-            self.cur[index] = max(self.prev[index], self.cur[index - 1] - 1)
-            if index == event.id:
-                self.cur[index] = max(self.cur[index], match_score)
-        success = bool(match_score > old_best)
-        if success:
-            self.best_score = float(match_score)
-        self.prev, self.cur = self.cur, self.prev
+        with self.lock:
+            old_best = self.best_score
+            match_score = self.prev[event.id - 1] + 1
+            self.cur[0] = 0
+            for index in range(1, self.chord_count + 1):
+                self.cur[index] = max(self.prev[index], self.cur[index - 1] - 1)
+                if index == event.id:
+                    self.cur[index] = max(self.cur[index], match_score)
+            success = bool(match_score > old_best)
+            if success:
+                self.best_score = float(match_score)
+            self.prev, self.cur = self.cur, self.prev
 
-        chord = self.chords[event.id]
-        if not chord.released:
-            self.pending_releases.setdefault(event.id, event.time)
+            chord = self.chords[event.id]
+            if not chord.released:
+                self.pending_releases.setdefault(event.id, event.time)
 
-        final_start = self.chord_count - self.window_size + 1
-        if success:
-            chord.anchor_time = event.time
-            self.chord_window_start = max(
-                1, min(event.id - self.window_size // 2, final_start)
+            final_start = self.chord_count - self.window_size + 1
+            if success:
+                chord.anchor_time = event.time
+                self.chord_window_start = max(
+                    1, min(event.id - self.window_size // 2, final_start)
+                )
+            else:
+                self.chord_window_start = min(
+                    self.chord_window_start + 1, final_start
+                )
+
+            start_time = self.estimate_time(
+                self.chords[self.chord_window_start].time_ticks
             )
-        else:
-            self.chord_window_start = min(
-                self.chord_window_start + 1, final_start
+            self.video_history_start = (
+                0 if math.isinf(start_time)
+                else max(0, min(math.floor(start_time * self.fps), frame_index))
             )
-
-        start_time = self.estimate_time(
-            self.chords[self.chord_window_start].time_ticks
-        )
-        self.video_history_start = (
-            0 if math.isinf(start_time)
-            else max(0, min(math.floor(start_time * self.fps), frame_index))
-        )
-        self.event_records.append({
-            "chord_id": event.id,
-            "frame_index": frame_index,
-            "time": event.time,
-            "score": event.score,
-            "match_score": float(match_score),
-            "old_best": old_best,
-            "best_score": self.best_score,
-            "success": success,
-            "chord_window_start": self.chord_window_start,
-            "video_history_start": self.video_history_start,
-        })
-        return success
+            self.event_records.append({
+                "chord_id": event.id,
+                "frame_index": frame_index,
+                "time": event.time,
+                "score": event.score,
+                "match_score": float(match_score),
+                "old_best": old_best,
+                "best_score": self.best_score,
+                "success": success,
+                "chord_window_start": self.chord_window_start,
+                "video_history_start": self.video_history_start,
+            })
+            return success
 
     def estimate_time(self, time_ticks: int) -> float:
         """Estimate time from stored anchors for video-history selection."""
 
-        anchors = sorted(
-            (chord.time_ticks, chord.anchor_time)
-            for chord in self.chords[1:]
-            if chord.anchor_time is not None
-        )
-        positions = [position for position, _ in anchors]
-        right = bisect_left(positions, time_ticks)
-        if right < len(anchors) and positions[right] == time_ticks:
-            return anchors[right][1]
-        if len(anchors) < 2:
-            return math.inf
-        right = max(1, min(right, len(anchors) - 1))
-        s_a, t_a = anchors[right - 1]
-        s_b, t_b = anchors[right]
-        return t_a + (time_ticks - s_a) * (t_b - t_a) / (s_b - s_a)
+        with self.lock:
+            anchors = sorted(
+                (chord.time_ticks, chord.anchor_time)
+                for chord in self.chords[1:]
+                if chord.anchor_time is not None
+            )
+            positions = [position for position, _ in anchors]
+            right = bisect_left(positions, time_ticks)
+            if right < len(anchors) and positions[right] == time_ticks:
+                return anchors[right][1]
+            if len(anchors) < 2:
+                return math.inf
+            right = max(1, min(right, len(anchors) - 1))
+            s_a, t_a = anchors[right - 1]
+            s_b, t_b = anchors[right]
+            return t_a + (time_ticks - s_a) * (t_b - t_a) / (s_b - s_a)
 
-    def release_due(self, frame_index: int) -> list[dict[str, Any]]:
-        """Emit due triggers at this frame's simulated result time."""
+    def release_due(
+        self, frame_index: int, *, now: float | None = None,
+        frame_time: float | None = None,
+    ) -> list[dict[str, Any]]:
+        """Emit due triggers using an explicit clock or the offline simulation."""
 
-        frame_time = frame_index / self.fps
-        now = frame_time + self.processing_latency
-        records = []
-        for chord_id, target_time in list(self.pending_releases.items()):
-            if target_time > now:
-                continue
-            chord = self.chords[chord_id]
-            record = {
-                "chord_id": chord.id,
-                "pitches": chord.pitches,
-                "frame_index": frame_index,
-                "frame_time": frame_time,
-                "predicted_onset": target_time,
-                "release_time": now,
-                "duration": self.note_duration,
-            }
-            self.release_records.append(record)
-            records.append(record)
-            chord.released = True
-            del self.pending_releases[chord_id]
-        return records
+        with self.lock:
+            if frame_time is None:
+                frame_time = frame_index / self.fps
+            if now is None:
+                now = frame_time + self.processing_latency
+            records = []
+            for chord_id, target_time in list(self.pending_releases.items()):
+                if target_time > now:
+                    continue
+                chord = self.chords[chord_id]
+                record = {
+                    "chord_id": chord.id,
+                    "pitches": chord.pitches,
+                    "frame_index": frame_index,
+                    "frame_time": frame_time,
+                    "predicted_onset": target_time,
+                    "release_time": now,
+                    "duration": self.note_duration,
+                }
+                self.release_records.append(record)
+                records.append(record)
+                chord.released = True
+                del self.pending_releases[chord_id]
+            return records
 
 
 def _controller_arrays(controller: RealTimeController) -> dict[str, np.ndarray]:
@@ -268,53 +280,30 @@ def infer_full_song_real_time(
 
     if song.fps != fps:
         raise ValueError("song and dataset frame rates must match")
-    controller = RealTimeController(
-        song.chords,
-        window_size=slicer.segment_frames,
-        fps=fps,
-        target_radius_seconds=target_generator.softener.radius_seconds,
-        target_delay_seconds=target_generator.event_generator.delay_seconds,
+    from .streaming.core import AirPianoStepper
+
+    stepper = AirPianoStepper(
+        model, song.chords,
+        {"slicer": slicer, "target_generator": target_generator, "tokenizer": tokenizer},
+        device, fps=fps, bf16=bf16,
     )
-    model.eval()
+    controller = stepper.controller
     frame_count = len(song.hands)
     chord_count = len(song.chords)
-    chord_tokens = tokenizer.tokenize(song.chords)
+    chord_tokens = stepper.chord_tokens
     probability = np.zeros((frame_count, chord_count), dtype=np.float32)
     window_starts = np.empty(frame_count, dtype=np.int64)
     history_starts = np.empty(frame_count, dtype=np.int64)
-    video_frames = []
-    presence_frames = []
 
     for frame_index in range(frame_count):
-        video_frames.append(song.hands[frame_index])
-        presence_frames.append(song.presence[frame_index])
-        window_start = controller.chord_window_start
-        history_start = controller.video_history_start
-        window_starts[frame_index] = window_start
-        history_starts[frame_index] = history_start
-        start = window_start - 1
+        result = stepper.step(
+            song.hands[frame_index], song.presence[frame_index], return_scores=True
+        )
+        window_starts[frame_index] = result["window_start"]
+        history_starts[frame_index] = result["history_start"]
+        start = result["window_start"] - 1
         stop = start + controller.window_size
-        batch = {
-            "hands": torch.stack(video_frames[history_start:]).unsqueeze(0),
-            "hand_presence": torch.stack(
-                presence_frames[history_start:]
-            ).unsqueeze(0),
-            "chords": chord_tokens[start:stop].unsqueeze(0),
-            "frame_mask": torch.ones(
-                (1, frame_index + 1 - history_start), dtype=torch.bool
-            ),
-            "chord_mask": torch.ones(
-                (1, controller.window_size), dtype=torch.bool
-            ),
-        }
-        with _autocast(device, bf16):
-            logits = _forward(model, batch, device)
-        scores = alignment_probabilities(logits[:, -1:])[0, 0].cpu().numpy()
-        probability[frame_index, start:stop] = scores
-        events = controller.collect_events(scores, window_start, frame_index)
-        for event in events:
-            controller.process_event(event, frame_index)
-        controller.release_due(frame_index)
+        probability[frame_index, start:stop] = result["scores"]
 
     # Targets are only diagnostic; the controller never observes score times.
     target = target_generator.generate(

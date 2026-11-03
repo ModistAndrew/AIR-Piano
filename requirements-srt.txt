@@ -1,0 +1,3 @@
+# Optional iPhone/SRT input; install alongside requirements.txt.
+# Tested with PyAV 14.1.0 and its SRT-enabled FFmpeg libraries in v2n.
+av==14.1.0

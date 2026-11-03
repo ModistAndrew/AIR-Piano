@@ -112,6 +112,49 @@ full_song_real_time:
   checkpoint: ${output.dir}/checkpoints/last.pt
   output_dir: ${output.dir}/full_song_real_time
 
+streaming:
+  source:
+    kind: camera
+    video_path: null
+    camera_index: 0
+    # SRT listener for an iPhone sender; FFmpeg URL latency is in microseconds.
+    srt_url: "srt://0.0.0.0:9001?mode=listener&latency=100000"
+    srt_open_timeout_seconds: 120.0
+    srt_read_timeout_seconds: 5.0
+    width: 1920
+    height: 1080
+  score_midi: null
+  beat_path: null
+  checkpoint: ${full_song_real_time.checkpoint}
+  wilor_devices: [cuda:1, cuda:2]
+  airpiano_device: cuda:1
+  fast: true
+  preview: true
+  countdown_seconds: 5
+  log_midi_events: true
+  midi_output:
+    enabled: true
+    url: "ws://10.5.149.66:8765"
+    capacity: 32
+    max_age_ms: 100.0
+    open_timeout_seconds: 1.0
+    close_timeout_seconds: 0.5
+    reconnect_seconds: 1.0
+  recording:
+    enabled: true
+    max_dimension: 640
+    fps: 30
+    crf: 30
+  deadline_ms: 100.0
+  drop_stale: true
+  max_inflight: 4
+  warmup_frames: 10
+  warmup_hand_counts: [1, 2, 3]
+  warmup_airpiano_frames: 30
+  torch_threads: 1
+  startup_timeout_seconds: 600.0
+  output_dir: null
+
 wandb:
   project: air_piano
   name: ${output.project_name}

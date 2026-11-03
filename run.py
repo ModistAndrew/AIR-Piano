@@ -15,6 +15,7 @@ from airpiano.preprocessing.pipeline import preprocess
 from airpiano.render.sonify import sonify
 from airpiano.render.visualize import visualize
 from airpiano.train import train
+from airpiano.streaming import streaming
 
 
 StageHandler = Callable[[DictConfig], None]
@@ -24,6 +25,7 @@ STAGES: dict[str, StageHandler] = {
     "train": train,
     "test": test,
     "full_song_real_time": full_song_real_time,
+    "streaming": streaming,
     "evaluation": evaluation,
     "visualize": visualize,
     "sonify": sonify,

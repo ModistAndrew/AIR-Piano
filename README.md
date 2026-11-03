@@ -133,6 +133,15 @@ python run.py 'stage=[full_song_real_time,visualize,sonify]' \
   device=cuda:0
 ```
 
+### Live camera, video, and iPhone SRT streaming
+
+Use `stage=streaming` to follow a score from a 30 fps camera, paced video, or iPhone
+SRT stream (`streaming.source.kind=srt`), with
+fast WiLoR on GPUs 1 and 2, a live preview, timing logs, MIDI export, and
+synchronized low-resolution video recording. See
+[the streaming guide](docs/streaming.md) for iPhone setup, commands, headless operation, and
+complete-video performance and accuracy validation.
+
 ## Evaluation
 
 ### Downloading AIR-PIANO and AIR-TABLETOP (WIP)
