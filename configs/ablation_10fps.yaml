@@ -1,0 +1,15 @@
+defaults:
+  - default
+  - _self_
+
+output:
+  project_name: airpiano_10fps
+
+data:
+  hand_root: /storage2/jinxuan/data/AirPianoFull/hands_10fps
+
+dataset:
+  fps: 10.0
+
+evaluation:
+  tolerances_frames: [1, 2, 5]

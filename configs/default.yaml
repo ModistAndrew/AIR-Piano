@@ -91,6 +91,8 @@ dataset:
 model:
   _target_: airpiano.model.transformer.AirPianoTransformer
   chord_duration_bins: 96
+  use_wrist_delta: true
+  use_chord_duration: true
 
 train:
   epochs: 20

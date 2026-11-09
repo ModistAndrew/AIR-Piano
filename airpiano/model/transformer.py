@@ -26,9 +26,16 @@ class AirPianoTransformer(nn.Module):
     chords in the current slice.
     """
 
-    def __init__(self, chord_duration_bins: int = 96) -> None:
+    def __init__(
+        self,
+        chord_duration_bins: int = 96,
+        use_wrist_delta: bool = True,
+        use_chord_duration: bool = True,
+    ) -> None:
         super().__init__()
         self.chord_duration_bins = int(chord_duration_bins)
+        self.use_wrist_delta = use_wrist_delta
+        self.use_chord_duration = use_chord_duration
         self.hand_embedding = nn.Sequential(
             nn.Linear(128, MODEL_DIM),
             nn.GELU(),
@@ -107,6 +114,8 @@ class AirPianoTransformer(nn.Module):
         hand_dtype = self.hand_embedding[0].weight.dtype
         presence = hand_presence.to(dtype=hand_dtype)
         masked_hands = hands.to(dtype=hand_dtype) * presence[..., None, None]
+        if not self.use_wrist_delta:
+            masked_hands[..., 0, :] = 0.0
         hand_features = torch.cat(
             (masked_hands.flatten(start_dim=2), presence), dim=-1
         )
@@ -123,9 +132,10 @@ class AirPianoTransformer(nn.Module):
         chord_states = self.chord_embedding(
             chords[..., :128].to(dtype=chord_dtype)
         )
-        chord_states = chord_states + self.chord_duration_embedding(
-            chords[..., 128:].to(dtype=chord_dtype)
-        )
+        if self.use_chord_duration:
+            chord_states = chord_states + self.chord_duration_embedding(
+                chords[..., 128:].to(dtype=chord_dtype)
+            )
         chord_memory = chord_states + sinusoidal_encoding(
             chord_count,
             MODEL_DIM,
