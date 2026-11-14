@@ -2,8 +2,8 @@
 
 `stage=streaming` runs OpenCV camera/video capture or PyAV SRT reception, parallel
 WiLoR, ordered hand canonicalization, and the same AirPiano inference/controller
-core as `full_song_real_time`. It supports one score per session with 30 fps camera,
-video, or SRT input. The defaults are fast
+core as `full_song_real_time`. It supports one score per session with a camera
+delivering approximately 30 fps, or 30 fps video/SRT input. The defaults are fast
 WiLoR on GPUs 1 and 2, AirPiano on GPU 1, a live preview, a five-second preparation
 countdown, and a 100 ms processing deadline. It prints MIDI trigger/release events
 to the terminal, saves chord-event logs, and writes a small session video alongside
@@ -26,6 +26,7 @@ airpiano/streaming/
 ├── __init__.py   # Public stage: from airpiano.streaming import streaming
 ├── runtime.py    # Session orchestration, release scheduler, preview, logs, MIDI
 ├── core.py       # CanonicalFrameAdapter and shared AirPianoStepper
+├── alignment.py  # Live probability heatmap and saved session alignment
 ├── io.py         # Capture process lifecycle, shared memory, WiLoR workers
 ├── srt.py        # Optional PyAV SRT decoding and media timestamp mapping
 ├── recording.py  # Optional CPU video encoder and bounded thumbnail mailbox
@@ -109,8 +110,16 @@ configured BF16 setting independently.
 
 Initialization, model warmup, and the preparation countdown are excluded from
 session throughput and latency. Set `streaming.countdown_seconds` to a nonnegative
-integer to change the countdown; `0` skips the numbered countdown and still prints
-GO. Camera driver buffering remains backend-dependent; a software read timestamp
+integer to change the countdown; `0` skips the numbered countdown and its MIDI cues,
+and still prints GO. With WebSocket MIDI enabled, `streaming.countdown_midi=true`
+plays C4 (MIDI 60) on each numbered count and C5 (MIDI 72) on GO: the default
+five-second sequence is `60, 60, 60, 60, 60, 72`. These note-on-only cues use the
+configured receiver and its existing playback duration. Set
+`streaming.countdown_midi=false` to keep the visual countdown without count-in
+notes. Cue attempts are logged separately as `kind="countdown"` and are excluded
+from score alignment, chord counts, and `performance.mid`. A disconnected receiver
+or stale cue follows the existing best-effort transport policy; countdown timing
+does not wait for network I/O. Camera driver buffering remains backend-dependent; a software read timestamp
 cannot establish when the sensor exposed the image.
 
 ## Run a video or camera
@@ -137,10 +146,29 @@ conda run --no-capture-output -n v2n python run.py stage=streaming \
   streaming.beat_path=/absolute/path/to/beats.txt
 ```
 
-The default camera request is 1920 × 1080 at 30 fps. Choose another size with
-`streaming.source.width` and `streaming.source.height`. The camera must support the
-requested cadence. Camera frames use the live session clock; score MIDI provides
-chord order and beat positions, not performance ground truth.
+The default camera request is 1920 × 1080 at 30 fps. Capture requests MJPG before
+setting width, height, and frame rate. This avoids the W1 webcam's default raw
+YUYV mode, which reports 5 fps at 1080p. Choose another size with
+`streaming.source.width` and `streaming.source.height`. Startup checks the camera's
+reported frame rate; the actual delivered rate must be measured separately.
+
+Controlled W1 checks on 2026-11-09 traced the remaining roughly 15 fps delivery
+to the single-buffer V4L2 setting. With MJPG at 1920 × 1080 held constant, 90-frame
+measurements gave 14.99 fps with one driver buffer, 29.90 fps with two, and
+29.97 fps with four; restoring one buffer returned to 14.99 fps. Lowering resolution
+alone did not solve it: one buffer still delivered about 15 fps at 1280 × 720 and
+15.41 fps at 640 × 480. At 1280 × 720, two buffers delivered 30.00 fps.
+
+Camera capture therefore requests two kernel/driver buffers. These are separate
+from AirPiano's one-image shared-memory latest-frame slot, which still replaces
+stale waiting captures. The default resolution remains 1920 × 1080. These checks
+establish approximately 30 fps input delivery on this W1 setup, not 30 processed
+fps or a 100 ms inference-latency guarantee. The corrected capture process also
+delivered 120 frames from 120 successful reads, without duplicates, at approximately
+30.05 fps in a four-second physical-camera check and shut down cleanly. That check
+did not run GPU inference. Camera frames use sequential read IDs and retain their
+actual session timestamps; the timestamp and drop rules are described below. Score
+MIDI provides chord order and beat positions, not performance ground truth.
 
 `streaming.beat_path=null` derives a beat grid from the MIDI tempo and meter and
 writes it inside this session's output directory. Supply the aligned beat file
@@ -149,6 +177,53 @@ model; supply the matching target-delay configuration for checkpoints trained
 with advanced targets (for example `--config-name ablation_ahead100ms`). Effective
 settings and available checkpoint metadata are checked and saved with the run.
 
+### Calibrated camera delay with the ahead-100-ms checkpoint
+
+Set `streaming.source.capture_delay_ms=100` when an optical clock test estimates
+100 ms between the scene and `read()` returning. This is an explicit calibration,
+not a hardware exposure timestamp. A screen-clock measurement also contains the
+reference display's delay, so treat the value as approximate.
+
+```text
+estimated camera source time = read completion - session epoch - 0.100
+predicted onset = source time + target radius / 2 - target delay
+```
+
+The corrected source time is shared by controller history, event prediction,
+alignment plots, and recording. Actual event release times and MIDI export stay
+on the real session clock. Already-late events release as soon as inference makes
+them available. The processing deadline still begins at read completion; shifting
+it back would incorrectly spend the entire 100 ms processing budget before
+inference starts.
+
+With `--config-name ablation_ahead100ms`, Hydra selects
+`outputs/airpiano_ahead100ms/checkpoints/last.pt` and the matching trained target
+delay of −0.1 s. This checkpoint predicts farther ahead; it does not make camera
+transfer faster. Do not apply an additional 100 ms subtraction to MIDI release
+times. The runtime verifies the target settings against checkpoint metadata.
+
+For the Nocturne score used in the latest camera session:
+
+```bash
+conda run --no-capture-output -n v2n python run.py --config-name ablation_ahead100ms \
+  stage=streaming streaming.source.kind=camera streaming.source.camera_index=0 \
+  streaming.source.capture_delay_ms=100 \
+  streaming.score_midi=assets/midi/nocturne_9_2.mid \
+  streaming.beat_path=assets/midi/nocturne_9_2.subdivisions.txt \
+  streaming.preview=false
+```
+
+The defaults retain fast WiLoR on GPUs 1 and 2, AirPiano on GPU 1, recording,
+alignment output, and WebSocket playback. If the shell lacks the webcam's existing
+`video` group membership, run the command through `sg video -c 'COMMAND'`.
+
+The five-second status line and optional preview show both processing delay and
+**estimated capture-to-inference** delay. For example, 50 ms processing plus the
+100 ms calibration is reported as approximately 150 ms. Per-frame values are saved
+as `estimated_capture_to_completion_ms` in `frames.csv`; `summary.json` includes
+its average/p95/max under `stages_ms` and `estimated_capture_over_100ms_frames`.
+Existing processing-only latency and deadline-miss statistics keep their meaning.
+
 Useful overrides:
 
 | Setting | Default | Effect |
@@ -156,19 +231,24 @@ Useful overrides:
 | `streaming.wilor_devices` | `[cuda:1,cuda:2]` | Separate WiLoR worker processes. |
 | `streaming.airpiano_device` | `cuda:1` | AirPiano model device. |
 | `streaming.fast` | `true` | Fast WiLoR backend; `false` selects normal inference. |
-| `streaming.deadline_ms` | `100` | Stop waiting for stale frames. |
+| `streaming.source.capture_delay_ms` | `0` | Camera-only calibrated exposure-to-read estimate; subtract from source time, preserving actual read timestamps and processing deadlines. |
+| `streaming.deadline_ms` | `100` | Stop waiting for stale frames after local availability. |
 | `streaming.drop_stale` | `true` | Keep the newest waiting capture under overload. |
 | `streaming.max_inflight` | `4` | Bound outstanding inference work end to end. |
 | `streaming.output_dir` | Automatic session path | Choose a new session directory. |
-| `streaming.preview` | `true` | Display the latest frame and streaming diagnostics. |
-| `streaming.countdown_seconds` | `5` | Preparation countdown after model warmup; a nonnegative integer, with `0` skipping the numbered countdown. |
+| `streaming.preview` | `true` | Display the latest frame, streaming diagnostics, and enabled alignment heatmap. |
+| `streaming.alignment.enabled` | `true` | Collect alignment probabilities, show the live panel when preview is enabled, and save session alignment artifacts. |
+| `streaming.alignment.history_seconds` | `15` | Time span shown in the live alignment panel. |
+| `streaming.alignment.refresh_hz` | `5` | Live heatmap refresh rate; the camera preview can refresh independently at 30 Hz. |
+| `streaming.countdown_seconds` | `5` | Preparation countdown after model warmup; `0` skips the numbered countdown and MIDI cues. |
+| `streaming.countdown_midi` | `true` | Send MIDI 60 on each count and 72 on GO through the configured WebSocket receiver. Requires MIDI output enabled. |
 | `streaming.log_midi_events` | `true` | Print trigger/release details to the terminal; JSON event logging and MIDI export remain enabled when `false`. |
 | `streaming.recording.enabled` | `true` | Save a synchronized small session video; `false` disables recording only. |
 | `streaming.recording.max_dimension` | `640` | Longest output edge in pixels; inference keeps the original resolution. |
 | `streaming.recording.fps` | `30` | Recording timeline frame rate. |
 | `streaming.recording.crf` | `30` | H.264 quality setting; higher values usually produce smaller files. |
 | `streaming.midi_output.enabled` | `true` | Send released notes to the PC over WebSocket; `false` leaves local logging/export enabled. |
-| `streaming.midi_output.url` | `ws://10.5.149.66:8765` | PC WebSocket receiver. |
+| `streaming.midi_output.url` | `ws://10.5.188.24:8765` | PC WebSocket receiver. |
 | `streaming.midi_output.capacity` | `32` | Bound pending note messages. |
 | `streaming.midi_output.max_age_ms` | `100` | Discard stale released-note messages before sending. |
 | `streaming.midi_output.open_timeout_seconds` | `1` | Bound each connection attempt. |
@@ -333,15 +413,25 @@ release scheduler can be compared on the same timeline.
 | Source | Logical frame position | Source time and processing-latency origin |
 | --- | --- | --- |
 | Video | Original frame index `i`. | Frame availability is scheduled at `i / 30` seconds. Subsequent decode, dispatch, queueing, and inference contribute to latency. Frame zero is predecoded during startup. |
-| Camera | `floor(30 × seconds_since_session_start)` at read completion. | Actual read-completion time. Exposure and time already spent inside the camera/driver are outside this measurement. |
+| Camera | Accepted post-start reads numbered `0, 1, 2, …`. | Source time is read completion minus the optional calibrated capture delay. Processing latency and deadlines still start at actual read completion; the estimated total is reported separately. |
 | SRT | First local slot plus rounded 30 Hz positions from relative sender PTS. | Model source time follows anchored PTS; processing latency begins at local decode readiness, excluding phone/transport/decode latency. |
 
 Video replay waits for each original timestamp. It does not run the file as fast
-as decoding allows. Camera stalls leave gaps in the logical 30 Hz sequence, and
-multiple camera reads in one slot are discarded after the first accepted read.
-The actual camera source timestamp is retained rather than replaced with its
-rounded slot time. Camera read counts and duplicate-read counts are reported
-separately from logical frame positions.
+as decoding allows. Camera reads are not assigned to fixed 30 Hz buckets: every
+successful post-start read receives the next frame ID, even if two reads arrive
+close together. Arrival jitter therefore does not discard a camera frame as a
+same-slot duplicate. A camera stall advances elapsed time without inventing frame
+IDs or missing observations for frames that were never read. Camera metadata uses
+`frame_index_basis=camera_read_sequence`; its `source_time` is the actual
+session-relative read-completion time minus `streaming.source.capture_delay_ms / 1000`,
+not `frame_index / 30`. A nonzero calibration makes this an estimated capture
+time. Reads estimated to precede GO are drained before assigning frame IDs.
+`acquired_at` and `scheduled_at` retain actual read-completion timestamps.
+
+The checkpoint still expects motion sampled near its trained 30 fps cadence.
+Accepting each camera read does not make the model independent of input frame
+rate; significantly slower or irregular input can still change its behavior.
+Video, SRT, and offline inference retain their existing frame-index conventions.
 
 There are three bounded pieces of pending work: one capture mailbox, one frame
 waiting for dispatch in the main process, and at most four outstanding inference
@@ -357,14 +447,22 @@ actually returns; its late result is discarded. Expired waiting captures are
 also dropped before dispatch. This prevents late results from moving the
 controller backward or allowing an unbounded queue to build up.
 
-The next accepted inference fills skipped logical positions with zero hand poses
-and absent-hand masks. Their `hand_presence` is false while `frame_mask` remains
-true: these are real elapsed positions, not batch padding, so temporal attention
-still sees the missing observations. Those positions do not produce predictions.
-The canonicalizer resets its previous-pose state across a gap, so
-wrist displacement is not computed between nonadjacent frames. Dropped frames
-count against processed throughput and remain in the source timeline used for
-validation.
+The next accepted inference fills skipped source IDs with zero hand poses and
+absent-hand masks. For a camera, these are frames that were actually read but then
+overwritten, expired, or otherwise dropped by the pipeline. For example, processing
+read IDs `0, 1, 4` leaves missing-hand entries for captured reads `2` and `3`; a
+capture stall between consecutive IDs creates no such entries. For video and SRT,
+missing source positions keep their existing fixed-timeline behavior.
+
+Missing entries have `hand_presence=false` and `frame_mask=true`: they represent
+missing source observations rather than batch padding, so temporal attention still
+sees them, but they do not generate predictions. The canonicalizer resets wrist
+displacement across a frame-ID gap. In camera mode it also resets when at least
+100 ms elapsed since the previous processed observation, even if read IDs are
+consecutive, so a long capture stall is not interpreted as one normal motion step.
+Dropped frames count against processed throughput. When a camera read was
+overwritten before its metadata reached the main process, its unknown timestamp
+fields are left blank in `frames.csv` instead of being invented from its ID.
 
 The 100 ms deadline is checked before accepting a result for AirPiano. It cannot
 interrupt GPU work already running, and a frame admitted just before the deadline
@@ -381,7 +479,8 @@ appears as increased latency rather than a slower artificial source clock.
 
 For each accepted frame, `CanonicalFrameAdapter` selects the canonical left/right
 hands from WiLoR's detections and produces pose `[2, 21, 3]` and presence `[2]`
-arrays. Its postprocessing uses the previous adjacent frame for wrist motion.
+arrays. Its postprocessing uses the previous adjacent frame for wrist motion,
+subject to the camera elapsed-time reset described above.
 The runtime applies the configured hand transform exactly once before calling
 `AirPianoStepper`. Offline inference already has transformed hands and passes them
 directly to the same stepper.
@@ -399,7 +498,12 @@ The controller maintains one latch per score occurrence. A probability above
 updates the existing full-score dynamic program. Successful matches establish
 timing anchors and reposition the chord window; otherwise the window advances
 according to the existing controller rule. The anchor estimate also determines
-where the next hand-history slice starts. Current behavior queues detected
+where the next hand-history slice starts. For camera input, the history boundary
+is found by bisecting actual timestamps of processed observations and selecting
+the corresponding capture ID, rather than multiplying an estimated time by 30.
+This keeps controller history rewinds aligned with observed camera time despite
+arrival jitter or stalls. Video, SRT, and offline history selection keep their
+existing behavior. Current behavior queues detected
 occurrences for release even when their DP match does not improve the best path;
 DP success controls alignment updates, rather than acting as a release filter.
 Each occurrence is released at most once, and repeated triggers preserve its
@@ -479,9 +583,11 @@ The main outputs are:
 | --- | --- |
 | `config.yaml` | Resolved effective configuration. |
 | `session.json` | Source, devices, model timing checks, warmup metadata, and software versions. |
-| `frames.csv` | Logical positions, processed/drop status and reason, stage timestamps, latency, history length, and detected-hand count; written incrementally. |
+| `frames.csv` | Source frame IDs, processed/drop status and reason, stage timestamps, latency, history length, and detected-hand count; written incrementally. Camera IDs count actual reads; unknown dropped-read timestamps remain blank. |
 | `events.jsonl` | Trigger, release, and `midi_output` transport records. Occurrence IDs are one-based; `release_time` is actual session-relative scheduler time. Transport records report local send/drop timing, with no PC playback acknowledgment. |
 | `performance.mid` | Released chord pitches at their actual release times, with the controller's one-second note duration and velocity 64. |
+| `alignment.png` | Full-session alignment probability image across score chords, saved when alignment visualization is enabled. |
+| `alignment.npz` | Compact probabilities and their frame IDs, source times, score-window starts, and history starts for reconstructing or analyzing the plotted observations. |
 | `performance.mp4` | Optional reduced-size 30 fps H.264 video with the same zero-time origin as MIDI; no audio track. |
 | `recording.json` | Recording status, dimensions, frame accounting, duration, file size, and encoder errors; also included in `summary.json` under `recording`. |
 | `midi_output.json` | WebSocket connection, send/drop counts, timing, and errors; also included in `summary.json` under `midi_output`. |
@@ -490,7 +596,7 @@ The main outputs are:
 
 ### Live note playback on the PC
 
-By default, each released chord is sent to `ws://10.5.149.66:8765`. The receiver
+By default, each released chord is sent to `ws://10.5.188.24:8765`. The receiver
 plays the supplied notes for one second. Start the PC receiver before the session,
 then use the normal camera, video, or SRT command. To select a different receiver:
 
@@ -499,7 +605,7 @@ conda run --no-capture-output -n v2n python run.py stage=streaming \
   streaming.source.kind=srt \
   streaming.score_midi=/absolute/path/to/score.mid \
   streaming.preview=false \
-  'streaming.midi_output.url=ws://10.5.149.66:8765'
+  'streaming.midi_output.url=ws://10.5.188.24:8765'
 ```
 
 Messages are WebSocket text containing either a single decimal MIDI pitch, such as
@@ -511,13 +617,17 @@ begin together on the receiver.
 The sender uses a persistent `websockets.sync.client.connect` connection with
 `proxy=None` and `compression=None`. The dependency is pinned as
 `websockets==17.4` in `requirements.txt` and is installed in the existing `v2n`
-environment. The connection may open during startup, but startup does not send
-any notes. Only actual controller **release** events
-enter this output queue. A raw trigger can arrive before its predicted onset, so
+environment. The connection may open during model warmup, which sends no notes.
+After warmup, the optional preparation count-in sends MIDI 60 on each count and
+72 on GO. Performance notes enter this output queue only on actual controller
+**release** events. A raw trigger can arrive before its predicted onset, so
 sending trigger messages would play notes early or duplicate a chord. The release
 scheduler waits for the predicted onset, or releases immediately if the prediction
-is already late. No notes are sent during model warmup or the preparation countdown.
-The controller's occurrence deduplication remains in force; separate occurrences
+is already late. Count-in cues bypass the controller and are not exported in
+`performance.mid`; their transport records carry `event_type="countdown"` and
+`countdown_remaining`. Transport totals include both cues and performance notes.
+Cue freshness is measured from its intended countdown tick; an overdue cue is
+dropped rather than replayed after a stall. The controller's occurrence deduplication remains in force; separate occurrences
 of the same pitch can still play repeatedly.
 
 Connection establishment, sending, and reconnecting happen on a dedicated thread.
@@ -586,7 +696,8 @@ so performance must be measured with it enabled rather than assumed identical.
 
 Both files use the monotonic session epoch announced by **GO**. Warmup and countdown
 images are excluded. Video timestamps come from each frame's `source_time`: the
-original frame times for video replay, session acquisition time for cameras, and
+original frame times for video replay, calibrated capture time for cameras (read
+completion when the offset is zero), and
 anchored sender PTS for SRT. Each image is placed at its nearest 30 Hz recording
 position, with at most 16.7 ms of frame-grid quantization. Missing positions repeat
 the previous image; positions before the first received image are black. This
@@ -634,12 +745,76 @@ unrecorded SRT run used a different segment and session setup, so differences in
 latency between the runs do not isolate recording cost. See the
 [session summary](../outputs/streaming_srt_recording_validation_20261102T212208Z/session/summary.json).
 
+### Live and saved alignment probabilities
+
+With `streaming.preview=true`, the **AirPiano live** window places an alignment
+probability heatmap below the camera image. By default it shows the latest
+15 seconds and refreshes five times per second; the camera preview reuses the
+cached heatmap between updates. Use `streaming.alignment.history_seconds` and
+`streaming.alignment.refresh_hz` to change those settings. The horizontal axis is
+actual source time in seconds. The vertical axis shows one-based global score
+chord IDs spanning the score windows evaluated in that recent interval, including
+controller rewinds. The current matched chord remains in the preview header;
+the heatmap itself shows model probability observations.
+
+Each observation comes from the score vector already produced for a committed
+processed frame. Enabling this display does not perform an additional model
+forward. The values are independent sigmoid probabilities from 0 to 1, rather
+than a distribution normalized to sum to one across chords. A local score-window
+column maps to global chord ID `window_start + column`: column zero is a real
+score chord, not the controller's sentinel.
+
+The visualization uses each observation's `source_time`: calibrated camera
+capture time (read completion when the offset is zero), original video time, or
+anchored SRT presentation time.
+It retains the score-window and history boundaries from that inference step,
+before subsequent controller updates. History rewinds can change future
+observations but do not replace earlier plotted decisions. Regions outside the
+inferred score window or without an observed score are gray, rather than being
+shown as zero probability. Dropped frames and missing-hand history entries do
+not fabricate new probability observations. Each observed score vector covers
+from its source timestamp to the earlier of the next observation or one nominal
+frame period later; longer gaps remain gray at the image resolution.
+
+Rendering uses a fixed 0–1 magma color scale and a bounded image grid. When
+multiple probabilities fall into one raster pixel, the renderer keeps their
+maximum, preserving short peaks; the image labels this aggregation. The image
+can therefore combine multiple observations or chord rows at high density, and
+very short gaps or closely spaced peaks may merge visually. The saved numeric
+arrays preserve individual observations without this raster aggregation.
+
+At session shutdown, `alignment.png` covers the whole session and all score chords.
+`alignment.npz` preserves compact per-observation vectors with `frame_index`,
+`source_time`, `window_start`, `history_start`, `probabilities`, `chord_count`, and
+`fps`. Probabilities are float32 rows, padded with NaN when evaluated windows
+have different lengths; frame/window/history IDs are int64 and source times are
+float64. No synthetic target values or dropped-frame score rows are added. Camera
+frame IDs are read sequence numbers, so use `source_time` rather than dividing
+those IDs by the saved nominal `fps` when reconstructing time.
+The `alignment_visualization` entry in `summary.json` reports status, `image_path`,
+`data_path`, and `frame_count`; a populated successful save has status `saved`.
+If the visualization was initialized but received no committed observations, it
+saves an empty-state image and empty arrays with status `empty`.
+
+`streaming.preview=false` suppresses the GUI while still collecting probabilities
+and saving both alignment files. `streaming.alignment.enabled=false` disables the
+collection, panel, and saved alignment artifacts. Saving occurs after inference
+stops and MIDI export, outside the measured inference-session elapsed time. An
+initialized visualization is also saved on interruption or failure when cleanup
+can write the session files. Live rendering adds CPU work; it is independent of
+the original-resolution images used by WiLoR.
+
+Old streaming sessions that saved only frame timings and chord events cannot
+reproduce this exact probability heatmap: those logs do not contain the score
+vectors. New `alignment.npz` files retain the necessary observations.
+
 ### Preview and shutdown
 
 Preview shows the latest captured image and the most recently completed alignment
 state, including current matched chord, processing latency, processed fps, and
-drops. It does not wait for the displayed frame to finish inference. Q, Esc,
-closing the preview window, or Ctrl-C stops the session.
+drops, with the alignment panel below when enabled. It does not wait for the
+displayed frame to finish inference. Q, Esc, closing the preview window, or Ctrl-C
+stops the session.
 
 Normal video EOF first finishes or retires accepted work, then drains scheduled
 chord releases. Interruption preserves releases already emitted and marks accepted
@@ -650,14 +825,77 @@ and logs. The runtime attempts to preserve MIDI and a summary even after another
 cleanup step fails; an unwritable output location can still prevent saving them.
 A failed or interrupted run must not be counted as a complete recording.
 
+For camera sessions, shutdown closes the release scheduler and then stops capture
+before slower WebSocket, GPU-worker, recording, and file cleanup. Capture returns
+its final successful-read count, including a read that completed but was never
+published to the inference mailbox. Read IDs unseen by the main loop are recorded
+as `session_stopped` drops. The final report can supply the latest read's timestamp;
+unknown timestamps of intermediate unseen reads stay blank rather than being
+estimated from frame IDs. `camera_capture_accounting_complete=true` indicates
+that this final report was received; it is false if capture required forced
+termination or returned no report, so final read/drop counts may be incomplete.
+
+During a session, the terminal prints measured `input` and `processed` FPS every
+five seconds, calculated over the interval since the previous progress line.
+Input FPS uses the capture worker's successful read/decode counter, including
+frames later discarded; it does not use the advertised camera FPS or the logical
+30 Hz frame positions. Processed FPS counts completed AirPiano frames over the
+same interval. A sustained input stall therefore brings the current input rate
+to zero instead of retaining the session's earlier average. The summary's
+`input_fps=30` is the nominal configured rate, not a measurement; use
+`throughput_captured_fps`, `throughput_processed_fps`, and the progress lines for
+measured rates.
+
 `throughput_processed_fps` divides processed frames by actual session elapsed
 time, excluding warmup and the preparation countdown and including final
 processing/event drain.
-`processed_over_source_fps` divides by the original video's duration; it alone
-cannot prove that inference kept up with real time. For camera, logical slot counts,
-accepted-capture counts, and raw read counts can differ: stalls leave empty slots,
-and extra reads within one slot are recorded as duplicates. Video validation computes
-accuracy against aligned MIDI; live camera sessions do not have that ground truth.
+For video, `processed_over_source_fps` divides by the original video's duration;
+it alone cannot prove that inference kept up with real time. For camera,
+`source_duration_seconds` is actual elapsed time through capture stopping,
+excluding slower output cleanup, and source frame IDs count successful reads.
+Camera frames are not dropped merely because two reads arrived in one 30 Hz interval; missing read IDs in processed output indicate real
+pipeline drops. Input and processed throughput remain separate measurements.
+Video validation computes accuracy against aligned MIDI; live camera sessions do
+not have that ground truth.
+
+### Measured camera arrival run, 2026-11-09
+
+A physical W1 webcam at 1920 × 1080 MJPG with two driver buffers ran for
+60.179 seconds after GO. Fast WiLoR used GPUs 1 and 2 (RTX 4090s), and AirPiano
+used GPU 1. Preview, video recording, and WebSocket playback were disabled. The
+session ended by deliberate interruption after the measurement interval.
+
+Capture reported 1,804 successful reads at **29.977 fps**; AirPiano processed
+1,801 frames at **29.927 fps**. All three unprocessed reads were marked
+`session_stopped` during shutdown. There were no arrival-slot duplicate drops,
+no deadline misses, and no completed frames above 100 ms. Every read ID was
+accounted for, `camera_capture_accounting_complete` was true, and cleanup had no
+errors. This is measured throughput including shutdown accounting, not the nominal
+`input_fps` setting. The frame log contains 61 pairs of consecutive camera IDs
+that share the same former `floor(source_time * 30)` bucket; both reads were
+retained, directly exercising the arrival-jitter fix.
+
+| Processing component | Average (ms) | p95 (ms) | Maximum (ms) |
+| --- | ---: | ---: | ---: |
+| WiLoR + canonicalization | 32.49 | 43.53 | 71.73 |
+| AirPiano | 12.05 | 14.16 | 19.36 |
+| Overhead | 5.51 | 12.15 | 42.73 |
+| Total | 50.06 | 63.24 | 92.52 |
+
+Latency begins at the camera read-completion timestamp and excludes sensor exposure
+and prior driver buffering. Of the processed frames, 528 had no hand detections,
+181 had one, 1,074 had two, and 18 had three. The measurement therefore includes a
+mixed detection workload; there was no aligned performance reference to evaluate
+chord accuracy. These are results for this run, not a hard 100 ms latency guarantee.
+See the [verification](../outputs/camera_arrival_validation_20261109T174317Z/verification.json),
+[full summary](../outputs/camera_arrival_validation_20261109T174317Z/session/summary.json),
+and [command and source hashes](../outputs/camera_arrival_validation_20261109T174317Z/command.json).
+
+An [earlier 60-second run](../outputs/camera_arrival_validation_20261109T173806Z/verification.json),
+before the final shutdown-accounting correction, had 68.59 ms p95 and 109.95 ms
+maximum latency, with one deadline drop and one completed frame above 100 ms.
+It had a different hand-detection mix, mostly two-hand frames. The variation
+reinforces that the deadline policy is not a hard completion-time guarantee.
 
 ## Validate two complete tabletop recordings
 
@@ -710,9 +948,8 @@ conda run --no-capture-output -n v2n python -m unittest discover \
 ```
 
 Headless video validation exercises capture, GPU workers, ordering, the scheduler,
-and metrics. Physical camera behavior and GUI preview still require a machine
-with those devices; this server currently has neither a camera device nor a
-configured display.
+and metrics. Those runs did not validate physical camera behavior or GUI preview;
+these require separate checks with the actual camera and a configured display.
 
 ### Measured result, 2026-11-01
 

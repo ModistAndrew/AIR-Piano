@@ -1,4 +1,4 @@
-"""Bounded, best-effort WebSocket note-on delivery for released MIDI events.
+"""Bounded, best-effort WebSocket note-ons for score releases and count-in cues.
 
 Only the transport thread performs network I/O or calls ``emit``. Local send
 completion is observable; remote receipt and audible playback aren't acknowledged.
@@ -92,9 +92,11 @@ class WebSocketMidiOutput:
                 return
 
     def submit(self, release, *, released_at=None):
-        """Queue one controller release without network, callback, or file I/O."""
+        """Queue one release or count-in cue without network, callback, or file I/O."""
         now = time.perf_counter()
         record = {"chord_id": release.get("chord_id"), "release_time": release.get("release_time")}
+        if release.get("event_type") == "countdown":
+            record.update(event_type="countdown", countdown_remaining=release["countdown_remaining"])
         try:
             pitches = list(release["pitches"])
             if not pitches or any(isinstance(pitch, bool) or int(pitch) != pitch or not 0 <= pitch <= 127 for pitch in pitches):

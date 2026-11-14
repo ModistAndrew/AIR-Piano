@@ -97,7 +97,7 @@ class CaptureSourceTests(unittest.TestCase):
         finally:
             source.close()
 
-    def test_camera_clock_preserves_gaps_and_discards_duplicate_reads(self):
+    def test_camera_arrivals_keep_dense_ids_and_actual_timestamps(self):
         image = np.zeros((48, 64, 3), dtype=np.uint8)
         fake = mock.Mock()
         fake.isOpened.return_value = True
@@ -111,21 +111,22 @@ class CaptureSourceTests(unittest.TestCase):
                          stop, drop_stale, dropped):
             frames.append(frame.copy())
             return dropped
-        # Two reads occupy clock slot0; after a100ms gap the next is slot3.
+        # Nearby reads and a later stall keep their IDs and actual timestamps.
         try:
             with mock.patch("airpiano.streaming.io.cv2.VideoCapture", return_value=fake), \
                  mock.patch("airpiano.streaming.io._write_capture_frame", side_effect=record_frame), \
                  mock.patch("airpiano.streaming.io.time.perf_counter", side_effect=[
-                     epoch, epoch, epoch + .001, epoch + .012, epoch + .110, epoch + .111]):
+                     epoch, epoch, epoch + .001, epoch + .012, epoch + .110, epoch + .111, epoch + .112]):
                 with self.assertRaisesRegex(RuntimeError, "Camera read failed"):
                     _capture_worker(0, "camera", 30.0, 64, 48, True,
                                     None, None, None, None, control, begin, threading.Event())
-            first, second = frames
-            self.assertEqual([first["sequence"], second["sequence"]], [0, 3])
-            self.assertAlmostEqual(second["source_time"], .110)
-            self.assertEqual(second["read_count"], 3)
-            self.assertEqual(second["captured_frames"], 2)
-            self.assertEqual(second["duplicate_reads_dropped"], 1)
+            self.assertEqual([frame["sequence"] for frame in frames], [0, 1, 2])
+            for frame, source_time in zip(frames, (.001, .012, .110)):
+                self.assertAlmostEqual(frame["source_time"], source_time)
+                self.assertAlmostEqual(frame["acquired_at"], epoch + source_time)
+                self.assertEqual(frame["duplicate_reads_dropped"], 0)
+            self.assertEqual(frames[-1]["read_count"], 3)
+            self.assertEqual(frames[-1]["captured_frames"], 3)
             fake.release.assert_called_once()
         finally:
             metadata = control.get_nowait()["metadata"]

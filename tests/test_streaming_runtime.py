@@ -581,6 +581,7 @@ class StreamingRuntimeTest(unittest.TestCase):
         sender = mock.Mock()
         sender.close.return_value = {"status": "closed", "sent_events": 1}
         self.cfg.streaming.midi_output.enabled = True
+        self.cfg.streaming.countdown_midi = False
         seen = []
         original_event = runtime.SessionLog.event
 
@@ -622,6 +623,7 @@ class StreamingRuntimeTest(unittest.TestCase):
 
     def test_websocket_does_not_send_raw_triggers(self):
         self.cfg.streaming.midi_output.enabled = True
+        self.cfg.streaming.countdown_midi = False
         sender = mock.Mock()
         sender.close.return_value = {"status": "closed", "sent_events": 0}
         with mock.patch("airpiano.streaming.midi_output.WebSocketMidiOutput", return_value=sender):

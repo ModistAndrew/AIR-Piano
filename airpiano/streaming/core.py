@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+from bisect import bisect_right
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -27,15 +29,24 @@ class CanonicalFrameAdapter:
         self.previous_pose: np.ndarray | None = None
         self.previous_presence: np.ndarray | None = None
         self.last_frame_index = -1
+        self.last_source_time: float | None = None
 
     def step(
         self, arrays: Mapping[str, np.ndarray], *, frame_index: int | None = None,
+        source_time: float | None = None,
     ) -> tuple[np.ndarray, np.ndarray]:
         if frame_index is None:
             frame_index = self.last_frame_index + 1
         if frame_index <= self.last_frame_index:
             raise ValueError("canonical frame indices must increase")
-        if frame_index != self.last_frame_index + 1:
+        elapsed = (
+            None if source_time is None or self.last_source_time is None
+            else source_time - self.last_source_time
+        )
+        stale_wrist = elapsed is not None and (
+            elapsed >= 0.100 or math.isclose(elapsed, 0.100, rel_tol=0.0, abs_tol=1e-12)
+        )
+        if frame_index != self.last_frame_index + 1 or stale_wrist:
             self.previous_pose = None
             self.previous_presence = None
         pose = np.zeros((1, 2, 21, 3), dtype=np.float32)
@@ -53,6 +64,7 @@ class CanonicalFrameAdapter:
         self.previous_pose = pose
         self.previous_presence = presence
         self.last_frame_index = frame_index
+        self.last_source_time = source_time
         return processed_pose[-1], processed_presence[-1]
 
 
@@ -62,7 +74,9 @@ class AirPianoStepper:
     Logical frame indices preserve the canonical clock when observations drop.
     Missing slots remain real time steps with absent hands, and only the supplied
     observation produces events. Full CPU history is retained for controller
-    rewinds. Set release=False when a separate scheduler owns release timing.
+    rewinds. Camera ``timestamp_history`` mode resolves history against actual
+    observation times and never assigns timestamps to absent placeholders.
+    Set release=False when a separate scheduler owns release timing.
     """
 
     def __init__(
@@ -74,10 +88,14 @@ class AirPianoStepper:
         *,
         fps: float = 30.0,
         bf16: bool = False,
+        timestamp_history: bool = False,
     ) -> None:
         self.model = model.eval()
         self.device = device
         self.bf16 = bf16
+        self.timestamp_history = timestamp_history
+        self.source_times: list[float] = []
+        self.source_frame_indices: list[int] = []
         self.chord_tokens = components["tokenizer"].tokenize(chords)
         target_generator = components["target_generator"]
         self.controller = RealTimeController(
@@ -86,11 +104,18 @@ class AirPianoStepper:
             fps=fps,
             target_radius_seconds=target_generator.softener.radius_seconds,
             target_delay_seconds=target_generator.event_generator.delay_seconds,
+            history_index_resolver=(
+                self._timestamp_history_index if timestamp_history else None
+            ),
         )
         self.video_frames: list[torch.Tensor] = []
         self.presence_frames: list[torch.Tensor] = []
         self.last_frame_index = -1
         self.last_source_time = 0.0
+
+    def _timestamp_history_index(self, source_time: float) -> int:
+        observation_index = max(0, bisect_right(self.source_times, source_time) - 1)
+        return self.source_frame_indices[observation_index]
 
     @torch.no_grad()
     def step(
@@ -104,6 +129,8 @@ class AirPianoStepper:
         now: float | None = None,
         return_scores: bool = False,
     ) -> dict[str, Any]:
+        if self.timestamp_history and source_time is None:
+            raise ValueError("timestamp history requires an actual source_time")
         if frame_index is None:
             frame_index = self.last_frame_index + 1
         if frame_index <= self.last_frame_index:
@@ -114,6 +141,9 @@ class AirPianoStepper:
             self.presence_frames.extend([torch.zeros_like(presence)] * missing_count)
         self.video_frames.append(hands)
         self.presence_frames.append(presence)
+        if self.timestamp_history:
+            self.source_times.append(source_time)
+            self.source_frame_indices.append(frame_index)
         controller = self.controller
         frame_time = frame_index / controller.fps if source_time is None else source_time
         with controller.lock:

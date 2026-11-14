@@ -1,13 +1,15 @@
 """Bounded OpenCV/SRT capture and spawned WiLoR workers for streaming inference.
 
 Images from capture are BGR, as expected by the existing WiLoR backend. Camera
-acquisition timestamps are host read-completion times, not exposure timestamps.
+acquisition timestamps remain host read-completion times; an optional calibrated
+delay shifts the source timeline to estimated capture time.
 """
 
 from __future__ import annotations
 
 import multiprocessing as mp
 from multiprocessing import shared_memory
+import math
 import queue
 import time
 import traceback
@@ -68,9 +70,13 @@ def _write_capture_frame(image_buffer, state, ready, free, lock, frame,
 
 
 def _capture_worker(source, kind, fps, width, height, drop_stale,
-                    state, ready, free, lock, control, begin, stop, recording_sink=None):
+                    state, ready, free, lock, control, begin, stop, recording_sink=None,
+                    capture_delay_seconds=0.0):
     capture = memory = None
     ready_sent = False
+    read_count = 0
+    latest_camera_frame = None
+    dropped = 0
     try:
         opened_at = time.perf_counter()
         capture = cv2.VideoCapture(source)
@@ -78,10 +84,15 @@ def _capture_worker(source, kind, fps, width, height, drop_stale,
             raise RuntimeError(f"Cannot open {kind} source: {source}")
         first_frame = None
         if kind == "camera":
+            # Select MJPEG before size/rate: raw YUYV on USB webcams can cap
+            # 1920x1080 at 5 Hz even when the camera supports MJPEG at 30 Hz.
+            capture.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
             capture.set(cv2.CAP_PROP_FRAME_WIDTH, width)
             capture.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
             capture.set(cv2.CAP_PROP_FPS, fps)
-            capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            # Keep one driver buffer available while OpenCV decodes the other.
+            # A single buffer halves the W1 webcam's delivered frame rate.
+            capture.set(cv2.CAP_PROP_BUFFERSIZE, 2)
             source_fps = float(capture.get(cv2.CAP_PROP_FPS))
             if source_fps > 0 and abs(source_fps - fps) > 0.1:
                 raise ValueError(
@@ -108,6 +119,11 @@ def _capture_worker(source, kind, fps, width, height, drop_stale,
             "frame_shape": shape, "frame_count": frame_count,
             "startup_seconds": time.perf_counter() - opened_at,
             "shared_memory_name": memory.name,
+            **({"frame_index_basis": "camera_read_sequence",
+                "camera_capture_delay_ms": capture_delay_seconds * 1000.0,
+                "source_time_basis": ("estimated_capture_time" if capture_delay_seconds
+                                      else "read_completion")}
+               if kind == "camera" else {}),
         }})
         ready_sent = True
         while not stop.is_set():
@@ -120,10 +136,6 @@ def _capture_worker(source, kind, fps, width, height, drop_stale,
             return
         sequence = 0
         accepted_frames = 0
-        read_count = 0
-        last_camera_slot = -1
-        duplicate_reads = 0
-        dropped = 0
         while not stop.is_set():
             if kind == "video":
                 scheduled = epoch + sequence / fps
@@ -139,18 +151,17 @@ def _capture_worker(source, kind, fps, width, height, drop_stale,
             else:
                 ok, image = capture.read()
                 acquired = time.perf_counter()
-                # Drain the pre-start interval after model warmup rather than
-                # emitting frames retained in the camera driver's old buffer.
-                if ok and acquired < epoch:
+                # Drain frames estimated to precede the session, including
+                # those still in the capture pipeline when the clock starts.
+                if ok and acquired < epoch + capture_delay_seconds:
                     continue
-                source_time = acquired - epoch
+                source_time = acquired - (epoch + capture_delay_seconds)
                 if ok:
                     read_count += 1
-                    sequence = int(source_time * fps)
-                    if sequence <= last_camera_slot:
-                        duplicate_reads += 1
-                        continue
-                    last_camera_slot = sequence
+                    latest_camera_frame = {
+                        "sequence": read_count - 1, "source_time": source_time,
+                        "acquired_at": acquired, "scheduled_at": acquired,
+                    }
                 scheduled = acquired
             if not ok:
                 if kind == "camera":
@@ -167,7 +178,7 @@ def _capture_worker(source, kind, fps, width, height, drop_stale,
                      "acquired_at": acquired, "scheduled_at": scheduled,
                      "image": image,
                      "read_count": read_count if kind == "camera" else sequence + 1,
-                     "duplicate_reads_dropped": duplicate_reads,
+                     "duplicate_reads_dropped": 0,
                      "captured_frames": accepted_frames + 1}
             if recording_sink is not None:
                 recording_sink.offer(image, source_time)
@@ -175,12 +186,20 @@ def _capture_worker(source, kind, fps, width, height, drop_stale,
                 image_buffer, state, ready, free, lock, frame, stop, drop_stale, dropped
             )
             accepted_frames += 1
-            if kind == "video":
-                sequence += 1
+            # Camera IDs count successful post-start reads, independent of
+            # arrival jitter. Source timestamps still carry the actual timing.
+            sequence += 1
     except Exception:
         control.put({"kind": "error", "traceback": traceback.format_exc()})
         raise
     finally:
+        if kind == "camera":
+            # A read may complete after stop or remain unread in the mailbox.
+            # Preserve its count/timing independently of image publication.
+            control.put({"kind": "camera_stopped", "frames": read_count,
+                         "read_count": read_count, "last_sequence": read_count - 1,
+                         "latest_frame": latest_camera_frame, "dropped": dropped,
+                         "stopped_at": time.perf_counter()})
         if recording_sink is not None:
             recording_sink.close()
         if capture is not None:
@@ -197,9 +216,12 @@ class CaptureSource:
     ``start(); wait_ready(); begin(epoch)`` separates initialization from capture.
     Camera reads start only after ``begin``. Video frame 0 is primed before ready.
     ``drop_stale=False`` retains every video frame, exposing lag in its original
-    schedule. Camera sequence numbers are elapsed 30 Hz slots: stalls leave gaps
-    and duplicate reads in one slot are discarded. ``source_time`` retains the
-    actual read-completion time; ``read_count`` counts successful post-epoch reads.
+    schedule. Camera sequence numbers count successful post-epoch reads: arrival
+    jitter and capture stalls do not discard reads or create synthetic IDs.
+    ``source_time`` is read completion minus the optional calibrated camera delay;
+    ``acquired_at`` and processing deadlines always retain real read completion.
+    Estimated pre-session frames are drained before assigning IDs; ``read_count``
+    counts the remaining successful reads. The legacy duplicate counter stays zero.
     SRT uses optional PyAV and decodes continuously through warmup. Its model
     timeline follows sender PTS, while processing deadlines begin at local decode
     completion. SRT requires ``drop_stale=True`` and has no automatic reconnect.
@@ -207,7 +229,7 @@ class CaptureSource:
 
     def __init__(self, source, *, kind="video", fps=30.0, width=1920,
                  height=1080, capacity=1, drop_stale=True, srt_options=None,
-                 recording_sink=None):
+                 recording_sink=None, capture_delay_ms=0.0):
         if kind not in {"video", "camera", "srt"}:
             raise ValueError("kind must be 'video', 'camera', or 'srt'")
         if kind == "srt" and not drop_stale:
@@ -216,6 +238,11 @@ class CaptureSource:
             raise ValueError("SRT source must be an srt:// URL")
         if capacity != 1 or fps <= 0:
             raise ValueError("capture uses one latest-frame slot; fps must be positive")
+        capture_delay_ms = float(capture_delay_ms)
+        if not math.isfinite(capture_delay_ms) or capture_delay_ms < 0:
+            raise ValueError("capture_delay_ms must be finite and nonnegative")
+        if kind != "camera" and capture_delay_ms != 0:
+            raise ValueError("capture_delay_ms is supported only for camera input")
         self.context = mp.get_context("spawn")
         self.control = self.context.Queue()
         self.begin_queue = self.context.Queue(maxsize=1)
@@ -233,7 +260,8 @@ class CaptureSource:
             args = (source, float(fps), dict(srt_options or {}), *shared_args, recording_sink)
         else:
             target = _capture_worker
-            args = (source, kind, float(fps), width, height, drop_stale, *shared_args, recording_sink)
+            args = (source, kind, float(fps), width, height, drop_stale, *shared_args,
+                    recording_sink, capture_delay_ms / 1000.0)
         self.process = self.context.Process(
             name="airpiano-capture", target=target, args=args,
         )
@@ -241,6 +269,7 @@ class CaptureSource:
         self.memory = None
         self._image = None
         self._terminal = None
+        self._camera_stopped = None
         self._last_sequence = -1
         self._eof_delivered = False
         self._closed = False
@@ -258,15 +287,20 @@ class CaptureSource:
         )
 
     def _receive_control(self):
+        failure = None
         while True:
             try:
                 message = self.control.get_nowait()
             except queue.Empty:
+                if failure is not None:
+                    raise failure
                 return
             if message["kind"] == "error":
-                raise RuntimeError("Capture process failed:\n" + message["traceback"])
-            if message["kind"] == "ready":
+                failure = RuntimeError("Capture process failed:\n" + message["traceback"])
+            elif message["kind"] == "ready":
                 self._attach(message["metadata"])
+            elif message["kind"] == "camera_stopped":
+                self._camera_stopped = message
             else:
                 self._terminal = message
 
@@ -324,8 +358,9 @@ class CaptureSource:
         return None
 
     def close(self):
+        """Stop capture and return camera-only final read accounting when available."""
         if self._closed:
-            return
+            return self._camera_stopped
         self._closed = True
         _close_processes([self.process], [], self.stop)
         # A caller can stop before wait_ready(). Recover the advertised buffer
@@ -344,6 +379,7 @@ class CaptureSource:
             _close_processes([], [self.control, self.begin_queue])
         if failure is not None:
             raise failure
+        return self._camera_stopped
 
 
 def _warm_pose_shapes(model, model_cfg, device, hand_counts):

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from bisect import bisect_left
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from threading import RLock
@@ -56,12 +56,14 @@ class RealTimeController:
         fps: float = 30.0,
         target_radius_seconds: float = 0.2,
         target_delay_seconds: float = 0.0,
+        history_index_resolver: Callable[[float], int] | None = None,
     ) -> None:
         self.lock = RLock()
         self.onset_prediction_offset = (
             float(target_radius_seconds) * 0.5 - float(target_delay_seconds)
         )
         self.fps = float(fps)
+        self.history_index_resolver = history_index_resolver
         self.chord_count = len(score_chords)
         if not self.chord_count:
             raise ValueError("full_song_real_time requires at least one chord")
@@ -144,10 +146,15 @@ class RealTimeController:
             start_time = self.estimate_time(
                 self.chords[self.chord_window_start].time_ticks
             )
-            self.video_history_start = (
-                0 if math.isinf(start_time)
-                else max(0, min(math.floor(start_time * self.fps), frame_index))
-            )
+            if math.isinf(start_time):
+                self.video_history_start = 0
+            else:
+                history_index = (
+                    math.floor(start_time * self.fps)
+                    if self.history_index_resolver is None
+                    else self.history_index_resolver(start_time)
+                )
+                self.video_history_start = max(0, min(history_index, frame_index))
             self.event_records.append({
                 "chord_id": event.id,
                 "frame_index": frame_index,

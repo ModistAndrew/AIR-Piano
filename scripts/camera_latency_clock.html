@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Camera latency clock</title>
+  <style>
+    :root { color-scheme: dark; font-family: system-ui, sans-serif; }
+    body { margin: 0; padding: 24px; background: #101010; color: #eee; }
+    main { max-width: 1200px; margin: auto; }
+    h1 { margin: 0 0 12px; font-size: 24px; }
+    p { line-height: 1.5; }
+    #clock-area { padding: 32px 12px; margin: 24px 0; text-align: center;
+      background: #000; border: 2px solid #fff; }
+    #clock { font-family: ui-monospace, "DejaVu Sans Mono", monospace;
+      font-variant-numeric: tabular-nums; font-size: clamp(48px, 10vw, 144px);
+      font-weight: 700; white-space: nowrap; line-height: 1.25; color: #fff; }
+    #clock-area p { margin: 8px 0 0; color: #ddd; }
+    .controls { display: flex; flex-wrap: wrap; gap: 12px; }
+    button { border: 1px solid #888; border-radius: 6px; padding: 12px 18px;
+      background: #333; color: white; font: inherit; cursor: pointer; }
+    button:disabled { opacity: .45; cursor: default; }
+    #start { background: #215c37; }
+    #sync-status, #capture-status { margin-bottom: 8px; }
+    #error, #foreground-warning { color: #ffd380; }
+    a { color: #92caff; }
+    #output { overflow-wrap: anywhere; }
+    small { color: #bbb; }
+    [hidden] { display: none !important; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Camera latency clock</h1>
+  <p>Point the server's webcam at this timer, then start capture. Keep this page
+    visible and in the foreground until capture finishes. The server saves
+    timestamped samples; no live preview is needed.</p>
+  <div id="clock-area">
+    <div id="clock">------.---</div>
+    <p>Server-relative time, in seconds</p>
+  </div>
+  <div class="controls">
+    <button id="start" disabled>Start capture</button>
+    <button id="sync">Synchronize again</button>
+    <button id="fullscreen">Full screen</button>
+  </div>
+  <p id="sync-status">Synchronizing the clock…</p>
+  <p id="capture-status">Connecting to the capture server…</p>
+  <p id="foreground-warning" hidden>This page is hidden. Bring it to the foreground
+    so the timer continues updating.</p>
+  <p id="error" role="alert" hidden></p>
+  <p id="output"></p>
+  <p id="sample" hidden><a href="/sample/latest.jpg" target="_blank"
+    rel="noopener">Open the latest saved sample</a></p>
+  <p><small>Compare the arrival time printed on a saved sample with the timer
+    visible inside that image. The difference includes the reference screen's
+    rendering and refresh delay as well as camera capture and transfer. At 60 Hz,
+    the screen updates about every 16.7 ms; the millisecond digits do not establish
+    millisecond accuracy. Clock synchronization uncertainty is separate from
+    display delay, and this is not a direct sensor exposure timestamp.</small></p>
+</main>
+<script>
+  "use strict";
+  const byId = id => document.getElementById(id);
+  let offset = null;
+  let synchronizing = false;
+  let starting = false;
+  let captureState = null;
+  let serverReachable = false;
+
+  function showError(message) {
+    byId("error").textContent = message;
+    byId("error").hidden = !message;
+  }
+
+  function captureActive() {
+    return starting || captureState === "warming_up" || captureState === "capturing";
+  }
+
+  function updateButtons() {
+    byId("start").disabled = offset === null || synchronizing || starting
+      || !serverReachable || captureState !== "waiting";
+    byId("sync").disabled = synchronizing || captureActive();
+  }
+
+  async function request(path, options = {}) {
+    const response = await fetch(path, {
+      cache: "no-store", signal: AbortSignal.timeout(5000), ...options
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || `${path}: HTTP ${response.status}`);
+    return data;
+  }
+
+  async function synchronize() {
+    if (synchronizing || captureActive()) return;
+    synchronizing = true;
+    updateButtons();
+    byId("sync-status").textContent = "Synchronizing: measuring 20 round trips…";
+    try {
+      let best = null;
+      for (let i = 0; i < 20; ++i) {
+        const clientSent = performance.now() / 1000;
+        const times = await request("/time");
+        const clientReceived = performance.now() / 1000;
+        const roundTrip = Math.max(0, (clientReceived - clientSent)
+          - (times.sent_s - times.received_s));
+        const sample = {
+          offset_s: ((times.received_s - clientSent)
+            + (times.sent_s - clientReceived)) / 2,
+          round_trip_s: roundTrip,
+          uncertainty_s: roundTrip / 2
+        };
+        if (best === null || sample.round_trip_s < best.round_trip_s) best = sample;
+      }
+      if (captureActive()) return;
+      await request("/sync", {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(best)
+      });
+      if (captureActive()) return;
+      offset = best.offset_s;
+      byId("sync-status").textContent =
+        `Clock synchronized. Best round trip: ${(best.round_trip_s * 1000).toFixed(2)} ms. `
+        + `Estimated clock uncertainty: ±${(best.uncertainty_s * 1000).toFixed(2)} ms `
+        + "(excludes display delay). Refreshes while waiting; held constant during capture.";
+    } catch (error) {
+      byId("sync-status").textContent = `Clock synchronization failed: ${error.message}. `
+        + (offset === null ? "Capture is unavailable until synchronization succeeds."
+          : "The timer is using the previous synchronization.");
+    } finally {
+      synchronizing = false;
+      if (captureActive()) {
+        byId("sync-status").textContent = "Capture is active. Keeping the previous clock synchronization fixed.";
+      }
+      updateButtons();
+    }
+  }
+
+  function drawClock() {
+    if (offset !== null) {
+      // Use a fresh clock read: the animation callback timestamp can precede it.
+      byId("clock").textContent = (performance.now() / 1000 + offset).toFixed(3);
+    }
+    requestAnimationFrame(drawClock);
+  }
+
+  async function pollStatus() {
+    try {
+      const status = await request("/status");
+      captureState = status.state;
+      serverReachable = true;
+      const states = {
+        waiting: "Waiting. Position the camera, then start capture.",
+        warming_up: "Warming up the camera. Keep the timer visible.",
+        capturing: `Capturing: ${status.captured_frames} frames, `
+          + `${status.elapsed_s.toFixed(1)} / ${status.duration_s.toFixed(1)} seconds.`,
+        complete: `Capture complete: ${status.captured_frames} frames.`,
+        interrupted: `Capture interrupted: ${status.captured_frames} frames.`,
+        failed: `Capture failed: ${status.error || "see the server log"}.`
+      };
+      byId("capture-status").textContent = states[status.state] || status.state;
+      byId("output").textContent = status.output_dir ? `Server output: ${status.output_dir}` : "";
+      byId("sample").hidden = status.state !== "complete";
+      updateButtons();
+    } catch (error) {
+      serverReachable = false;
+      updateButtons();
+      byId("capture-status").textContent = `Cannot reach the capture server: ${error.message}`;
+    } finally {
+      setTimeout(pollStatus, 1000);
+    }
+  }
+
+  byId("start").addEventListener("click", async () => {
+    starting = true;
+    updateButtons();
+    showError("");
+    try {
+      await request("/start", {method: "POST"});
+      captureState = "warming_up";
+      byId("capture-status").textContent = "Starting capture. Keep the timer visible.";
+    } catch (error) {
+      showError(`Could not start capture: ${error.message}`);
+    } finally {
+      starting = false;
+      updateButtons();
+    }
+  });
+  byId("sync").addEventListener("click", synchronize);
+  byId("fullscreen").addEventListener("click", async () => {
+    try {
+      if (document.fullscreenElement) await document.exitFullscreen();
+      else await document.documentElement.requestFullscreen();
+    } catch (error) {
+      showError(`Full screen is unavailable: ${error.message}. You can use the browser's full-screen shortcut.`);
+    }
+  });
+  document.addEventListener("visibilitychange", () => {
+    byId("foreground-warning").hidden = !document.hidden;
+  });
+  requestAnimationFrame(drawClock);
+  synchronize();
+  setInterval(() => {
+    if (captureState === "waiting") synchronize();
+  }, 10000);
+  pollStatus();
+</script>
+</body>
+</html>

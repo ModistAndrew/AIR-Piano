@@ -117,6 +117,8 @@ streaming:
     kind: camera
     video_path: null
     camera_index: 0
+    # Estimated exposure-to-read delay; shifts camera source timestamps only.
+    capture_delay_ms: 0.0
     # SRT listener for an iPhone sender; FFmpeg URL latency is in microseconds.
     srt_url: "srt://0.0.0.0:9001?mode=listener&latency=100000"
     srt_open_timeout_seconds: 120.0
@@ -130,11 +132,16 @@ streaming:
   airpiano_device: cuda:1
   fast: true
   preview: true
+  alignment:
+    enabled: true
+    history_seconds: 15.0
+    refresh_hz: 5.0
   countdown_seconds: 5
+  countdown_midi: true  # C4 on each count, C5 on GO, through the MIDI receiver.
   log_midi_events: true
   midi_output:
     enabled: true
-    url: "ws://10.5.149.66:8765"
+    url: "ws://10.5.188.24:8765"
     capacity: 32
     max_age_ms: 100.0
     open_timeout_seconds: 1.0

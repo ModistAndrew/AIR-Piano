@@ -23,6 +23,7 @@ from ..inference import load_model_checkpoint
 from ..render.sonify import _seconds_to_tick, _write_note_events
 from ..song_input import _midi_beats
 from .core import AirPianoStepper, CanonicalFrameAdapter
+from .alignment import AlignmentVisualization
 from ..utils import resolve_path
 
 
@@ -32,7 +33,7 @@ FRAME_FIELDS = (
     "wilor_device", "latency_ms", "capture_to_completion_ms", "wilor_ms",
     "canonical_ms", "wilor_canonical_ms", "airpiano_ms", "overhead_ms",
     "history_frames", "hands_detected", "source_pts_seconds", "decoded_at",
-    "arrival_pts_drift_ms",
+    "arrival_pts_drift_ms", "estimated_capture_to_completion_ms",
 )
 
 
@@ -75,6 +76,10 @@ class SessionLog:
                                 f" released={record['release_time']:.3f}s"
                                 f" duration={record['duration']:.3f}s")
                 print(message, flush=True)
+            elif self.log_midi_events and kind == "countdown":
+                label = record["countdown_remaining"] or "GO"
+                print(f"[midi countdown] {label}: pitches={list(record['pitches'])} "
+                      f"queued={record['queued']}", flush=True)
 
     def close(self) -> None:
         try:
@@ -147,8 +152,9 @@ class ReleaseScheduler:
         self.check()
 
 
-def prepare_start(capture: Any, pool: Any, countdown_seconds: int) -> float:
-    """Drain live sources before a shared start epoch, checking worker health."""
+def prepare_start(capture: Any, pool: Any, countdown_seconds: int, *,
+                  on_countdown: Callable[[int, float], None] | None = None) -> float:
+    """Drain live sources and emit optional count-in cues on the shared clock."""
     print("[streaming] models ready", flush=True)
     # Camera reads before this epoch drain old driver frames. Video retains frame
     # zero; SRT keeps decoding and discards pre-epoch frames. Keep the original
@@ -161,10 +167,14 @@ def prepare_start(capture: Any, pool: Any, countdown_seconds: int) -> float:
         pool.healthcheck()
         remaining = epoch - time.perf_counter()
         if remaining <= 0:
+            if countdown_seconds and on_countdown is not None:
+                on_countdown(0, epoch)
             return epoch
         if countdown_seconds:
             display = math.ceil(remaining)
             if display != last_remaining:
+                if on_countdown is not None:
+                    on_countdown(display, epoch)
                 print(f"[streaming] starting in {display}...", flush=True)
                 last_remaining = display
         time.sleep(min(0.05, remaining))
@@ -172,9 +182,20 @@ def prepare_start(capture: Any, pool: Any, countdown_seconds: int) -> float:
 
 def validate_config(cfg: DictConfig) -> None:
     settings = cfg.streaming
+    capture_delay = float(settings.source.get("capture_delay_ms", 0.0))
+    if not math.isfinite(capture_delay) or capture_delay < 0:
+        raise ValueError("streaming.source.capture_delay_ms must be finite and nonnegative")
+    if capture_delay and settings.source.kind != "camera":
+        raise ValueError("streaming.source.capture_delay_ms is supported for camera input only")
     countdown = float(settings.get("countdown_seconds", 5))
     if not math.isfinite(countdown) or countdown < 0 or not countdown.is_integer():
         raise ValueError("streaming.countdown_seconds must be a nonnegative integer")
+    alignment = settings.get("alignment", {})
+    if alignment.get("enabled", True):
+        for name, default in (("history_seconds", 15.0), ("refresh_hz", 5.0)):
+            value = float(alignment.get(name, default))
+            if not math.isfinite(value) or value <= 0:
+                raise ValueError(f"streaming.alignment.{name} must be finite and positive")
     midi_output = settings.get("midi_output", {})
     if midi_output.get("enabled", False):
         try:
@@ -290,10 +311,16 @@ def summarize(directory: Path, *, source_frame_count: int, elapsed_seconds: floa
     stages = {key: statistics([float(row[key]) for row in processed]) for key in (
         "wilor_canonical_ms", "airpiano_ms", "overhead_ms", "latency_ms", "capture_to_completion_ms",
     )}
+    estimated_capture_latency = [float(row["estimated_capture_to_completion_ms"]) for row in processed
+                                 if row.get("estimated_capture_to_completion_ms") not in (None, "")]
+    if metadata.get("source_kind") == "camera":
+        stages["estimated_capture_to_completion_ms"] = statistics(estimated_capture_latency)
     reasons: dict[str, int] = {}
     for row in dropped:
         reasons[row["reason"]] = reasons.get(row["reason"], 0) + 1
-    source_duration = source_frame_count / 30.0
+    source_duration = (elapsed_seconds
+                       if metadata.get("frame_index_basis") == "camera_read_sequence"
+                       else source_frame_count / 30.0)
     completed = [float(row["completed_at"]) for row in processed]
     cadence = ((len(completed) - 1) / (completed[-1] - completed[0])
                if len(completed) > 1 and completed[-1] > completed[0] else None)
@@ -301,7 +328,9 @@ def summarize(directory: Path, *, source_frame_count: int, elapsed_seconds: floa
                  if row.get("arrival_pts_drift_ms") not in (None, "")]
     timing_scope = (
         "Monotonic source availability to completed AirPiano; video includes decode/IPC/queueing. "
-        "Camera begins at read completion and excludes exposure/driver buffering. "
+        "Camera processing begins at read completion and excludes exposure/driver buffering. "
+        "Camera source_time subtracts camera_capture_delay_ms; estimated_capture_to_completion_ms "
+        "adds that calibrated estimate to processing latency. Processing deadlines still begin at read completion. "
         "SRT begins when a decoded frame is available, before BGR conversion; it excludes phone "
         "capture/encoding, network transport, SRT buffering, and decoding. SRT source_time follows "
         "PTS anchored to the first post-warmup decoded frame; arrival_pts_drift_ms is relative "
@@ -322,6 +351,8 @@ def summarize(directory: Path, *, source_frame_count: int, elapsed_seconds: floa
         "processed_over_source_fps": len(processed) / source_duration if source_duration else None,
         "output_cadence_fps": cadence,
         "over_100ms_frames": sum(float(row["latency_ms"]) > 100 for row in processed),
+        "estimated_capture_over_100ms_frames": (sum(value > 100 for value in estimated_capture_latency)
+                                               if metadata.get("source_kind") == "camera" else None),
         "deadline_dropped_frames": reasons.get("inference_deadline", 0) + reasons.get("capture_deadline", 0),
         "deadline_misses": (
             sum(float(row["latency_ms"]) > float(metadata["deadline_ms"]) for row in processed)
@@ -336,15 +367,24 @@ def summarize(directory: Path, *, source_frame_count: int, elapsed_seconds: floa
 
 
 def _show_preview(image: np.ndarray, *, processed: int, dropped: int,
-                  elapsed: float, latency: float | None, chord: int) -> bool:
+                  elapsed: float, latency: float | None, chord: int,
+                  alignment_image: np.ndarray | None = None,
+                  estimated_capture_latency: float | None = None) -> bool:
     height, width = image.shape[:2]
     display = cv2.resize(image, (min(width, 960), max(1, int(height * min(width, 960) / width))))
     lines = [f"Chord: {chord} | processed {processed} | dropped {dropped}",
              f"Inference: {processed / max(elapsed, 1e-6):.1f} fps | delay: {latency:.1f} ms" if latency is not None else "Waiting for inference",
              "Q / Esc: finish session"]
+    if estimated_capture_latency is not None:
+        lines.insert(2, f"Estimated capture-to-inference: {estimated_capture_latency:.1f} ms")
     for index, line in enumerate(lines):
         cv2.putText(display, line, (12, 28 + 27 * index), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 0, 0), 4)
         cv2.putText(display, line, (12, 28 + 27 * index), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 1)
+    if alignment_image is not None:
+        if alignment_image.shape[1] != display.shape[1]:
+            panel_height = max(1, round(alignment_image.shape[0] * display.shape[1] / alignment_image.shape[1]))
+            alignment_image = cv2.resize(alignment_image, (display.shape[1], panel_height))
+        display = np.concatenate((display, alignment_image), axis=0)
     cv2.imshow("AirPiano live", display)
     key = cv2.waitKey(1) & 0xFF
     return key not in (ord("q"), 27) and cv2.getWindowProperty("AirPiano live", cv2.WND_PROP_VISIBLE) >= 1
@@ -358,6 +398,7 @@ def streaming(cfg: DictConfig) -> dict[str, Any]:
 
     validate_config(cfg)
     settings = cfg.streaming
+    capture_delay_ms = float(settings.source.get("capture_delay_ms", 0.0))
     checkpoint = resolve_path(settings.checkpoint)
     score_path = resolve_path(settings.score_midi)
     if not score_path.is_file():
@@ -368,7 +409,10 @@ def streaming(cfg: DictConfig) -> dict[str, Any]:
     output.mkdir(parents=True, exist_ok=False)
     OmegaConf.save(cfg, output / "config.yaml", resolve=True)
     log = SessionLog(output, log_midi_events=bool(settings.get("log_midi_events", True)))
-    capture = pool = scheduler = stepper = recorder = midi_output = None
+    capture = pool = scheduler = stepper = recorder = midi_output = alignment = None
+    alignment_settings = settings.get("alignment", {})
+    alignment_enabled = bool(alignment_settings.get("enabled", True))
+    alignment_report = {"status": "not_started" if alignment_enabled else "disabled"}
     midi_settings = settings.get("midi_output", {})
     midi_report = {"status": "not_started" if midi_settings.get("enabled", False) else "disabled"}
     midi_console_status = None
@@ -382,7 +426,11 @@ def streaming(cfg: DictConfig) -> dict[str, Any]:
                                 "deadline_ms": settings.deadline_ms, "drop_stale": bool(settings.drop_stale),
                                 "source_kind": str(settings.source.kind),
                                 "countdown_seconds": int(settings.get("countdown_seconds", 5)),
+                                "countdown_midi": bool(settings.get("countdown_midi", True)),
                                 "log_midi_events": bool(settings.get("log_midi_events", True))}
+    if settings.source.kind == "camera":
+        metadata["frame_index_basis"] = "camera_read_sequence"
+        metadata["camera_capture_delay_ms"] = capture_delay_ms
     status, failure = "starting", None
     cleanup_errors: list[str] = []
     seen = -1
@@ -396,6 +444,7 @@ def streaming(cfg: DictConfig) -> dict[str, Any]:
     eof = False
     peak_inflight = 0
     last_latency = None
+    last_estimated_capture_latency = None
     current_chord = 1
     latest_image = None
     deadline_seconds = None if settings.deadline_ms is None else float(settings.deadline_ms) / 1000.0
@@ -404,7 +453,8 @@ def streaming(cfg: DictConfig) -> dict[str, Any]:
         nonlocal dropped
         dropped += 1
         log.frame({"frame_index": frame["sequence"], "status": "dropped", "reason": reason,
-                   "source_time": frame.get("source_time", frame["sequence"] / 30.0),
+                   "source_time": frame.get("source_time", None if settings.source.kind == "camera"
+                                                 else frame["sequence"] / 30.0),
                    "scheduled_at": frame["scheduled_at"] - epoch if epoch is not None and "scheduled_at" in frame else "",
                    "acquired_at": frame["acquired_at"] - epoch if epoch is not None and "acquired_at" in frame else "",
                    "source_pts_seconds": frame.get("source_pts_seconds"),
@@ -422,6 +472,21 @@ def streaming(cfg: DictConfig) -> dict[str, Any]:
                 detail = record.get("error") or str(midi_settings.get("url", ""))
                 print(f"[midi websocket] {state}: {detail}", flush=True)
             midi_console_status = state
+
+    def countdown_note(remaining: int, start_epoch: float) -> None:
+        # Preparation cues bypass the score controller and performance MIDI.
+        record = {"event_type": "countdown", "countdown_remaining": remaining,
+                  "pitches": (60 if remaining else 72,), "release_time": float(-remaining)}
+        submitted_at = time.perf_counter()
+        try:
+            # Age cues from their intended tick so a delayed cue is not replayed.
+            queued = bool(midi_output.submit(record, released_at=start_epoch - remaining))
+        except Exception as error:
+            queued = False
+            midi_transport_event({"status": "error", "error": str(error),
+                                  "timestamp": time.perf_counter()})
+        log.event("countdown", {**record, "submitted_time": submitted_at - start_epoch,
+                                "queued": queued})
 
     def release_event(record: dict[str, Any]) -> None:
         if midi_output is not None:
@@ -472,6 +537,9 @@ def streaming(cfg: DictConfig) -> dict[str, Any]:
             print("[streaming] opening SRT receiver; start the phone stream, then wait for model warmup", flush=True)
         else:
             source = int(settings.source.camera_index)
+            capture_options["capture_delay_ms"] = capture_delay_ms
+            print(f"[streaming] camera capture time = read completion - {capture_delay_ms:g} ms "
+                  "(calibrated estimate); processing deadline starts at read completion", flush=True)
         if recording_settings.get("enabled", True):
             try:
                 recorder = VideoRecorder(
@@ -530,18 +598,38 @@ def streaming(cfg: DictConfig) -> dict[str, Any]:
         if device.type == "cuda":
             torch.cuda.synchronize(device)
         del warm_stepper
-        stepper = AirPianoStepper(model, score.chords, components, device, fps=30.0, bf16=bool(cfg.train.bf16))
+        stepper = AirPianoStepper(model, score.chords, components, device, fps=30.0,
+                                 bf16=bool(cfg.train.bf16),
+                                 timestamp_history=settings.source.kind == "camera")
         canonical = CanonicalFrameAdapter()
+        if alignment_enabled:
+            alignment = AlignmentVisualization(
+                len(score.chords), history_seconds=float(alignment_settings.get("history_seconds", 15.0)),
+                fps=30.0,
+            )
+        metadata["alignment"] = {
+            "enabled": alignment_enabled,
+            "history_seconds": float(alignment_settings.get("history_seconds", 15.0)),
+            "refresh_hz": float(alignment_settings.get("refresh_hz", 5.0)),
+            "probability_kind": "independent_chord_onset",
+        }
         metadata.update({"torch_version": torch.__version__, "opencv_version": cv2.__version__,
                          "torch_threads": torch.get_num_threads(), "airpiano_bf16": bool(cfg.train.bf16),
                          "onset_prediction_offset": stepper.controller.onset_prediction_offset})
         (output / "session.json").write_text(json.dumps(metadata, indent=2) + "\n")
-        epoch = prepare_start(capture, pool, int(settings.get("countdown_seconds", 5)))
+        epoch = prepare_start(
+            capture, pool, int(settings.get("countdown_seconds", 5)),
+            on_countdown=(countdown_note if midi_output is not None
+                          and settings.get("countdown_midi", True) else None),
+        )
         scheduler = ReleaseScheduler(stepper, epoch, release_event)
         scheduler.start()
         status = "running"
         last_progress = epoch
+        input_reads = last_input_reads = last_processed = 0
         last_preview = 0.0
+        last_alignment_preview = float("-inf")
+        alignment_image = None
         event_count = 0
         print(f"[streaming] ready: {source} -> {output}", flush=True)
         print("[streaming] GO! Start playing.", flush=True)
@@ -559,6 +647,7 @@ def streaming(cfg: DictConfig) -> dict[str, Any]:
                         eof = True
                         source_frames = int(message["last_sequence"]) + 1
                         captured_frames = int(message["frames"])
+                        input_reads = int(message.get("read_count", captured_frames))
                         for missing in range(seen + 1, source_frames):
                             drop({"sequence": missing}, "capture_overwrite")
                         seen = max(seen, source_frames - 1)
@@ -569,6 +658,7 @@ def streaming(cfg: DictConfig) -> dict[str, Any]:
                         seen = int(message["sequence"])
                         source_frames = max(source_frames, seen + 1)
                         latest_image = message["image"]
+                        input_reads = int(message.get("read_count", seen + 1))
                         if settings.source.kind in ("camera", "srt"):
                             captured_frames = int(message.get("captured_frames", seen + 1))
                             prefix = str(settings.source.kind)
@@ -610,12 +700,16 @@ def streaming(cfg: DictConfig) -> dict[str, Any]:
                     break
                 result = results.pop(index)
                 canonical_start = time.perf_counter()
-                pose, presence = canonical.step(result["arrays"], frame_index=index)
+                pose, presence = canonical.step(
+                    result["arrays"], frame_index=index,
+                    source_time=float(frame["source_time"]) if settings.source.kind == "camera" else None,
+                )
                 presence_tensor = torch.from_numpy(presence)
                 hands = components["hand_loader"].transform(torch.from_numpy(pose), presence_tensor)
                 canonical_done = time.perf_counter()
                 step = stepper.step(hands, presence_tensor, frame_index=index,
-                                    source_time=float(frame["source_time"]), release=False)
+                                    source_time=float(frame["source_time"]), release=False,
+                                    return_scores=alignment is not None)
                 completed = time.perf_counter()
                 scheduler.wake.set()
                 with stepper.controller.lock:
@@ -631,6 +725,10 @@ def streaming(cfg: DictConfig) -> dict[str, Any]:
                 canonical_ms = (canonical_done - canonical_start) * 1000
                 airpiano_ms = (completed - canonical_done) * 1000
                 last_latency = (completed - frame["scheduled_at"]) * 1000
+                last_estimated_capture_latency = (
+                    (completed - epoch - frame["source_time"]) * 1000
+                    if settings.source.kind == "camera" else None
+                )
                 row = {
                     "frame_index": index, "status": "processed", "reason": "",
                     "source_time": frame["source_time"], "scheduled_at": frame["scheduled_at"] - epoch,
@@ -638,6 +736,7 @@ def streaming(cfg: DictConfig) -> dict[str, Any]:
                     "wilor_started_at": result["started_at"] - epoch, "wilor_finished_at": result["finished_at"] - epoch,
                     "completed_at": completed - epoch, "wilor_device": result["device"],
                     "latency_ms": last_latency, "capture_to_completion_ms": (completed - frame["acquired_at"]) * 1000,
+                    "estimated_capture_to_completion_ms": last_estimated_capture_latency,
                     "wilor_ms": wilor_ms, "canonical_ms": canonical_ms,
                     "wilor_canonical_ms": wilor_ms + canonical_ms, "airpiano_ms": airpiano_ms,
                     "overhead_ms": last_latency - wilor_ms - canonical_ms - airpiano_ms,
@@ -650,6 +749,12 @@ def streaming(cfg: DictConfig) -> dict[str, Any]:
                 log.frame(row)
                 processed += 1
                 inflight.pop(index)
+                if alignment is not None:
+                    alignment.append(
+                        frame_index=index, source_time=float(step["source_time"]),
+                        window_start=step["window_start"], history_start=step["history_start"],
+                        scores=step["scores"],
+                    )
             if waiting is not None:
                 if expired(waiting, time.perf_counter()):
                     drop(waiting, "capture_deadline")
@@ -665,16 +770,30 @@ def streaming(cfg: DictConfig) -> dict[str, Any]:
                         waiting = None
             now = time.perf_counter()
             if settings.preview and latest_image is not None and now - last_preview >= 1 / 30:
+                if alignment is not None and now - last_alignment_preview >= 1 / float(alignment_settings.get("refresh_hz", 5.0)):
+                    alignment_image = alignment.render(current_time=max(0.0, now - epoch),
+                                                       current_chord=current_chord)
+                    last_alignment_preview = now
                 if not _show_preview(latest_image, processed=processed, dropped=dropped,
                                      elapsed=max(0.0, now - epoch), latency=last_latency,
-                                     chord=current_chord):
+                                     chord=current_chord, alignment_image=alignment_image,
+                                     estimated_capture_latency=last_estimated_capture_latency):
                     status = "interrupted"
                     break
                 last_preview = now
             if now - last_progress >= 5:
+                interval = now - last_progress
+                # Use capture reads, not logical 30 Hz slots or advertised FPS.
+                input_fps = (input_reads - last_input_reads) / interval
+                processed_fps = (processed - last_processed) / interval
                 delay = f"{last_latency:.1f} ms" if last_latency is not None else "pending"
-                print(f"[streaming] {processed} processed, {dropped} dropped, {processed / (now - epoch):.2f} fps, delay {delay}", flush=True)
+                estimated_delay = (f", estimated capture-to-inference {last_estimated_capture_latency:.1f} ms"
+                                   if last_estimated_capture_latency is not None else "")
+                print(f"[streaming] input {input_fps:.2f} fps, processed {processed_fps:.2f} fps"
+                      f" (last {interval:.1f}s); {processed} processed, {dropped} dropped, "
+                      f"processing delay {delay}{estimated_delay}", flush=True)
                 last_progress = now
+                last_input_reads, last_processed = input_reads, processed
             time.sleep(0.001)
         if status == "running":
             status = "completed"
@@ -693,7 +812,27 @@ def streaming(cfg: DictConfig) -> dict[str, Any]:
                 scheduler.close(drain=status == "completed")
             except BaseException as error:
                 cleanup_error(error)
-        ended = time.perf_counter()
+        camera_stopped_at = None
+        if settings.source.kind == "camera" and capture is not None:
+            metadata["camera_capture_accounting_complete"] = False
+            # Stop acquisition before slower output cleanup, and account for
+            # reads that completed after the last runtime mailbox poll.
+            try:
+                capture_report = capture.close()
+                metadata["camera_capture_accounting_complete"] = capture_report is not None
+                if capture_report is not None:
+                    camera_stopped_at = float(capture_report["stopped_at"])
+                    source_frames = int(capture_report["last_sequence"]) + 1
+                    captured_frames = int(capture_report["frames"])
+                    metadata["camera_read_count"] = int(capture_report["read_count"])
+                    metadata["camera_duplicate_reads_dropped"] = 0
+                    last_frame = capture_report["latest_frame"]
+                    for index in range(seen + 1, source_frames):
+                        drop(last_frame if index == source_frames - 1 else {"sequence": index},
+                             "session_stopped")
+            except BaseException as error:
+                cleanup_error(error)
+        ended = time.perf_counter() if camera_stopped_at is None else camera_stopped_at
         if recorder is not None:
             recorder.stop_accepting()
         # Mark accepted unfinished work exactly once on interruption/failure.
@@ -716,7 +855,8 @@ def streaming(cfg: DictConfig) -> dict[str, Any]:
             (output / "midi_output.json").write_text(json.dumps(midi_report, indent=2) + "\n")
         except Exception as error:
             print(f"[streaming] could not save MIDI transport report: {error}", flush=True)
-        for resource in (capture, pool):
+        resources = (pool,) if settings.source.kind == "camera" else (capture, pool)
+        for resource in resources:
             if resource is not None:
                 try:
                     resource.close()
@@ -755,6 +895,14 @@ def streaming(cfg: DictConfig) -> dict[str, Any]:
             log.close()
         except BaseException as error:
             cleanup_error(error)
+        if alignment is not None:
+            try:
+                alignment_report = alignment.save(output, end_time=elapsed)
+                print(f"[streaming] saved alignment: {output / 'alignment.png'}", flush=True)
+            except BaseException as error:
+                alignment_report = {"status": "error", "error": str(error)}
+                cleanup_error(error)
+        metadata["alignment_visualization"] = alignment_report
         summary = {**metadata, "source_frame_count": source_frames,
                    "processed_frames": processed, "dropped_frames": dropped,
                    "elapsed_seconds": elapsed, "peak_inflight": peak_inflight,
