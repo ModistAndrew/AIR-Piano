@@ -1,53 +1,121 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="theme-color" content="#17364b">
-    <meta name="description" content="AIRPiano turns tabletop hand motion into piano sound through score-guided alignment. Explore six recorded performances with audio synthesized from predicted MIDI.">
-    <meta property="og:title" content="AIRPiano: Piano Score Following with Tabletop Hand Motion">
-    <meta property="og:description" content="The score supplies pitches. Tabletop hand motion determines which score events to play and when.">
-    <meta property="og:type" content="website">
-    <meta property="og:url" content="https://modistandrew.github.io/AIR-Piano/">
-    <title>AIRPiano — Piano Score Following with Tabletop Hand Motion</title>
-    <link rel="stylesheet" href="styles.css">
-    <script src="app.js" defer></script>
-  </head>
-  <body>
-    <a class="skip-link" href="#demos">Skip to video demos</a>
-    <header class="project-header page-width">
-      <div class="title-row">
-        <h1><span class="project-name">AIRPiano</span><span class="project-title">Piano Score Following with<br class="desktop-break"> Tabletop Hand Motion</span></h1>
-        <img class="lab-logo" src="assets/air-lab-logo.png" width="224" height="130" alt="Audio Information Research Lab">
-      </div>
-      <p class="authors">Jinxuan Zhu <span aria-hidden="true">·</span> Zhiyao Duan</p>
-      <p class="affiliation">Audio Information Research Lab, University of Rochester</p>
-      <nav class="project-links" aria-label="Project links">
-        <a class="primary-link" href="#demos">Watch demos <span aria-hidden="true">↓</span></a>
-        <a class="repository-link" href="https://github.com/ModistAndrew/AIR-Piano" target="_blank" rel="noopener noreferrer">Code on GitHub <span aria-hidden="true">↗</span><span class="sr-only"> (opens in a new tab)</span></a>
-      </nav>
-      <p class="project-intro">Guided by a known score, AIRPiano turns tabletop hand motion into piano sound without requiring precise keyboard positions. <strong>The score supplies pitches</strong>, while <strong>tabletop hand motion determines which score events to play and when</strong>.</p>
-    </header>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="AIRPiano: piano score following with tabletop hand gestures. Explore live demonstrations and piano/tabletop evaluation examples.">
+  <meta name="robots" content="noindex, nofollow, noarchive">
+  <meta name="referrer" content="no-referrer">
+  <meta name="theme-color" content="#f7fafb">
+  <meta property="og:title" content="AIRPiano: Piano Score Following with Tabletop Hand Gestures">
+  <meta property="og:description" content="A known score supplies the pitches. Hand gestures determine what plays and when.">
+  <meta property="og:type" content="website">
+  <title>AIRPiano | Tabletop Piano Gestures</title>
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to main content</a>
+  <header class="site-header"><div class="page-width header-inner"><a class="wordmark" href="#top" aria-label="AIRPiano home"><svg viewBox="0 0 30 30" aria-hidden="true"><rect x="1" y="1" width="28" height="28" rx="5"/><path d="M10 3v24M20 3v24"/><path class="black-key" d="M7 2h6v15H7zM17 2h6v15h-6z"/></svg>AIRPiano</a><nav aria-label="Sections"><a href="#live">Live demos</a><a href="#examples">Test-set examples</a><a href="#about">About</a></nav></div></header>
+  <main id="main">
+    <section class="hero page-width" id="top" aria-labelledby="hero-title">
+      <p class="eyebrow">Anonymous research demonstration</p>
+      <div class="hero-content"><div class="hero-title-block">
+      <h1 id="hero-title">AIRPiano<span>Piano Score Following with<br class="desktop-break"> Tabletop Hand Gestures</span></h1>
+      </div><div class="hero-summary">
+      <p class="hero-intro">A known score supplies the pitches.<br>Hand gestures determine <em>what plays and when.</em></p>
+      <p class="hero-detail">Piano-like movements on a tabletop, without requiring precise keyboard positions.</p>
+      <div class="hero-links"><a class="button-primary" href="#live">Watch live demos</a><a class="button-secondary" href="#examples">Explore test-set examples</a></div>
+      </div></div>
+    </section>
 
-    <main id="main" class="page-width">
-      <section class="demo-section" id="demos" aria-labelledby="demos-title">
-        <div class="section-heading">
-          <h2 id="demos-title">Video demos</h2>
-          <p>Six full recordings across three performers</p>
-        </div>
-        <div class="audio-note" id="audio-note">
-          <p><strong>What you hear:</strong> piano audio synthesized from AIRPiano’s predicted MIDI using the real-time inference pipeline, replacing the original sound.</p>
-        </div>
-        <p id="gallery-status" class="gallery-status" role="status">Loading performances…</p>
-        <button id="retry-load" class="retry-button" type="button" hidden>Try loading again</button>
-        <div id="demo-gallery" class="demo-gallery" aria-describedby="audio-note"></div>
-        <noscript><p class="gallery-status">Please enable JavaScript to load the video gallery. The project’s source code is available on <a href="https://github.com/ModistAndrew/AIR-Piano">GitHub</a>.</p></noscript>
-      </section>
-    </main>
+    <section class="live-section page-width" id="live" aria-labelledby="live-title">
+      <div class="section-heading"><div><p class="eyebrow">From hand motion to sound</p><h2 id="live-title">Live demonstrations</h2></div><span class="section-count">2 performances · 2 views each</span></div>
+      <p class="section-intro">Watch the original recording, or switch to the system-camera view with audio synthesized from the saved live MIDI.</p>
+      <div class="live-grid">
+<article class="live-card" aria-labelledby="title-summer" data-live-card>
+  <div class="live-card-heading"><div><p class="overline">Live performance</p><h3 id="title-summer">Summer</h3><p class="piece-detail">Live tabletop performance</p></div><span class="duration" data-duration>1:16</span></div>
+  <div class="view-switch" role="group" aria-label="Recording view for Summer">
+    <button type="button" aria-pressed="true" data-view="original" data-src="assets/media/live_summer.mp4" data-poster="assets/media/live_summer.jpg" data-duration="1:16">Original recording</button>
+    <button type="button" aria-pressed="false" data-view="camera" data-src="assets/media/camera_summer.mp4" data-poster="assets/media/camera_summer.jpg" data-duration="1:11">Camera + MIDI replay</button>
+  </div>
+  <div class="live-screen"><video controls playsinline preload="none" poster="assets/media/live_summer.jpg" aria-label="Summer: original live recording"><source src="assets/media/live_summer.mp4" type="video/mp4">Your browser does not support embedded video. <a href="assets/media/live_summer.mp4">Open the video</a>.</video></div>
+  <div class="view-explanation" aria-live="polite"><span class="audio-label" data-audio-label>Original recorded sound</span><p data-view-description>The live performance with its original audio and timing.</p></div>
+  <noscript><p class="no-script-link"><a href="assets/media/camera_summer.mp4">Watch the camera view with synthesized MIDI replay</a>.</p></noscript>
+</article>
+<article class="live-card" aria-labelledby="title-chopin_nocturne_op_9_no_2" data-live-card>
+  <div class="live-card-heading"><div><p class="overline">Live performance</p><h3 id="title-chopin_nocturne_op_9_no_2">Chopin</h3><p class="piece-detail">Nocturne Op. 9 No. 2</p></div><span class="duration" data-duration>2:35</span></div>
+  <div class="view-switch" role="group" aria-label="Recording view for Chopin">
+    <button type="button" aria-pressed="true" data-view="original" data-src="assets/media/live_chopin_nocturne_op_9_no_2.mp4" data-poster="assets/media/live_chopin_nocturne_op_9_no_2.jpg" data-duration="2:35">Original recording</button>
+    <button type="button" aria-pressed="false" data-view="camera" data-src="assets/media/camera_chopin_nocturne_op_9_no_2.mp4" data-poster="assets/media/camera_chopin_nocturne_op_9_no_2.jpg" data-duration="2:29">Camera + MIDI replay</button>
+  </div>
+  <div class="live-screen"><video controls playsinline preload="none" poster="assets/media/live_chopin_nocturne_op_9_no_2.jpg" aria-label="Chopin: original live recording"><source src="assets/media/live_chopin_nocturne_op_9_no_2.mp4" type="video/mp4">Your browser does not support embedded video. <a href="assets/media/live_chopin_nocturne_op_9_no_2.mp4">Open the video</a>.</video></div>
+  <div class="view-explanation" aria-live="polite"><span class="audio-label" data-audio-label>Original recorded sound</span><p data-view-description>The live performance with its original audio and timing.</p></div>
+  <noscript><p class="no-script-link"><a href="assets/media/camera_chopin_nocturne_op_9_no_2.mp4">Watch the camera view with synthesized MIDI replay</a>.</p></noscript>
+</article></div>
+      <p class="timing-note">The two views have independent recording start times. Camera MIDI replay illustrates the system output; it does not measure physical audio-output latency.</p>
+    </section>
 
-    <footer class="site-footer page-width">
-      <p><strong>AIRPiano</strong> <span aria-hidden="true">·</span> Audio Information Research Lab</p>
-      <a href="https://github.com/ModistAndrew/AIR-Piano" target="_blank" rel="noopener noreferrer">GitHub repository <span aria-hidden="true">↗</span><span class="sr-only"> (opens in a new tab)</span></a>
-    </footer>
-  </body>
+    <section class="examples-section" id="examples" aria-labelledby="examples-title"><div class="page-width">
+      <div class="section-heading"><div><p class="eyebrow">Piano and tabletop</p><h2 id="examples-title">Test-set examples</h2></div><span class="section-count">8 full recordings · 4 participants</span></div>
+      <p class="section-intro">Selected examples from DESK-Piano and DESK-Tabletop, including paired performances and cases where tracking fails.</p>
+      <div class="sound-note"><span class="sound-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 9v6h4l5 4V5L8 9H4zM17 8c2 2 2 6 0 8M20 5c4 4 4 10 0 14"/></svg></span><p><strong>What you hear</strong> Piano audio synthesized from AIRPiano’s predicted MIDI. Original and reference audio have been removed.</p></div>
+      <div class="gallery-toolbar"><div class="filters" role="group" aria-label="Filter evaluation examples"><button type="button" data-filter="all" aria-pressed="true">All examples <span>8</span></button><button type="button" data-filter="paired" aria-pressed="false">Paired comparisons <span>4</span></button><button type="button" data-filter="failure" aria-pressed="false">Failure cases <span>2</span></button></div><span id="gallery-status" class="gallery-status" role="status">Showing 8 recordings</span></div>
+      <div class="example-grid">
+<article class="example-card" data-example data-group="paired" aria-labelledby="eval_p1_piano_bach_prelude-title">
+  <div class="example-screen"><video controls playsinline preload="none" poster="assets/media/eval_p1_piano_bach_prelude.jpg" aria-label="Bach: Prelude, P1, Piano, predicted MIDI audio"><source src="assets/media/eval_p1_piano_bach_prelude.mp4" type="video/mp4">Your browser does not support embedded video. <a href="assets/media/eval_p1_piano_bach_prelude.mp4">Open the video</a>.</video></div>
+  <div class="example-details"><div class="example-meta"><span class="condition piano">Piano</span><span>P1</span><span class="duration">1:52</span></div>
+  <h3 id="eval_p1_piano_bach_prelude-title">Bach: Prelude</h3>
+  <div class="example-bottom"><span class="case-label">Paired example</span><span class="metric" title="Chord alignment rate within 8 frames (266.7 ms)">C-AR@8 <strong>98.7%</strong></span></div></div>
+</article>
+<article class="example-card" data-example data-group="paired" aria-labelledby="eval_p1_tabletop_bach_prelude-title">
+  <div class="example-screen"><video controls playsinline preload="none" poster="assets/media/eval_p1_tabletop_bach_prelude.jpg" aria-label="Bach: Prelude, P1, Tabletop, predicted MIDI audio"><source src="assets/media/eval_p1_tabletop_bach_prelude.mp4" type="video/mp4">Your browser does not support embedded video. <a href="assets/media/eval_p1_tabletop_bach_prelude.mp4">Open the video</a>.</video></div>
+  <div class="example-details"><div class="example-meta"><span class="condition tabletop">Tabletop</span><span>P1</span><span class="duration">1:52</span></div>
+  <h3 id="eval_p1_tabletop_bach_prelude-title">Bach: Prelude</h3>
+  <div class="example-bottom"><span class="case-label">Paired example</span><span class="metric" title="Chord alignment rate within 8 frames (266.7 ms)">C-AR@8 <strong>96.3%</strong></span></div></div>
+</article>
+<article class="example-card" data-example data-group="paired" aria-labelledby="eval_p2_piano_minuet-title">
+  <div class="example-screen"><video controls playsinline preload="none" poster="assets/media/eval_p2_piano_minuet.jpg" aria-label="Minuet, P2, Piano, predicted MIDI audio"><source src="assets/media/eval_p2_piano_minuet.mp4" type="video/mp4">Your browser does not support embedded video. <a href="assets/media/eval_p2_piano_minuet.mp4">Open the video</a>.</video></div>
+  <div class="example-details"><div class="example-meta"><span class="condition piano">Piano</span><span>P2</span><span class="duration">0:44</span></div>
+  <h3 id="eval_p2_piano_minuet-title">Minuet</h3>
+  <div class="example-bottom"><span class="case-label">Paired example</span><span class="metric" title="Chord alignment rate within 8 frames (266.7 ms)">C-AR@8 <strong>100.0%</strong></span></div></div>
+</article>
+<article class="example-card" data-example data-group="paired" aria-labelledby="eval_p2_tabletop_minuet-title">
+  <div class="example-screen"><video controls playsinline preload="none" poster="assets/media/eval_p2_tabletop_minuet.jpg" aria-label="Minuet, P2, Tabletop, predicted MIDI audio"><source src="assets/media/eval_p2_tabletop_minuet.mp4" type="video/mp4">Your browser does not support embedded video. <a href="assets/media/eval_p2_tabletop_minuet.mp4">Open the video</a>.</video></div>
+  <div class="example-details"><div class="example-meta"><span class="condition tabletop">Tabletop</span><span>P2</span><span class="duration">0:44</span></div>
+  <h3 id="eval_p2_tabletop_minuet-title">Minuet</h3>
+  <div class="example-bottom"><span class="case-label">Paired example</span><span class="metric" title="Chord alignment rate within 8 frames (266.7 ms)">C-AR@8 <strong>94.9%</strong></span></div></div>
+</article>
+<article class="example-card" data-example data-group="additional" aria-labelledby="eval_p3_tabletop_chopin_waltz-title">
+  <div class="example-screen"><video controls playsinline preload="none" poster="assets/media/eval_p3_tabletop_chopin_waltz.jpg" aria-label="Chopin: Waltz, P3, Tabletop, predicted MIDI audio"><source src="assets/media/eval_p3_tabletop_chopin_waltz.mp4" type="video/mp4">Your browser does not support embedded video. <a href="assets/media/eval_p3_tabletop_chopin_waltz.mp4">Open the video</a>.</video></div>
+  <div class="example-details"><div class="example-meta"><span class="condition tabletop">Tabletop</span><span>P3</span><span class="duration">1:33</span></div>
+  <h3 id="eval_p3_tabletop_chopin_waltz-title">Chopin: Waltz</h3>
+  <div class="example-bottom"><span class="metric" title="Chord alignment rate within 8 frames (266.7 ms)">C-AR@8 <strong>88.3%</strong></span></div></div>
+</article>
+<article class="example-card" data-example data-group="additional" aria-labelledby="eval_p4_tabletop_clementi_sonata-title">
+  <div class="example-screen"><video controls playsinline preload="none" poster="assets/media/eval_p4_tabletop_clementi_sonata.jpg" aria-label="Clementi: Sonata, P4, Tabletop, predicted MIDI audio"><source src="assets/media/eval_p4_tabletop_clementi_sonata.mp4" type="video/mp4">Your browser does not support embedded video. <a href="assets/media/eval_p4_tabletop_clementi_sonata.mp4">Open the video</a>.</video></div>
+  <div class="example-details"><div class="example-meta"><span class="condition tabletop">Tabletop</span><span>P4</span><span class="duration">0:52</span></div>
+  <h3 id="eval_p4_tabletop_clementi_sonata-title">Clementi: Sonata</h3>
+  <div class="example-bottom"><span class="metric" title="Chord alignment rate within 8 frames (266.7 ms)">C-AR@8 <strong>98.1%</strong></span></div></div>
+</article>
+<article class="example-card" data-example data-group="failure" aria-labelledby="eval_p1_tabletop_debussy_moon-title">
+  <div class="example-screen"><video controls playsinline preload="none" poster="assets/media/eval_p1_tabletop_debussy_moon.jpg" aria-label="Debussy: Clair de lune, P1, Tabletop, predicted MIDI audio"><source src="assets/media/eval_p1_tabletop_debussy_moon.mp4" type="video/mp4">Your browser does not support embedded video. <a href="assets/media/eval_p1_tabletop_debussy_moon.mp4">Open the video</a>.</video></div>
+  <div class="example-details"><div class="example-meta"><span class="condition tabletop">Tabletop</span><span>P1</span><span class="duration">1:57</span></div>
+  <h3 id="eval_p1_tabletop_debussy_moon-title">Debussy: Clair de lune</h3>
+  <div class="example-bottom"><span class="case-label">Failure example</span><span class="metric" title="Chord alignment rate within 8 frames (266.7 ms)">C-AR@8 <strong>20.8%</strong></span></div></div>
+</article>
+<article class="example-card" data-example data-group="failure" aria-labelledby="eval_p2_tabletop_mozart_sonata-title">
+  <div class="example-screen"><video controls playsinline preload="none" poster="assets/media/eval_p2_tabletop_mozart_sonata.jpg" aria-label="Mozart: Sonata, P2, Tabletop, predicted MIDI audio"><source src="assets/media/eval_p2_tabletop_mozart_sonata.mp4" type="video/mp4">Your browser does not support embedded video. <a href="assets/media/eval_p2_tabletop_mozart_sonata.mp4">Open the video</a>.</video></div>
+  <div class="example-details"><div class="example-meta"><span class="condition tabletop">Tabletop</span><span>P2</span><span class="duration">1:00</span></div>
+  <h3 id="eval_p2_tabletop_mozart_sonata-title">Mozart: Sonata</h3>
+  <div class="example-bottom"><span class="case-label">Failure example</span><span class="metric" title="Chord alignment rate within 8 frames (266.7 ms)">C-AR@8 <strong>0.8%</strong></span></div></div>
+</article></div>
+      <p class="metric-note">C-AR@8 is the proportion of reference chord events aligned within ±266.7 ms, using the original, unshifted reference times.</p>
+    </div></section>
+
+    <section class="about-section page-width" id="about" aria-labelledby="about-title"><h2 id="about-title">About these demonstrations</h2><div class="about-copy"><p>AIRPiano aligns hand motion with a known symbolic score. It is trained on piano performance recordings and applied to tabletop gestures without tabletop training data.</p><p>P1 and P2 appear in both piano and tabletop examples. P3 and P4 appear in tabletop examples. During test-set collection, tabletop participants followed a reference piano playback; the videos here replace that reference audio with the model’s output.</p><details><summary>Timing and playback details</summary><p>Evaluation videos preserve the saved prediction times, with no additional offset or tempo adjustment. Failure examples retain periods with no predicted sound. A final frame may be held briefly so the last synthesized note can finish.</p><p>Original live recordings retain their recorded audio. Camera-view audio is a replay synthesized from the MIDI logged during the live session, on the same session timeline. End-to-end latency has not been measured.</p></details></div></section>
+  </main>
+  <footer class="site-footer page-width"><span class="wordmark">AIRPiano</span><p>Anonymous supplementary demonstration</p><a href="#top">Back to top</a></footer>
+</body>
 </html>
