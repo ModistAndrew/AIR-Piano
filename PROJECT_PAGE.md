@@ -8,7 +8,7 @@ Original live videos retain their recorded audio. Camera replays and evaluation 
 
 ## Hosting
 
-GitHub Pages serves `main` and `/docs`. No frontend build is required. Keep `docs/.nojekyll` and relative asset paths intact. The complete site is approximately 149 MB, with every video under 24 MB. Videos are loaded on demand.
+GitHub Pages serves the website-only `demo-review` branch and `/docs`. That branch contains only this reviewed website and a neutral README, allowing an anonymous mirror without exposing the project's other files. A copy of the website also remains in `main/docs`. Publish future website updates to `demo-review/docs`. No frontend build is required. Keep `docs/.nojekyll` and relative asset paths intact. The complete site is approximately 149 MB, with every video under 24 MB. Videos are loaded on demand.
 
 For local preview, run `node scripts/serve_project_docs.mjs` from the repository root and open the address it prints.
 
