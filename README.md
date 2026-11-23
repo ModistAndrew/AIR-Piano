@@ -15,10 +15,11 @@ The project uses Python 3.11. FFmpeg/ffprobe are required. See [requirements.txt
 
 ### Files to download
 
-For hand extraction from videos, download these assets to the paths expected by the default configuration:
+Download the pretrained AIR-Piano checkpoint for inference and the following assets for hand extraction to the paths expected by the default configuration:
 
 | Asset | Destination |
 | --- | --- |
+| [AIR-Piano checkpoint](https://huggingface.co/ModistAndrew/AIR-Piano/resolve/main/last.pt) | `outputs/ours/checkpoints/last.pt` |
 | [WiLoR weights](https://huggingface.co/spaces/rolpotamias/WiLoR/resolve/main/pretrained_models/wilor_final.ckpt) | `assets/wilor/wilor_final.ckpt` |
 | [Hand detector weights](https://huggingface.co/spaces/rolpotamias/WiLoR/resolve/main/pretrained_models/detector.pt) | `assets/wilor/detector.pt` |
 | [MANO right-hand model](https://mano.is.tue.mpg.de/) | `assets/mano/MANO_RIGHT.pkl` |
