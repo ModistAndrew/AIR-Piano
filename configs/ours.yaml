@@ -16,7 +16,7 @@ data:
   splits:
     train: splits/default_train.txt
     valid: splits/default_valid.txt
-    test: splits/vsf_all.txt
+    test: splits/vsf_all.txt # Shared by simple window testing and full-song inference
 preprocess:
   task: ragged_to_canonical
   split_files:

@@ -1,6 +1,7 @@
 # AirPiano runtime dependencies, based on v2n (Linux, Python 3.11, CUDA 13.0).
 # Direct dependencies only; pip resolves their transitive dependencies.
 # FFmpeg/ffprobe, Git, a C compiler, and model assets are required separately.
+# WiLoR also imports renderer modules that require system OpenGL/EGL libraries.
 # Chumpy imports pip at build time; Madmom needs NumPy and Cython to build.
 # In the target environment, install build prerequisites before this file:
 #   python -m pip install setuptools wheel Cython numpy==2.4.6
