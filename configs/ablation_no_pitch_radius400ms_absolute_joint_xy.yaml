@@ -1,7 +1,0 @@
-defaults:
-  - ablation_ahead100ms_no_pitch_absolute_joint_xy
-  - ablation_no_pitch_radius400ms
-  - _self_
-
-output:
-  project_name: airpiano_no_pitch_radius400ms_absolute_joint_xy

@@ -32,7 +32,7 @@ STAGES: dict[str, StageHandler] = {
 }
 
 
-@hydra.main(version_base=None, config_path="configs", config_name="default")
+@hydra.main(version_base=None, config_path="configs", config_name="ours")
 def main(cfg: DictConfig) -> None:
     """Run one stage or a Hydra list of stages in the requested order."""
 

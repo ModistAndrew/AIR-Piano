@@ -1,7 +1,0 @@
-defaults:
-  - ablation_ahead100ms_no_pitch_absolute_joint_xy
-  - ablation_ahead100ms_no_pitch_no_duration
-  - _self_
-
-output:
-  project_name: airpiano_ahead100ms_no_pitch_no_duration_absolute_joint_xy

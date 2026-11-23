@@ -13,9 +13,6 @@ from .types import HandSequence
 from ..utils import resolve_path
 
 
-CANONICAL_HAND_SCHEMA = "airpiano-wilor-canonical-v1"
-
-
 class CanonicalNpzReader:
     """Read the trusted canonical cache produced by WiLoR preprocessing."""
 

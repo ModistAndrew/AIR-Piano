@@ -52,7 +52,7 @@ def positive_int(value):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("records", nargs="+")
-    parser.add_argument("--config", default="configs/default.yaml")
+    parser.add_argument("--config", default="configs/ours.yaml")
     parser.add_argument("--checkpoint")
     parser.add_argument("--hand-root", help="Override the canonical hand-cache root")
     parser.add_argument("--device", default="cuda:1")

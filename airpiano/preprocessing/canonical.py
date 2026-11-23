@@ -111,7 +111,6 @@ class WristDeltaPostprocessor:
         self,
         pose: np.ndarray,
         presence: np.ndarray,
-        fps: float,
     ) -> tuple[np.ndarray, np.ndarray]:
         processed_pose = np.array(pose, copy=True)
         processed_presence = np.array(presence, dtype=np.bool_, copy=True)
@@ -156,7 +155,7 @@ class WiLoRToCanonical:
             return output
 
         pose, presence = self.read_resampled(raw_record_dir)
-        pose, presence = self.postprocessor(pose, presence, self.target_fps)
+        pose, presence = self.postprocessor(pose, presence)
         canonicalization_config = {
             "selector": "lowest_wrist",
             "minimum_detector_confidence": 0.0,

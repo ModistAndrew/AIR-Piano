@@ -1,9 +1,0 @@
-defaults:
-  - ablation_no_pitch_radius400ms
-  - _self_
-
-output:
-  project_name: airpiano_no_pitch_radius400ms_no_wrist_delta
-
-model:
-  use_wrist_delta: false

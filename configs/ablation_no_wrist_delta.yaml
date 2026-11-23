@@ -1,9 +1,0 @@
-defaults:
-  - default
-  - _self_
-
-output:
-  project_name: airpiano_no_wrist_delta
-
-model:
-  use_wrist_delta: false

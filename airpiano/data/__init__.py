@@ -10,7 +10,6 @@ from .dataset import (
 )
 from .files import EagerSongReader, FileLoader, RelativeStemPairer
 from .hands import (
-    CANONICAL_HAND_SCHEMA,
     CanonicalNpzReader,
     HandLoader,
     OffsetScaleTransform,
@@ -32,7 +31,6 @@ from .types import (
 __all__ = [
     "AlignmentDataset",
     "AlignmentWindow",
-    "CANONICAL_HAND_SCHEMA",
     "CanonicalNpzReader",
     "Chord",
     "ChordOnsetEvents",
