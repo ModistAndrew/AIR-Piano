@@ -1,0 +1,24 @@
+defaults:
+  - ablation_ahead100ms
+  - _self_
+
+output:
+  project_name: airpiano_ahead100ms_absolute_joint_xy
+
+data:
+  representation: absolute_joint_xy
+  hand_root: outputs/representation_ablation/hands_${data.representation}
+  hand_mean_path: outputs/representation_ablation/hand_mean.json
+
+preprocess:
+  ragged_to_canonical:
+    representation: ${data.representation}
+
+dataset:
+  hand_loader:
+    reader:
+      representation: ${data.representation}
+    transform:
+      # Center camera XY with one fixed training wrist mean per hand; keep ×10.
+      wrist_mean_path: ${data.hand_mean_path}
+      training_split: ${data.splits.train}

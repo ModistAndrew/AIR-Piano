@@ -15,6 +15,14 @@ from airpiano.utils import resolve_path, write_npz
 RAW_SCHEMA_VERSION = "airpiano-wilor-ragged-v1"
 CANONICAL_SCHEMA_VERSION = "airpiano-wilor-canonical-v1"
 TARGET_FPS = 30.0
+HAND_REPRESENTATIONS = ("wrist_relative", "absolute_joint_xy", "absolute_joint_wrist_xy")
+
+
+def validate_canonical_representation(payload, expected: str) -> None:
+    # Existing caches without this field use the original relative representation.
+    actual = str(payload["representation"].item()) if "representation" in payload else "wrist_relative"
+    if actual != expected:
+        raise ValueError(f"canonical representation mismatch: expected {expected}, found {actual}")
 
 
 def raw_cache_has_markers(path: str | Path) -> bool:
@@ -33,7 +41,12 @@ def raw_cache_has_markers(path: str | Path) -> bool:
 
 
 class WiLoRCoordinateConverter:
-    """Build wrist-relative XYZ joints with a camera-space wrist."""
+    """Build relative joints or camera XY with relative Z; retain camera wrist."""
+
+    def __init__(self, representation: str = "wrist_relative") -> None:
+        if representation not in HAND_REPRESENTATIONS:
+            raise ValueError(f"unknown hand representation: {representation}")
+        self.representation = representation
 
     def __call__(
         self, arrays: Mapping[str, np.ndarray], detection: int
@@ -42,6 +55,8 @@ class WiLoRCoordinateConverter:
             np.float64, copy=False
         )
         converted = (joints_3d - joints_3d[:1]).astype(np.float32)
+        if self.representation != "wrist_relative":
+            converted[1:, :2] = joints_3d[1:, :2] + arrays["pred_cam_t_full"][detection, :2]
         converted[0] = joints_3d[0] + arrays["pred_cam_t_full"][detection]
         return converted
 
@@ -87,7 +102,10 @@ class LowestWristHandSelector:
 
 
 class WristDeltaPostprocessor:
-    """Replace the camera-space wrist with its canonical-frame displacement."""
+    """Replace camera wrist with displacement, optionally retaining absolute XY."""
+
+    def __init__(self, absolute_wrist_xy: bool = False) -> None:
+        self.absolute_wrist_xy = absolute_wrist_xy
 
     def __call__(
         self,
@@ -105,6 +123,8 @@ class WristDeltaPostprocessor:
             0.0,
         )
         processed_pose[:, :, 0] = wrist_delta
+        if self.absolute_wrist_xy:
+            processed_pose[:, :, 0, :2] = pose[:, :, 0, :2]
         processed_pose[~processed_presence] = 0.0
         return processed_pose, processed_presence
 
@@ -112,11 +132,14 @@ class WristDeltaPostprocessor:
 class WiLoRToCanonical:
     """Select two hands from ragged detections and resample them to fixed FPS."""
 
-    def __init__(self, target_fps: float = TARGET_FPS) -> None:
+    def __init__(
+        self, target_fps: float = TARGET_FPS, representation: str = "wrist_relative"
+    ) -> None:
         self.target_fps = float(target_fps)
-        self.coordinates = WiLoRCoordinateConverter()
+        self.representation = representation
+        self.coordinates = WiLoRCoordinateConverter(representation)
         self.selector = LowestWristHandSelector()
-        self.postprocessor = WristDeltaPostprocessor()
+        self.postprocessor = WristDeltaPostprocessor(representation == "absolute_joint_wrist_xy")
 
     def run(
         self,
@@ -128,20 +151,22 @@ class WiLoRToCanonical:
 
         output = resolve_path(output_path)
         if output.exists() and not overwrite:
+            with np.load(output, allow_pickle=False) as payload:
+                validate_canonical_representation(payload, self.representation)
             return output
 
-        raw_directory = resolve_path(raw_record_dir)
-        pose, presence, source_fps = self._read_raw_sequence(raw_directory)
-        pose, presence = self._resample(pose, presence, source_fps)
+        pose, presence = self.read_resampled(raw_record_dir)
         pose, presence = self.postprocessor(pose, presence, self.target_fps)
         canonicalization_config = {
             "selector": "lowest_wrist",
             "minimum_detector_confidence": 0.0,
             "coordinates": {
-                "joints": "wrist_relative_3d",
+                "joints": ("wrist_relative_3d" if self.representation == "wrist_relative"
+                           else "camera_xy_wrist_relative_z"),
                 "wrist": "camera_3d",
             },
-            "postprocessor": "wrist_delta",
+            "postprocessor": ("wrist_delta_except_absolute_xy"
+                              if self.postprocessor.absolute_wrist_xy else "wrist_delta"),
             "target_fps": self.target_fps,
         }
         write_npz(
@@ -150,9 +175,15 @@ class WiLoRToCanonical:
             presence=presence,
             fps=np.asarray(self.target_fps, dtype=np.float64),
             schema_version=np.asarray(CANONICAL_SCHEMA_VERSION),
+            representation=np.asarray(self.representation),
             canonicalization_config=np.asarray(json.dumps(canonicalization_config)),
         )
         return output
+
+    def read_resampled(self, raw_record_dir: str | Path) -> tuple[np.ndarray, np.ndarray]:
+        """Expose camera wrists before differencing for training-only mean fitting."""
+        pose, presence, source_fps = self._read_raw_sequence(resolve_path(raw_record_dir))
+        return self._resample(pose, presence, source_fps)
 
     def _read_raw_sequence(
         self, raw_directory: Path

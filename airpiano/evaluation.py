@@ -42,8 +42,13 @@ def _active_chords(
 
 def _alignment_observations(
     artifact: InferenceArtifact,
+    *,
+    gt_shift_frames: int = 0,
 ) -> tuple[np.ndarray, dict[int, float | None]]:
-    """Return frame correctness and fractional-frame onset errors."""
+    """Return observations with positive GT shifts moving onsets later.
+
+    Keep the original evaluated chords even when shifted beyond the frame range.
+    """
 
     valid_frames = np.flatnonzero(artifact.frame_mask)
     if valid_frames.size == 0:
@@ -60,7 +65,9 @@ def _alignment_observations(
         if not np.any(scores > 0.0):
             continue
         target_frame = int(valid_frames[int(np.argmax(scores))])
-        ground_truth_frames[chord_slot] = artifact.frame_start + target_frame
+        ground_truth_frames[chord_slot] = (
+            artifact.frame_start + target_frame + gt_shift_frames
+        )
 
     if not ground_truth_frames:
         return np.empty(0, dtype=np.bool_), {}
@@ -179,11 +186,14 @@ def calculate_alignment_metrics(
     artifact: InferenceArtifact,
     *,
     tolerances_frames: Sequence[int],
+    gt_shift_frames: int = 0,
 ) -> dict[str, object]:
-    """Compare recorded releases with physical onset peaks when available."""
+    """Compare releases with physical GT; positive shifts move GT onsets later."""
 
     tolerances = tuple(int(value) for value in tolerances_frames)
-    frame_correct, chord_errors = _alignment_observations(artifact)
+    frame_correct, chord_errors = _alignment_observations(
+        artifact, gt_shift_frames=gt_shift_frames
+    )
     return _metrics_from_observations(
         artifact, frame_correct, chord_errors, tolerances
     )
@@ -463,6 +473,7 @@ def evaluation(cfg: DictConfig) -> None:
     metrics_path = resolve_path(cfg.evaluation.output_path)
     plot_path = metrics_path.with_suffix(".png")
     tolerances = tuple(int(value) for value in cfg.evaluation.tolerances_frames)
+    gt_shift_frames = int(cfg.evaluation.get("gt_shift_frames", 0))
     summary_only = bool(cfg.evaluation.summary_only)
     artifact_paths = sorted(
         path for path in artifact_root.rglob("*.npz") if path.is_file()
@@ -472,7 +483,9 @@ def evaluation(cfg: DictConfig) -> None:
     indexed_observations = []
     for index, artifact_path in enumerate(artifact_paths, 1):
         artifact = load_artifact(artifact_path, require_releases=True)
-        frame_correct, chord_errors = _alignment_observations(artifact)
+        frame_correct, chord_errors = _alignment_observations(
+            artifact, gt_shift_frames=gt_shift_frames
+        )
         indexed_observations.append((frame_correct, chord_errors))
         item_metrics = _metrics_from_observations(
             artifact, frame_correct, chord_errors, tolerances
@@ -533,6 +546,7 @@ def evaluation(cfg: DictConfig) -> None:
         "summary_plot_path": str(summary_plot),
         "onset_mode": "release_time",
         "tolerances_frames": list(tolerances),
+        "gt_shift_frames": gt_shift_frames,
         "artifact_count": len(reports),
         "average_duration_seconds": average_duration_seconds,
         "total_duration_seconds": total_duration_seconds,

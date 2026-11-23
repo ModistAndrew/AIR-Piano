@@ -1,0 +1,10 @@
+defaults:
+  - ablation_no_pitch_no_duration_radius400ms
+  - _self_
+
+output:
+  project_name: airpiano_no_pitch_no_duration_radius400ms_no_hand_shift
+
+dataset:
+  augmenter:
+    random_hand_shift_seconds: 0.0

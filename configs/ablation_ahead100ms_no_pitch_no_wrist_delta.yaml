@@ -1,0 +1,9 @@
+defaults:
+  - ablation_ahead100ms_no_pitch
+  - _self_
+
+output:
+  project_name: airpiano_ahead100ms_no_pitch_no_wrist_delta
+
+model:
+  use_wrist_delta: false

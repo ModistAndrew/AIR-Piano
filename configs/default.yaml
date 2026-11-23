@@ -113,6 +113,7 @@ full_song_real_time:
   split_file: splits/air_tabletop_valid.txt
   checkpoint: ${output.dir}/checkpoints/last.pt
   output_dir: ${output.dir}/full_song_real_time
+  score_skip_penalty: 1.0  # Set to 0.0 to skip score chords without a penalty.
 
 wandb:
   project: air_piano
@@ -130,7 +131,8 @@ sonify:
 evaluation:
   root: ${full_song_real_time.output_dir}
   output_path: ${evaluation.root}.json
-  tolerances_frames: [4, 8, 16]
+  tolerances_frames: [2, 4, 8, 16]
+  gt_shift_frames: 0  # Positive moves GT later; 3 frames = 100 ms at 30 fps.
   summary_only: false
 
 hydra:

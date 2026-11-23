@@ -23,6 +23,7 @@ import time
 import cv2
 import numpy as np
 from hydra import compose, initialize_config_dir
+from omegaconf import OmegaConf
 import torch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -142,6 +143,9 @@ def run_record(record, cfg, components, model, device, jobs, results, workers,
         raise FileNotFoundError(video)
     fps = probe.get(cv2.CAP_PROP_FPS)
     count = int(probe.get(cv2.CAP_PROP_FRAME_COUNT))
+    if count_limit and count_limit > count:
+        probe.release()
+        raise ValueError(f"Requested {count_limit} frames but {video} has only {count}")
     shape = (int(probe.get(cv2.CAP_PROP_FRAME_HEIGHT)), int(probe.get(cv2.CAP_PROP_FRAME_WIDTH)), 3)
     if abs(fps - 30.0) > 1e-3 or shape != frames.shape[1:]:
         probe.release()
@@ -152,14 +156,15 @@ def run_record(record, cfg, components, model, device, jobs, results, workers,
         raise RuntimeError(f"Cannot prime decoder: {video}")
     decoder_startup = time.perf_counter() - decoder_started
     if count_limit:
-        count = min(count, count_limit)
+        count = count_limit
     midi = components["midi_loader"].load(
         resolve_path(cfg.data.midi_root) / f"{record}.mid",
         resolve_path(cfg.data.beat_root) / f"{record}.txt",
     )
     canonical = CanonicalFrameAdapter()
     stepper = AirPianoStepper(model, midi.chords, components, device,
-                             fps=30.0, bf16=bool(cfg.train.bf16))
+                             fps=30.0, bf16=bool(cfg.train.bf16),
+                             score_skip_penalty=float(cfg.full_song_real_time.get("score_skip_penalty", 1.0)))
     pending = {}
     rows = []
     release_rows = []
@@ -221,6 +226,11 @@ def run_record(record, cfg, components, model, device, jobs, results, workers,
     latency = [r["latency_ms"] for r in rows]
     summary = {
         "record_id": record, "frames": count, "source_shape": shape, "input_fps": fps,
+        "source_frame_start": 0, "source_frame_stop_exclusive": count,
+        "target_delay_seconds": float(components["target_generator"].event_generator.delay_seconds),
+        "onset_prediction_offset_seconds": stepper.controller.onset_prediction_offset,
+        "controller_simulated_processing_latency_seconds": stepper.controller.processing_latency,
+        "score_skip_penalty": stepper.controller.score_skip_penalty,
         "decoder_startup_seconds_excluded": decoder_startup,
         "latency_ms": stats(latency),
         "over_100ms_frames": sum(t > 100 for t in latency), "dropped_frames": 0,
@@ -256,26 +266,48 @@ def run_record(record, cfg, components, model, device, jobs, results, workers,
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("records", nargs="+")
+    parser.add_argument("--config", type=Path, default=ROOT / "configs/default.yaml")
+    parser.add_argument("--checkpoint", type=Path, help="Override full_song_real_time.checkpoint")
     parser.add_argument("--devices", nargs="+", default=["cuda:1", "cuda:2"])
     parser.add_argument("--airpiano-device", default="cuda:1")
     parser.add_argument("--fast", action="store_true", help="Use official WiLoR fast mode in the spawned workers")
     parser.add_argument("--frames", type=int, default=0, help="0 replays the complete recording")
     parser.add_argument("--warmup", type=int, default=10)
+    parser.add_argument("--airpiano-warmup", type=int, default=30, help="Excluded AirPiano frames before replay")
     parser.add_argument("--warmup-hand-counts", nargs="+", type=int, default=[1, 2, 3],
                         help="Pose batch sizes compiled before replay in fast mode")
     parser.add_argument("--torch-threads", type=int)
     parser.add_argument("--slots", type=int, default=128)
     parser.add_argument("--output-dir", type=Path, required=True)
     args = parser.parse_args()
-    if args.warmup < 1 or args.slots < 1 or args.frames == 1 or args.frames < 0:
+    if args.warmup < 1 or args.airpiano_warmup < 1 or args.slots < 1 or args.frames == 1 or args.frames < 0:
         parser.error("Warmup/slots must be positive and frames must be 0 or at least 2")
     if any(count < 1 or count > 16 for count in args.warmup_hand_counts):
         parser.error("Warmup hand counts must be between 1 and the hand batch size 16")
-    args.output_dir.mkdir(parents=True, exist_ok=False)
+    config_path = resolve_path(args.config)
+    if not config_path.is_file():
+        parser.error(f"Configuration file does not exist: {config_path}")
     if args.torch_threads is not None:
         torch.set_num_threads(args.torch_threads)
-    with initialize_config_dir(config_dir=str(ROOT / "configs"), version_base=None):
-        cfg = compose(config_name="default")
+    with initialize_config_dir(config_dir=str(config_path.parent), version_base=None):
+        cfg = compose(config_name=config_path.stem)
+    if args.checkpoint is not None:
+        cfg.full_song_real_time.checkpoint = str(resolve_path(args.checkpoint))
+    if float(cfg.dataset.fps) != 30.0:
+        parser.error("This native 30 Hz replay requires dataset.fps=30")
+    # Validate requested frame coverage before loading models or starting workers.
+    for record in args.records:
+        video = resolve_path(cfg.data.video_root) / f"{record}.mp4"
+        probe = cv2.VideoCapture(str(video))
+        try:
+            if not probe.isOpened():
+                parser.error(f"Cannot open video: {video}")
+            count = int(probe.get(cv2.CAP_PROP_FRAME_COUNT))
+            if args.frames and args.frames > count:
+                parser.error(f"Requested {args.frames} frames but {video} has only {count}")
+        finally:
+            probe.release()
+    args.output_dir.mkdir(parents=True, exist_ok=False)
     components = data.build_data_components(cfg)
     device = torch.device(args.airpiano_device)
     torch.cuda.set_device(device)
@@ -312,22 +344,33 @@ def main():
             resolve_path(cfg.data.beat_root) / f"{args.records[0]}.txt",
         )
         warm = AirPianoStepper(model, midi.chords, components, device,
-                              fps=30.0, bf16=bool(cfg.train.bf16))
+                              fps=30.0, bf16=bool(cfg.train.bf16),
+                              score_skip_penalty=float(cfg.full_song_real_time.get("score_skip_penalty", 1.0)))
         canonical = CanonicalFrameAdapter()
-        for _ in range(30):
+        for _ in range(args.airpiano_warmup):
             warm.step(*canonical.step(arrays))
         torch.cuda.synchronize(device)
+        print(f"WARMUP READY: {args.warmup} WiLoR frames per worker and "
+              f"{args.airpiano_warmup} AirPiano frames excluded; starting timed replay", flush=True)
         for slot in range(args.slots):
             available.put(slot)
         report = {
             "status": "running", "wilor_devices": args.devices,
+            "config_path": str(config_path),
+            "config": OmegaConf.to_container(cfg, resolve=True),
             "airpiano_device": str(device), "workers": metadata,
             "wilor_fast": args.fast,
             "airpiano_float32_matmul_precision": torch.get_float32_matmul_precision(),
             "torch_version": torch.__version__, "main_torch_threads": torch.get_num_threads(),
             "checkpoint": str(resolve_path(cfg.full_song_real_time.checkpoint)),
             "airpiano_bf16": bool(cfg.train.bf16), "frame_batch_size": 1,
-            "warmup_wilor_frames_per_worker": args.warmup, "warmup_airpiano_frames": 30,
+            "requested_frames_per_record": args.frames,
+            "frame_policy": "Contiguous frames beginning at frame 0; none dropped. A full shared-memory buffer applies backpressure without changing scheduled frame times.",
+            "target_delay_seconds": float(components["target_generator"].event_generator.delay_seconds),
+            "onset_prediction_offset_seconds": warm.controller.onset_prediction_offset,
+            "controller_simulated_processing_latency_seconds": warm.controller.processing_latency,
+            "score_skip_penalty": warm.controller.score_skip_penalty,
+            "warmup_wilor_frames_per_worker": args.warmup, "warmup_airpiano_frames": args.airpiano_warmup,
             "warmup_wilor_hand_counts_per_worker": args.warmup_hand_counts if args.fast else [],
             "method": "Real 30Hz paced native-resolution file decode, shared-memory transport, round-robin WiLoR workers, in-order results, causal canonical conversion and stateful AirPiano on actual inferred hands. No frames dropped. Delay starts at scheduled frame availability and includes decoding, queueing/IPC/reordering and all computation. Decoder is primed with frame0 before the clock starts; subsequent decoding is timed. Excludes model/decoder initialization, camera exposure/driver buffering and physical MIDI/audio playback. Controller release metrics retain production simulated scheduling.",
             "songs": [],

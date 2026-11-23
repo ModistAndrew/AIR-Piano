@@ -12,6 +12,7 @@ from airpiano.evaluation import evaluation
 from airpiano.full_song_real_time import full_song_real_time
 from airpiano.inference import test
 from airpiano.preprocessing.pipeline import preprocess
+from airpiano.preprocessing.hand_mean import fit_hand_mean
 from airpiano.render.sonify import sonify
 from airpiano.render.visualize import visualize
 from airpiano.train import train
@@ -21,6 +22,7 @@ StageHandler = Callable[[DictConfig], None]
 
 STAGES: dict[str, StageHandler] = {
     "preprocess": preprocess,
+    "fit_hand_mean": fit_hand_mean,
     "train": train,
     "test": test,
     "full_song_real_time": full_song_real_time,

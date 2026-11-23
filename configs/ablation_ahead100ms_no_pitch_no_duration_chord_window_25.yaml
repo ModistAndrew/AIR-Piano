@@ -1,0 +1,11 @@
+defaults:
+  - ablation_ahead100ms_no_pitch_no_duration
+  - _self_
+
+output:
+  project_name: airpiano_ahead100ms_no_pitch_no_duration_chord_window_25
+
+dataset:
+  slicer:
+    # Window length counts chords, despite the legacy parameter name.
+    segment_frames: 25

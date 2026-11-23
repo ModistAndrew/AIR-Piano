@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Measure the current full_song_real_time loop on complete cached songs.
+"""Measure the current full_song_real_time loop on cached songs or frame prefixes.
 
 Timing statements are inserted into an in-memory copy of the production
 function, so its frame processing stays identical and runtime files are untouched.
@@ -9,6 +9,7 @@ The existing CPU score readback waits for CUDA before each frame timer ends.
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import csv
 from dataclasses import replace
 import hashlib
@@ -41,18 +42,34 @@ def statistics(values):
     }
 
 
+def positive_int(value):
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("records", nargs="+")
     parser.add_argument("--config", default="configs/default.yaml")
     parser.add_argument("--checkpoint")
+    parser.add_argument("--hand-root", help="Override the canonical hand-cache root")
     parser.add_argument("--device", default="cuda:1")
+    parser.add_argument("--frames", type=positive_int,
+                        help="Measure exactly this many frames from the beginning of each record")
+    parser.add_argument("--torch-threads", type=positive_int,
+                        help="Set PyTorch CPU threads; defaults to the current PyTorch setting")
     parser.add_argument("--warmup", type=int, default=30)
     parser.add_argument("--output-dir", required=True)
     args = parser.parse_args()
     config_path = resolve_path(args.config)
     with initialize_config_dir(config_dir=str(config_path.parent), version_base=None):
         cfg = compose(config_name=config_path.stem)
+    if args.hand_root is not None:
+        cfg.data.hand_root = str(resolve_path(args.hand_root))
+    if args.torch_threads is not None:
+        torch.set_num_threads(args.torch_threads)
     checkpoint = resolve_path(args.checkpoint or cfg.full_song_real_time.checkpoint)
     output_dir = resolve_path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=False)
@@ -79,6 +96,8 @@ def main():
         "torch_version": torch.__version__, "torch_num_threads": torch.get_num_threads(),
         "checkpoint": str(checkpoint), "bf16": bool(cfg.train.bf16),
         "warmup_frames": args.warmup,
+        "requested_frames_per_record": args.frames,
+        "frame_start": 0,
         "runtime_source_sha256": hashlib.sha256(Path(rt.__file__).read_bytes()).hexdigest(),
         "config": OmegaConf.to_container(cfg, resolve=True),
         "timing_scope": "Frame input assembly through CPU score readback, controller DP and release_due; excludes loading, warmup, final artifact/MIDI export.",
@@ -95,8 +114,18 @@ def main():
         song = components["file_loader"].reader.read(
             pair, components["midi_loader"], components["hand_loader"]
         )
+        available_frames = len(song.hands)
+        if args.frames is not None:
+            if available_frames < args.frames or len(song.presence) < args.frames:
+                raise ValueError(
+                    f"{record}: requested {args.frames} frames, but the hand cache "
+                    f"has {available_frames} hand frames and {len(song.presence)} presence frames"
+                )
+            song = replace(song, hands=song.hands[:args.frames],
+                           presence=song.presence[:args.frames])
         kwargs = dict(tokenizer=components["tokenizer"], fps=float(cfg.dataset.fps),
-                      bf16=bool(cfg.train.bf16))
+                      bf16=bool(cfg.train.bf16),
+                      score_skip_penalty=float(cfg.full_song_real_time.get("score_skip_penalty", 1.0)))
         if song_index == 0:
             warmup = replace(song, hands=song.hands[:args.warmup],
                              presence=song.presence[:args.warmup])
@@ -113,8 +142,14 @@ def main():
         torch.cuda.synchronize(device)
         total = time.perf_counter() - started
         rows = namespace["_rows"]
+        if len(rows) != len(song.hands):
+            raise RuntimeError(f"{record}: measured {len(rows)} frames; expected {len(song.hands)}")
         summary = {
             "record_id": record, "frames": len(rows), "chords": len(song.chords),
+            "available_frames": available_frames,
+            "frame_start": 0, "fps": song.fps,
+            "clip_seconds": len(song.hands) / song.fps,
+            "hand_path": str(pair.hand_path),
             "frame_ms": statistics([row[1] for row in rows]),
             "history_frames": statistics([row[2] for row in rows]),
             "loop_seconds": sum(row[1] for row in rows) / 1000,
@@ -129,6 +164,13 @@ def main():
             writer = csv.writer(handle)
             writer.writerow(["record_id", "frame_index", "frame_ms", "history_frames"])
             writer.writerows(all_rows)
+        with (output_dir / "frames.csv").open(newline="") as handle:
+            csv_counts = Counter(row["record_id"] for row in csv.DictReader(handle))
+        expected_counts = Counter()
+        for measured_song in report["songs"]:
+            expected_counts[measured_song["record_id"]] += measured_song["frames"]
+        if csv_counts != expected_counts:
+            raise RuntimeError(f"frames.csv record counts differ: {csv_counts} != {expected_counts}")
         print(json.dumps(summary), flush=True)
     print(json.dumps(report["all_frame_ms"]), flush=True)
 

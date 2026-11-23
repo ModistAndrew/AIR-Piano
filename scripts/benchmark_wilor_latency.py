@@ -37,19 +37,29 @@ def statistics(values):
     }
 
 
-def preload_video(path, sample_count):
+def preload_video(path, sample_count, sampling="uniform", start_frame=0):
     capture = cv2.VideoCapture(str(path))
     if not capture.isOpened():
         raise RuntimeError(f"Cannot open video: {path}")
     try:
         frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
         fps = float(capture.get(cv2.CAP_PROP_FPS))
-        indices = np.unique(
-            np.linspace(0, frame_count - 1, min(sample_count, frame_count), dtype=int)
-        )
+        if sampling == "contiguous":
+            if start_frame + sample_count > frame_count:
+                raise ValueError(
+                    f"Requested frames [{start_frame}, {start_frame + sample_count}) "
+                    f"but video has only {frame_count}: {path}"
+                )
+            indices = np.arange(start_frame, start_frame + sample_count)
+            capture.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+        else:
+            indices = np.unique(
+                np.linspace(0, frame_count - 1, min(sample_count, frame_count), dtype=int)
+            )
         frames = []
         for index in indices:
-            capture.set(cv2.CAP_PROP_POS_FRAMES, int(index))
+            if sampling == "uniform":
+                capture.set(cv2.CAP_PROP_POS_FRAMES, int(index))
             ok, frame = capture.read()
             if not ok:
                 raise RuntimeError(f"Cannot decode frame {index}: {path}")
@@ -175,13 +185,18 @@ def main(argv=None):
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--device", default="cuda:1")
     parser.add_argument("--fast", action="store_true", help="Use official FP16, compilation, and backbone layer skipping")
-    parser.add_argument("--samples", default=32, type=int, help="Evenly spread frames per video")
-    parser.add_argument("--warmup", default=5, type=int, help="Excluded batches for each video and mode")
+    parser.add_argument("--samples", default=32, type=int, help="Measured frames per video")
+    parser.add_argument("--sampling", choices=("uniform", "contiguous"), default="uniform")
+    parser.add_argument("--start-frame", type=int, default=0, help="First frame for contiguous sampling")
+    parser.add_argument("--mode", choices=("both", "single_frame", "batched"), default="both")
+    parser.add_argument("--warmup", default=5, type=int, help="Excluded batches spread across the selected frames")
     parser.add_argument("--frame-batch-size", default=8, type=int)
     parser.add_argument("--hand-batch-size", default=16, type=int)
     args = parser.parse_args(argv)
     if min(args.samples, args.frame_batch_size, args.hand_batch_size) < 1 or args.warmup < 0:
         parser.error("Samples and batch sizes must be positive; warmup must be nonnegative")
+    if args.start_frame < 0 or (args.start_frame and args.sampling != "contiguous"):
+        parser.error("--start-frame must be nonnegative and requires contiguous sampling")
     output_dir = args.output_dir.resolve()
     if not output_dir.is_relative_to(PROJECT_ROOT / "outputs"):
         parser.error("--output-dir must be inside the repository outputs/ directory")
@@ -191,7 +206,11 @@ def main(argv=None):
     if summary_path.exists() or csv_path.exists():
         raise FileExistsError(f"Benchmark output already exists in {output_dir}")
 
-    videos = [preload_video(path.resolve(), args.samples) for path in args.videos]
+    videos = [preload_video(path.resolve(), args.samples, args.sampling, args.start_frame)
+              for path in args.videos]
+    import torch
+    if torch.device(args.device).type == "cuda":
+        torch.cuda.set_device(torch.device(args.device))
     processor = VideoToWiLoR(
         device=args.device,
         frame_batch_size=args.frame_batch_size,
@@ -225,6 +244,9 @@ def main(argv=None):
         "predictions_checked_finite": True,
         "model_loading_seconds_excluded": loading_seconds,
         "requested_samples_per_video": args.samples,
+        "sampling": args.sampling,
+        "start_frame": args.start_frame,
+        "requested_mode": args.mode,
         "warmup_batches_per_video_and_mode": args.warmup,
         "frame_batch_size": args.frame_batch_size,
         "hand_batch_size": args.hand_batch_size,
@@ -232,11 +254,15 @@ def main(argv=None):
             "total": "CUDA-synchronized build_chunk wall time; preloaded native-resolution frames; no video decode, model loading, cache writing, or frame acquisition wait",
             "components": "Detector wrapper and pose forward hooks; wall intervals are unsynchronized; CUDA events measure elapsed stream intervals, including any CPU launch gaps; components exclude crop preparation, host transfers, and output assembly outside those calls",
             "batch_latency": "Time to complete an already available batch; every frame in that batch shares completion latency; amortized time is throughput cost, not live per-frame response latency",
-            "sample_indices": "Evenly spaced across each complete source video",
+            "sample_indices": ("Consecutive frames starting at start_frame" if args.sampling == "contiguous"
+                               else "Evenly spaced across each complete source video"),
+            "warmup": "Batches spread uniformly across the selected frame range; excluded from measurements",
         },
         "videos": [],
     }
-    all_batches = {"single_frame": [], "batched": []}
+    modes = [(mode, size) for mode, size in (("single_frame", 1), ("batched", args.frame_batch_size))
+             if args.mode in ("both", mode)]
+    all_batches = {mode: [] for mode, _ in modes}
     fields = [
         "video", "mode", "sample_position", "source_frame_index", "timestamp_seconds",
         "width", "height", "hand_count", "batch_id", "batch_size", "batch_wall_ms",
@@ -250,11 +276,14 @@ def main(argv=None):
             for video in videos:
                 video_summary = {key: value for key, value in video.items() if key != "frames"}
                 video_summary["modes"] = {}
-                for mode, batch_size in (("single_frame", 1), ("batched", args.frame_batch_size)):
+                for mode, batch_size in modes:
                     positions = list(range(len(video["frames"])))
                     groups = [positions[start:start + batch_size] for start in range(0, len(positions), batch_size)]
-                    for index in range(args.warmup):
-                        measure_batch(backend, video, groups[index % len(groups)], timers)
+                    warmup_started = time.perf_counter()
+                    for index in np.linspace(0, len(groups) - 1, args.warmup, dtype=int):
+                        measure_batch(backend, video, groups[index], timers)
+                    print(f"WARMUP {mode}: {args.warmup} batches, "
+                          f"{time.perf_counter() - warmup_started:.2f}s excluded", flush=True)
                     batches = []
                     for batch_id, group in enumerate(groups):
                         result = measure_batch(backend, video, group, timers)
@@ -271,6 +300,9 @@ def main(argv=None):
                                 **{key: value for key, value in result.items() if key != "hand_counts"},
                             })
                         handle.flush()
+                        if (batch_id + 1) % 150 == 0:
+                            print(f"MEASURE {mode}: {batch_id + 1}/{len(groups)} batches, "
+                                  f"last {result['batch_wall_ms']:.2f} ms", flush=True)
                     all_batches[mode].extend(batches)
                     video_summary["modes"][mode] = summarize_batches(batches)
                     print(json.dumps({"video": video["path"], "mode": mode, **video_summary["modes"][mode]}), flush=True)

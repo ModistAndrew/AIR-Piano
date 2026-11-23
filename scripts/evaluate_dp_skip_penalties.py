@@ -74,22 +74,16 @@ def atomic_json(path: Path, value: object) -> None:
     atomic_text(path, json.dumps(value, indent=2, sort_keys=True, allow_nan=False) + "\n")
 
 
-def penalty_controller(original: type, method: object, penalty: float) -> type:
-    return type(
-        "SkipPenaltyController", (original,),
-        {"score_skip_penalty": penalty, "process_event": method},
-    )
-
-
-def baseline_parity(song, artifact_path, original, patched, cfg) -> dict:
-    """Check original versus cost-one DP/window/history on saved events."""
+def baseline_parity(song, artifact_path, cfg) -> dict:
+    """Check default versus explicit cost-one DP/window/history on saved events."""
     kwargs = {
         "window_size": int(cfg.dataset.slicer.segment_frames),
         "fps": float(cfg.dataset.fps),
         "target_radius_seconds": float(cfg.dataset.target_generator.softener.radius_seconds),
+        "target_delay_seconds": float(cfg.dataset.target_generator.event_generator.delay_seconds),
     }
-    expected = original(song.chords, **kwargs)
-    actual = patched(song.chords, **kwargs)
+    expected = rt.RealTimeController(song.chords, **kwargs)
+    actual = rt.RealTimeController(song.chords, score_skip_penalty=1.0, **kwargs)
     with np.load(artifact_path, allow_pickle=False) as payload:
         for chord_id, event_time, score, frame in zip(
             payload["event_chord_id"], payload["event_time"],
@@ -105,7 +99,7 @@ def baseline_parity(song, artifact_path, original, patched, cfg) -> dict:
                 [row[key] for row in expected.event_records], payload[f"event_{key}"]
             )
     return {"passed": True, "event_count": len(expected.event_records),
-            "scope": "original versus patched cost-one DP, windows, and history on saved events"}
+            "scope": "default versus explicit cost-one DP, windows, and history on saved events"}
 
 
 def write_reports(output_dir: Path, penalties: list[float], records: list[str], runs: list[dict]) -> None:
@@ -195,14 +189,7 @@ def main(argv: list[str] | None = None) -> None:
     if missing:
         raise FileNotFoundError("Required cached inputs are missing:\n" + "\n".join(missing))
 
-    original = rt.RealTimeController
-    original_source = textwrap.dedent(inspect.getsource(original.process_event))
-    old_term = "self.cur[index - 1] - 1"
-    assert original_source.count(old_term) == 1, "Controller skip expression changed; review the patch"
-    patched_source = original_source.replace(old_term, "self.cur[index - 1] - self.score_skip_penalty")
-    namespace = dict(vars(rt))
-    exec(compile(patched_source, str(output_dir / "process_event_penalty.txt"), "exec"), namespace)
-    method = namespace["process_event"]
+    controller_source = textwrap.dedent(inspect.getsource(rt.RealTimeController.process_event))
     identity = {
         "config_path": str(config_path), "config_sha256": sha256(config_path),
         "config": OmegaConf.to_container(cfg, resolve=True),
@@ -215,7 +202,7 @@ def main(argv: list[str] | None = None) -> None:
             str(path.relative_to(PROJECT_ROOT)): sha256(path)
             for path in sorted((PROJECT_ROOT / "airpiano").rglob("*.py"))
         },
-        "patched_method_sha256": hashlib.sha256(patched_source.encode()).hexdigest(),
+        "controller_method_sha256": hashlib.sha256(controller_source.encode()).hexdigest(),
         "torch_version": torch.__version__, "numpy_version": np.__version__,
         "torch_num_threads": 1, "tolerances_frames": list(TOLERANCES),
     }
@@ -226,8 +213,7 @@ def main(argv: list[str] | None = None) -> None:
             raise ValueError("Experiment identity differs; choose a new --output-dir")
     else:
         atomic_json(manifest_path, {"created_at": datetime.now(timezone.utc).isoformat(), "identity": identity})
-    atomic_text(output_dir / "process_event_original.txt", original_source)
-    atomic_text(output_dir / "process_event_penalty.txt", patched_source)
+    atomic_text(output_dir / "process_event.txt", controller_source)
     atomic_text(output_dir / "experiment_config.yaml", OmegaConf.to_yaml(cfg, resolve=True))
 
     torch.set_num_threads(1)
@@ -256,20 +242,16 @@ def main(argv: list[str] | None = None) -> None:
                     model = load_model_checkpoint(checkpoint, device)
                 print(f"infer {index}/{len(pairs)} cost={penalty:g} {pair.record_id} "
                       f"({len(song.hands)} frames, {len(song.chords)} chords)", flush=True)
-                trial_controller = penalty_controller(original, method, penalty)
                 started = time.perf_counter()
-                rt.RealTimeController = trial_controller
-                try:
-                    controller = rt.infer_full_song_real_time(
-                        model, song, components["slicer"], components["target_generator"],
-                        device, artifact_path, tokenizer=components["tokenizer"],
-                        fps=float(cfg.dataset.fps), bf16=bool(cfg.train.bf16),
-                    )
-                finally:
-                    rt.RealTimeController = original
+                controller = rt.infer_full_song_real_time(
+                    model, song, components["slicer"], components["target_generator"],
+                    device, artifact_path, tokenizer=components["tokenizer"],
+                    fps=float(cfg.dataset.fps), bf16=bool(cfg.train.bf16),
+                    score_skip_penalty=penalty,
+                )
                 elapsed = time.perf_counter() - started
                 metrics = calculate_alignment_metrics(load_artifact(artifact_path), tolerances_frames=TOLERANCES)
-                parity = baseline_parity(song, artifact_path, original, trial_controller, cfg) if penalty == 1 else None
+                parity = baseline_parity(song, artifact_path, cfg) if penalty == 1 else None
                 run = {
                     "record_id": pair.record_id, "skip_penalty": penalty,
                     "artifact_path": str(artifact_path.relative_to(output_dir)),

@@ -56,11 +56,13 @@ class RealTimeController:
         fps: float = 30.0,
         target_radius_seconds: float = 0.2,
         target_delay_seconds: float = 0.0,
+        score_skip_penalty: float = 1.0,
     ) -> None:
         self.onset_prediction_offset = (
             float(target_radius_seconds) * 0.5 - float(target_delay_seconds)
         )
         self.fps = float(fps)
+        self.score_skip_penalty = float(score_skip_penalty)
         self.chord_count = len(score_chords)
         if not self.chord_count:
             raise ValueError("full_song_real_time requires at least one chord")
@@ -113,7 +115,9 @@ class RealTimeController:
         match_score = self.prev[event.id - 1] + 1
         self.cur[0] = 0
         for index in range(1, self.chord_count + 1):
-            self.cur[index] = max(self.prev[index], self.cur[index - 1] - 1)
+            self.cur[index] = max(
+                self.prev[index], self.cur[index - 1] - self.score_skip_penalty
+            )
             if index == event.id:
                 self.cur[index] = max(self.cur[index], match_score)
         success = bool(match_score > old_best)
@@ -226,6 +230,7 @@ def _controller_arrays(controller: RealTimeController) -> dict[str, np.ndarray]:
             controller.onset_prediction_offset
         ),
         "window_size": np.asarray(controller.window_size),
+        "score_skip_penalty": np.asarray(controller.score_skip_penalty),
         "best_score": np.asarray(controller.best_score),
         "final_chord_window_start": np.asarray(controller.chord_window_start),
         "final_video_history_start": np.asarray(controller.video_history_start),
@@ -263,6 +268,7 @@ def infer_full_song_real_time(
     tokenizer: data.ChordTokenizer,
     fps: float,
     bf16: bool,
+    score_skip_penalty: float = 1.0,
 ) -> RealTimeController:
     """Receive one frame at a time and write both the release MIDI and NPZ."""
 
@@ -274,6 +280,7 @@ def infer_full_song_real_time(
         fps=fps,
         target_radius_seconds=target_generator.softener.radius_seconds,
         target_delay_seconds=target_generator.event_generator.delay_seconds,
+        score_skip_penalty=score_skip_penalty,
     )
     model.eval()
     frame_count = len(song.hands)
@@ -379,6 +386,7 @@ def full_song_real_time(cfg: DictConfig) -> None:
             tokenizer=components["tokenizer"],
             fps=float(cfg.dataset.fps),
             bf16=bool(cfg.train.bf16),
+            score_skip_penalty=float(settings.get("score_skip_penalty", 1.0)),
         )
         released = len(controller.release_records)
         print(

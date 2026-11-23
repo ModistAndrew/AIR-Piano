@@ -1,0 +1,11 @@
+defaults:
+  - ablation_ahead100ms
+  - _self_
+
+output:
+  project_name: airpiano_ahead100ms_no_pitch
+
+dataset:
+  augmenter:
+    # Keep the inherited hand-window shift and duration scaling enabled.
+    random_pitch_shift_semitones: 0

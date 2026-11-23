@@ -66,6 +66,7 @@ class AirPianoStepper:
         *,
         fps: float = 30.0,
         bf16: bool = False,
+        score_skip_penalty: float = 1.0,
     ) -> None:
         self.model = model.eval()
         self.device = device
@@ -79,6 +80,10 @@ class AirPianoStepper:
             target_radius_seconds=components[
                 "target_generator"
             ].softener.radius_seconds,
+            target_delay_seconds=components[
+                "target_generator"
+            ].event_generator.delay_seconds,
+            score_skip_penalty=score_skip_penalty,
         )
         self.video_frames: list[torch.Tensor] = []
         self.presence_frames: list[torch.Tensor] = []

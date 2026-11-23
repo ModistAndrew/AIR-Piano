@@ -1,0 +1,9 @@
+defaults:
+  - ablation_no_pitch_radius400ms
+  - _self_
+
+output:
+  project_name: airpiano_no_pitch_radius400ms_no_midi_duration
+
+model:
+  use_chord_duration: false
