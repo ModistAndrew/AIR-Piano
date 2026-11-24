@@ -1,5 +1,7 @@
 # AIR-Piano
 
+[![arXiv](https://img.shields.io/badge/arXiv-2611.30049-b31b1b?logo=arxiv)](https://arxiv.org/abs/2611.30049) [![Hugging Face checkpoint](https://img.shields.io/badge/Hugging%20Face-Checkpoint-FFD21E?logo=huggingface&logoColor=FFD21E)](https://huggingface.co/ModistAndrew/AIR-Piano)
+
 A system that turns tabletop piano gestures into sound using score-guided visual alignment.
 
 ## Branches
